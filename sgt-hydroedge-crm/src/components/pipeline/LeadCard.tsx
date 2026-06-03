@@ -8,7 +8,7 @@ interface Props {
 }
 
 export default function LeadCard({ lead, onClick }: Props) {
-  const accentColor = getVerticalColor(lead.vertical)
+  const accentColor = getVerticalColor(lead.vertical ?? '')
 
   return (
     <div

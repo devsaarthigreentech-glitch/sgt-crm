@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState } from 'react'
 import {
   TrendingUp, AlertTriangle, Clock, Users,
   CheckCircle, Package, ArrowRight, Plus,

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { AlertTriangle, Check, ChevronDown, User, Tag } from 'lucide-react'
 import type { Lead, LeadType, Vertical } from '../../types'
-import { formatINR, getVerticalColor } from '../../lib/utils'
+import { getVerticalColor } from '../../lib/utils'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { api } from '../../lib/api'
 
