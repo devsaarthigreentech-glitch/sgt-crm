@@ -38,7 +38,7 @@ export interface Lead {
   displayId?: string
   company: string
   stage: string
-  leadType: LeadType
+  leadType?: LeadType
   vertical?: Vertical
   model?: CommercialModel
   origin?: string
