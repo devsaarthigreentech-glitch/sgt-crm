@@ -6,11 +6,11 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { nanoid } from 'nanoid'
-import { randomUUID } from 'node:crypto'
-import { query } from '../db/pool'
+import { query, pool } from '../db/pool'
 import { publish } from '../domain/events'
 import { conflictCheck, openProtection } from '../domain/protection'
 import { normalizeAccountName } from '../domain/stage.domain'
+import { generateDisplayId, defaultDivision, normaliseAccountName } from '../domain/leads'
 
 declare module 'fastify' {
   interface FastifyRequest { partnerId?: string; partner?: any }
@@ -38,26 +38,27 @@ export default async function partnerRoutes(app: FastifyInstance) {
     } })
   })
 
-  // GET /leads — my registered leads + protection state
+  // GET /leads — my registered leads + protection state (normalized schema)
   app.get('/leads', async (req, reply) => {
     const r = await query(
-      `SELECT l.id, l.company, l.stage, l.vertical, l.value, l.created_at,
+      `SELECT l.id, l.display_id, a.name AS company, l.stage, l.vertical,
+              l.estimated_value, l.created_at,
               p.expires_at, p.status AS protection_status
          FROM lead_service.leads l
-         LEFT JOIN lead_service.lead_protections p ON p.id = l.protection_id
-        WHERE l.partner_id = $1
+         JOIN lead_service.accounts a ON a.id = l.account_id
+         LEFT JOIN lead_service.lead_protections p
+           ON p.lead_id = l.id AND p.status IN ('active','extended')
+        WHERE l.partner_id = $1 AND l.deleted_at IS NULL
         ORDER BY l.created_at DESC`,
       [req.partnerId]
-    ).catch(async () => {
-      // leads table may not have partner_id yet on older installs — fall back to source
-      return query(
-        `SELECT id, company, stage, vertical, value, created_at, NULL AS expires_at, NULL AS protection_status
-           FROM lead_service.leads WHERE source = 'partner_portal' ORDER BY created_at DESC`, []
-      )
-    })
+    )
     const data = r.rows.map((row: any) => ({
-      id: row.id, company: row.company, stage: row.stage, vertical: row.vertical,
-      value: row.value,
+      id: row.id,
+      displayId: row.display_id,
+      company: row.company,
+      stage: row.stage,
+      vertical: row.vertical,
+      value: row.estimated_value ? Number(row.estimated_value) / 100 : 0,
       protectionExpiresAt: row.expires_at,
       protectionDaysLeft: row.expires_at
         ? Math.max(0, Math.ceil((new Date(row.expires_at).getTime() - Date.now()) / 86400_000))
@@ -103,33 +104,84 @@ export default async function partnerRoutes(app: FastifyInstance) {
       return reply.code(409).send({ error: { code: 'lead_conflict',
         message: 'Another partner holds an active protection window on this account' } })
 
-    const leadId = randomUUID()   // leads.id is uuid
-    await query(
-      `INSERT INTO lead_service.leads
-         (id, company, stage, vertical, model, value, est_close, owner,
-          contact_name, contact_email, contact_phone, location,
-          source, account_norm, partner_id, created_at, stage_entered_at)
-       VALUES ($1,$2,'new',$3,$4,$5,$6,$7,$8,$9,$10,$11,'partner_portal',$12,$13, now(), now())`,
-      [leadId, b.company, b.vertical ?? null, b.model ?? null, b.value ?? null, b.estClose ?? null,
-       req.partner.name, b.contactName ?? null, b.contactEmail ?? null, b.contactPhone ?? null,
-       b.location ?? null, norm, req.partnerId]
-    ).catch(async (e: any) => {
-      // tolerate older leads schemas missing some columns
-      await query(
-        `INSERT INTO lead_service.leads (id, company, stage, vertical, value, source, account_norm, partner_id, created_at, stage_entered_at)
-         VALUES ($1,$2,'new',$3,$4,'partner_portal',$5,$6, now(), now())`,
-        [leadId, b.company, b.vertical ?? null, b.value ?? null, norm, req.partnerId]
-      )
-    })
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
 
-    const protectionId = await openProtection({
-      leadId, accountNorm: norm, partnerId: req.partnerId!, division: req.partner.division,
-    })
-    await publish('partner.lead_registered', {
-      aggregateId: leadId, division: req.partner.division,
-      actor: { type: 'user', id: req.partnerId }, data: { protectionId },
-    })
-    return reply.code(201).send({ data: { id: leadId, stage: 'new', protectionId } })
+      // 1. find or create the account
+      const nameNorm = normaliseAccountName(b.company)
+      let accountId: string
+      const existing = await client.query(
+        `SELECT id FROM lead_service.accounts
+          WHERE name_normalized = $1 AND deleted_at IS NULL LIMIT 1`,
+        [nameNorm]
+      )
+      if (existing.rows.length > 0) {
+        accountId = existing.rows[0].id
+      } else {
+        const acc = await client.query(
+          `INSERT INTO lead_service.accounts (name, name_normalized, location)
+           VALUES ($1, $2, $3) RETURNING id`,
+          [b.company, nameNorm, b.location ?? null]
+        )
+        accountId = acc.rows[0].id
+      }
+
+      // 2. create the primary contact if supplied
+      let contactId: string | null = null
+      if (b.contactName) {
+        const c = await client.query(
+          `INSERT INTO lead_service.contacts
+             (account_id, name, role, email, phone, is_primary)
+           VALUES ($1, $2, $3, $4, $5, true) RETURNING id`,
+          [accountId, b.contactName, null, b.contactEmail ?? null, b.contactPhone ?? null]
+        )
+        contactId = c.rows[0].id
+      }
+
+      // 3. display id, division, value-in-paise
+      const seq = await client.query(`SELECT nextval('lead_service.lead_id_seq') AS seq`)
+      const displayId = generateDisplayId(Number(seq.rows[0].seq))
+      const division = b.vertical ? defaultDivision(b.vertical as any) : 'GREENEDGE'
+      const valueInPaise = b.value ? Math.round(b.value * 100) : null
+
+      // 4. create the lead (stage uses the table default, like internal creation)
+      const lead = await client.query(
+        `INSERT INTO lead_service.leads (
+           display_id, account_id, primary_contact_id,
+           vertical, commercial_model, estimated_value, estimated_close_date,
+           division, owner_name, capture_source, lead_type,
+           metadata, source, account_norm, partner_id
+         ) VALUES (
+           $1, $2, $3, $4, $5, $6, $7,
+           $8, $9, $10, $11, $12, $13, $14, $15
+         ) RETURNING id`,
+        [
+          displayId, accountId, contactId,
+          b.vertical ?? null, b.model ?? null, valueInPaise, b.estClose ?? null,
+          division, req.partner.name, 'Partner Portal', 'Prospect',
+          JSON.stringify({}), 'partner_portal', norm, req.partnerId,
+        ]
+      )
+      const leadId = lead.rows[0].id
+
+      await client.query('COMMIT')
+
+      // 5. open the 90-day protection window + emit
+      const protectionId = await openProtection({
+        leadId, accountNorm: norm, partnerId: req.partnerId!, division: req.partner.division,
+      })
+      await publish('partner.lead_registered', {
+        aggregateId: leadId, division: req.partner.division,
+        actor: { type: 'user', id: req.partnerId }, data: { protectionId },
+      })
+      return reply.code(201).send({ data: { id: leadId, displayId, protectionId } })
+    } catch (err) {
+      await client.query('ROLLBACK')
+      throw err
+    } finally {
+      client.release()
+    }
   })
 
   // GET /customers — Partner Customer Health (full portal only)
