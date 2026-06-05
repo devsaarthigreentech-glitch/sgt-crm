@@ -98,6 +98,7 @@ function formatLead(row: any) {
       name: row.contact_name,
       role: row.contact_role,
       email: row.contact_email,
+      phone: row.primary_contact_phone ?? null,
     } : null,
     protection: row.protection_status ? {
       status: row.protection_status,
@@ -140,6 +141,7 @@ export async function leadsRoutes(fastify: FastifyInstance) {
         c.name        AS contact_name,
         c.role        AS contact_role,
         c.email       AS contact_email,
+        c.phone       AS primary_contact_phone,
         p.status      AS protection_status,
         p.opened_at  AS protection_started_at,
         p.expires_at  AS protection_expires_at
@@ -187,6 +189,7 @@ export async function leadsRoutes(fastify: FastifyInstance) {
         c.name        AS contact_name,
         c.role        AS contact_role,
         c.email       AS contact_email,
+        c.phone       AS primary_contact_phone,
         p.status      AS protection_status,
         p.opened_at  AS protection_started_at,
         p.expires_at  AS protection_expires_at

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { ArrowLeft, MapPin, Lock, Shield, Mail, Plus } from 'lucide-react'
+import { ArrowLeft, MapPin, Lock, Shield, Mail, Plus, Phone } from 'lucide-react'
 import type { Lead, Activity } from '../../types'
 import { formatINR, getVerticalColor } from '../../lib/utils'
 import { api } from '../../lib/api'
@@ -14,22 +14,22 @@ interface Props {
 export default function LeadDetail({ lead, onBack }: Props) {
   const isMobile = useIsMobile()
   const accentColor = getVerticalColor(lead.vertical ?? '')
-  const [showDrawer, setShowDrawer]           = useState(false)
+  const [showDrawer, setShowDrawer] = useState(false)
   const [localActivities, setLocalActivities] = useState<Activity[]>([])
-  const [apiActivities, setApiActivities]     = useState<Activity[]>([])
+  const [apiActivities, setApiActivities] = useState<Activity[]>([])
 
   useEffect(() => {
     api.getActivities(lead.id).then(res => {
       setApiActivities(res.data.map((a: any) => ({
-        type:    a.type,
-        who:     a.who,
-        when:    new Date(a.when).toLocaleDateString('en-IN'),
+        type: a.type,
+        who: a.who,
+        when: new Date(a.when).toLocaleDateString('en-IN'),
         summary: a.summary,
         channel: a.channel ?? a.type,
         outcome: a.outcome,
         nextStep: a.nextStep,
       })))
-    }).catch(() => {})
+    }).catch(() => { })
   }, [lead.id])
 
   const allActivities = [...localActivities, ...apiActivities]
@@ -134,8 +134,8 @@ export default function LeadDetail({ lead, onBack }: Props) {
             {/* Chips */}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 10 }}>
               {lead.vertical && <Chip color="#fff" bg={accentColor}>{lead.vertical}</Chip>}
-              {lead.model    && <Chip color="#363633" bg="#fff" border>{lead.model}</Chip>}
-              {lead.origin   && <Chip color="#363633" bg="#fff" border>{lead.origin}</Chip>}
+              {lead.model && <Chip color="#363633" bg="#fff" border>{lead.model}</Chip>}
+              {lead.origin && <Chip color="#363633" bg="#fff" border>{lead.origin}</Chip>}
               {(lead as any).leadType && (lead as any).leadType !== 'Prospect' && (
                 <Chip color="#363633" bg="#EDE7D8">{(lead as any).leadType}</Chip>
               )}
@@ -144,7 +144,7 @@ export default function LeadDetail({ lead, onBack }: Props) {
                   color={lead.protection.daysLeft <= 14 ? '#7A4A0E' : '#052927'}
                   bg={lead.protection.daysLeft <= 14 ? '#F3E2BE' : '#D8E8E6'}
                 >
-                  <Shield size={10} strokeWidth={2} style={{ display:'inline', marginRight: 2 }} />
+                  <Shield size={10} strokeWidth={2} style={{ display: 'inline', marginRight: 2 }} />
                   {lead.protection.daysLeft}d protection
                 </Chip>
               )}
@@ -248,7 +248,7 @@ export default function LeadDetail({ lead, onBack }: Props) {
               })
               setLocalActivities(prev => [{
                 ...activity,
-                who:  'Rohan Mehta',
+                who: 'Rohan Mehta',
                 when: 'just now',
               }, ...prev])
             } catch (err) {
@@ -268,11 +268,11 @@ function FactsRail({ lead }: { lead: Lead }) {
     <div>
       <SectionHeader title="Facts" />
       <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <Fact label="Stage"         value={lead.stage} />
-        <Fact label="Lead type"     value={(lead as any).leadType ?? 'Prospect'} />
-        <Fact label="Owner"         value={lead.owner ?? 'Unassigned'} />
-        <Fact label="Value"         value={formatINR(lead.value)} mono />
-        <Fact label="Est. close"    value={lead.estClose ?? '—'} mono />
+        <Fact label="Stage" value={lead.stage} />
+        <Fact label="Lead type" value={(lead as any).leadType ?? 'Prospect'} />
+        <Fact label="Owner" value={lead.owner ?? 'Unassigned'} />
+        <Fact label="Value" value={formatINR(lead.value)} mono />
+        <Fact label="Est. close" value={lead.estClose ?? '—'} mono />
         <Fact label="Days in stage" value={`${lead.daysInStage}d`} />
       </div>
 
@@ -294,6 +294,14 @@ function FactsRail({ lead }: { lead: Lead }) {
                 }}>
                   <Mail size={11} strokeWidth={2} />
                   {lead.contact.email}
+                </span>
+              </div>
+            )}
+            {(lead.contact as any).phone && (
+              <div style={{ marginTop: 6 }}>
+                <span style={{ fontSize: 11.5, color: '#0E5550', display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <Phone size={11} strokeWidth={2} />
+                  {(lead.contact as any).phone}
                 </span>
               </div>
             )}
@@ -385,11 +393,11 @@ function ActivityRow({ activity, isLast }: {
   activity: Activity; isLast: boolean
 }) {
   const colorMap: Record<string, string> = {
-    email:    '#1E3A6B',
-    meeting:  '#0E5550',
+    email: '#1E3A6B',
+    meeting: '#0E5550',
     whatsapp: '#4A7920',
-    call:     '#B8541E',
-    system:   '#6A675F',
+    call: '#B8541E',
+    system: '#6A675F',
     document: '#5B3B6F',
   }
   const color = colorMap[activity.type] ?? '#6A675F'
@@ -440,10 +448,10 @@ function ActivityRow({ activity, isLast }: {
               padding: '2px 6px', borderRadius: 3,
               color: activity.outcome === 'positive'
                 ? '#3D6B1C' : activity.outcome === 'concern'
-                ? '#751A11' : '#7A4A0E',
+                  ? '#751A11' : '#7A4A0E',
               backgroundColor: activity.outcome === 'positive'
                 ? '#DDE9C9' : activity.outcome === 'concern'
-                ? '#F0D5D0' : '#F3E2BE',
+                  ? '#F0D5D0' : '#F3E2BE',
             }}>
               {activity.outcome}
             </span>

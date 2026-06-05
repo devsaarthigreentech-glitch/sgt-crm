@@ -3,6 +3,7 @@ import cors from '@fastify/cors'
 import helmet from '@fastify/helmet'
 import dotenv from 'dotenv'
 import { leadsRoutes } from './routes/leads'
+import partnerRoutes from './routes/partner.routes'
 
 dotenv.config()
 
@@ -25,19 +26,20 @@ async function start() {
 
   // Health check
   app.get('/health', async () => ({
-    status:  'ok',
+    status: 'ok',
     service: 'sgt-hydroedge-server',
-    time:    new Date().toISOString(),
+    time: new Date().toISOString(),
   }))
 
   // Routes
   await app.register(leadsRoutes, { prefix: '/api/v1' })
+  await app.register(partnerRoutes, { prefix: '/api/v1/partners/me' })
 
   // Global error handler
   app.setErrorHandler((error: any, request, reply) => {
     if (error.name === 'ZodError') {
       return reply.status(400).send({
-        error:   'Validation failed',
+        error: 'Validation failed',
         details: JSON.parse(error.message),
       })
     }

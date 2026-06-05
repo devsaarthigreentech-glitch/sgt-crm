@@ -11,7 +11,8 @@ export type ActivityOutcome = 'positive' | 'neutral' | 'concern'
 export interface Contact {
   name: string
   role: string
-  email: string
+  email?: string | null
+  phone?: string | null
 }
 
 export interface Protection {
