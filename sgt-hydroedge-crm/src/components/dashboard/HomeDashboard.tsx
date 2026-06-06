@@ -7,7 +7,7 @@ import {
 import type { Lead } from '../../types'
 import { formatINR, getVerticalColor } from '../../lib/utils'
 import { useIsMobile } from '../../hooks/useIsMobile'
-import ErpInsights from './ERPInsights'
+import ErpInsights from './ErpInsights'
 
 interface Props {
   leads: Lead[]
