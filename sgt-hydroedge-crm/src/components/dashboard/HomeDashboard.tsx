@@ -7,6 +7,7 @@ import {
 import type { Lead } from '../../types'
 import { formatINR, getVerticalColor } from '../../lib/utils'
 import { useIsMobile } from '../../hooks/useIsMobile'
+import ErpInsights from './ERPInsights'
 
 interface Props {
   leads: Lead[]
@@ -177,6 +178,8 @@ function DirectorDashboard({ leads, activeLeads, isMobile, onLeadClick, navigate
           muted
         />
       </div>
+
+      <ErpInsights />
 
       {/* Alerts */}
       {alerts.length > 0 && (

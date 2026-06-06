@@ -4,6 +4,7 @@ import helmet from '@fastify/helmet'
 import dotenv from 'dotenv'
 import { leadsRoutes } from './routes/leads'
 import partnerRoutes from './routes/partner.routes'
+import erpRoutes from './routes/erp';
 
 dotenv.config()
 
@@ -34,6 +35,7 @@ async function start() {
   // Routes
   await app.register(leadsRoutes, { prefix: '/api/v1' })
   await app.register(partnerRoutes, { prefix: '/api/v1/partners/me' })
+  app.register(erpRoutes, { prefix: '/api/v1' });
 
   // Global error handler
   app.setErrorHandler((error: any, request, reply) => {
