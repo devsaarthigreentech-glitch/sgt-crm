@@ -59,13 +59,13 @@ export default function App() {
       />
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-      {page === 'home' ? (
-  <HomeDashboard
-    leads={leads}
-    onLeadClick={lead => { setSelectedLead(lead); setPage('pipeline') }}
-    navigate={setPage}
-  />
-) : page === 'capture' ? (
+        {page === 'home' ? (
+          <HomeDashboard
+            leads={leads}
+            onLeadClick={lead => { setSelectedLead(lead); setPage('pipeline') }}
+            navigate={setPage}
+          />
+        ) : page === 'capture' ? (
           // <CaptureForm
           //   onCancel={() => navigate('pipeline')}
           //   onSubmit={async (data) => {
@@ -136,8 +136,37 @@ export default function App() {
           />
         ) : selectedLead ? (
           <LeadDetail
-            lead={selectedLead}
+            lead={{
+              // —— map your nested Lead -> flat shape. Confirm names against src/types.ts ——
+              id: (selectedLead as any).code ?? selectedLead.id ?? '',
+              company: (selectedLead as any).account?.name ?? '',
+              contactName: (selectedLead as any).primaryContact?.name ?? '',
+              stage: (selectedLead as any).stage ?? 'New',
+              leadType: (selectedLead as any).leadType ?? '',
+              owner: (selectedLead as any).ownerName ?? null,
+              value: (selectedLead as any).estimatedValue ?? 0,
+              estClose: (selectedLead as any).estimatedCloseDate ?? null,
+              daysInStage: (selectedLead as any).daysInStage ?? 0,
+              email: (selectedLead as any).primaryContact?.email ?? '',
+              phone: (selectedLead as any).primaryContact?.phone ?? '',
+              activities: ((selectedLead as any).activities ?? []).map((a: any) => ({
+                id: a.id, author: a.author ?? a.ownerName ?? '',
+                note: a.note ?? a.text ?? '', date: a.date ?? a.createdAt ?? '',
+                channel: a.channel, sentiment: a.sentiment,
+              })),
+            }}
+            stages={['New', 'Allocated', 'Qualifying', 'Discovery', 'Proposal', 'Negotiation']}
             onBack={() => setSelectedLead(null)}
+            onAdvance={() => {/* TODO: call your stage-advance endpoint, then loadLeads() */ }}
+            onLogActivity={() => {/* TODO: open your existing log-activity UI */ }}
+            onSave={async (patch) => {
+              await fetch(`${import.meta.env.VITE_API_URL}/leads/${selectedLead.id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(patch),
+              })
+              await loadLeads()
+            }}
           />
         ) : (
           <>
