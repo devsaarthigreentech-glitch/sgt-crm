@@ -12,6 +12,17 @@ import {
 
 // ─── Validation schemas ───────────────────────────────────────────────────────
 
+// whitelist: API field -> DB column. Adjust column names to your schema.
+const EDITABLE: Record<string, string> = {
+  leadType: 'lead_type',
+  owner: 'owner',
+  value: 'value',
+  estClose: 'est_close',
+  contactName: 'contact_name',
+  email: 'email',
+  phone: 'phone',
+};
+
 const CreateLeadSchema = z.object({
   account: z.object({
     name: z.string().min(2),
@@ -503,6 +514,24 @@ export async function leadsRoutes(fastify: FastifyInstance) {
 
     return reply.send({ data: { id, stage: newStage, outcome: body.outcome } })
   })
+
+  fastify.patch('/leads/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    let i = 1;
+    for (const [field, col] of Object.entries(EDITABLE)) {
+      if (field in body) { sets.push(`${col} = $${i++}`); vals.push(body[field] === '' ? null : body[field]); }
+    }
+    if (!sets.length) { reply.code(400); return { error: 'no editable fields supplied' }; }
+    vals.push(id);
+    const sql =
+      `UPDATE lead_service.leads SET ${sets.join(', ')}, updated_at = now() WHERE id = $${i} RETURNING *`;
+    const { rows } = await query(sql, vals);
+    if (!rows.length) { reply.code(404); return { error: 'lead not found' }; }
+    return rows[0];
+  });
 
   // GET /pipeline
   fastify.get('/pipeline', async (request, reply) => {

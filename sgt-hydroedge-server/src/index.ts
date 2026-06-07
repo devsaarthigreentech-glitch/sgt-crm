@@ -20,8 +20,11 @@ const app = Fastify({
 async function start() {
   // Plugins
   await app.register(helmet)
+  const origins = (process.env.CORS_ORIGIN ?? 'http://localhost:5173')
+    .split(',').map((s) => s.trim()).filter(Boolean)
+
   await app.register(cors, {
-    origin: process.env.CORS_ORIGIN ?? 'http://localhost:5173',
+    origin: origins,
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
   })
 
