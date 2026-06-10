@@ -9,11 +9,11 @@ interface Props {
 }
 
 const STAGES: { id: LeadStage; color: string }[] = [
-  { id: 'New', color: '#6A675F' },
-  { id: 'Allocated', color: '#1E3A6B' },
-  { id: 'Qualifying', color: '#A86A18' },
-  { id: 'Discovery', color: '#0E5550' },
-  { id: 'Proposal', color: '#C45A1E' },
+  { id: 'New',         color: '#6A675F' },
+  { id: 'Allocated',   color: '#1E3A6B' },
+  { id: 'Qualifying',  color: '#A86A18' },
+  { id: 'Discovery',   color: '#0E5550' },
+  { id: 'Proposal',    color: '#C45A1E' },
   { id: 'Negotiation', color: '#5B3B6F' },
 ]
 
@@ -21,17 +21,19 @@ export default function KanbanBoard({ leads, onLeadClick }: Props) {
   const isMobile = useIsMobile()
   const [activeStage, setActiveStage] = useState<LeadStage>('New')
 
+  // ── Mobile: stage tabs on top, one scrolling card list below ──
   if (isMobile) {
     const stageLeads = leads.filter(l => l.stage === activeStage)
 
     return (
       <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-        {/* Stage tabs — horizontal scroll */}
+        {/* Stage tabs — horizontal scroll, fixed height */}
         <div style={{
-          flex: 1, minHeight: 0, overflowY: 'auto',
-          padding: '12px 16px 80px',
-          display: 'flex', flexDirection: 'column', gap: 8,
+          display: 'flex', overflowX: 'auto',
+          borderBottom: '1px solid #DDD7C6',
+          backgroundColor: '#F4F0E5',
+          flexShrink: 0,
         }}>
           {STAGES.map(stage => {
             const count = leads.filter(l => l.stage === stage.id).length
@@ -80,9 +82,9 @@ export default function KanbanBoard({ leads, onLeadClick }: Props) {
           })}
         </div>
 
-        {/* Cards list */}
+        {/* Cards list — scrolls */}
         <div style={{
-          flex: 1, overflowY: 'auto',
+          flex: 1, minHeight: 0, overflowY: 'auto',
           padding: '12px 16px 80px',
           display: 'flex', flexDirection: 'column', gap: 8,
         }}>
@@ -97,11 +99,9 @@ export default function KanbanBoard({ leads, onLeadClick }: Props) {
             </div>
           ) : (
             stageLeads.map(lead => (
-              <LeadCard
-                key={lead.id}
-                lead={lead}
-                onClick={() => onLeadClick(lead)}
-              />
+              <div key={lead.id} style={{ flexShrink: 0 }}>
+                <LeadCard lead={lead} onClick={() => onLeadClick(lead)} />
+              </div>
             ))
           )}
         </div>
@@ -109,7 +109,7 @@ export default function KanbanBoard({ leads, onLeadClick }: Props) {
     )
   }
 
-  // Desktop kanban
+  // ── Desktop: columns side by side, each scrolls independently ──
   return (
     <div style={{
       flex: 1, minHeight: 0, overflowX: 'auto', overflowY: 'hidden',
@@ -126,8 +126,9 @@ export default function KanbanBoard({ leads, onLeadClick }: Props) {
             key={stage.id}
             style={{ width: 268, minWidth: 268, display: 'flex', flexDirection: 'column', minHeight: 0 }}
           >
-            <div style={{ padding: '0 4px 8px' }}>
-            <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto', paddingBottom: 20 }}>
+            {/* Column header — fixed */}
+            <div style={{ padding: '0 4px 8px', flexShrink: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 3 }}>
                 <div style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: stage.color }} />
                 <span style={{ fontSize: 11.5, fontWeight: 700, color: '#161614', letterSpacing: '0.01em', textTransform: 'uppercase' }}>
                   {stage.id}
@@ -144,8 +145,10 @@ export default function KanbanBoard({ leads, onLeadClick }: Props) {
                 {stageLeads.length > 0 ? `₹${(total / 1_00_000).toFixed(1)}L` : '—'}
               </div>
             </div>
-            <div style={{ height: 2.5, backgroundColor: stage.color, borderRadius: 2, marginBottom: 10 }} />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto', paddingBottom: 20 }}>
+            <div style={{ height: 2.5, backgroundColor: stage.color, borderRadius: 2, marginBottom: 10, flexShrink: 0 }} />
+
+            {/* Cards — scrolls */}
+            <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto', paddingBottom: 20 }}>
               {stageLeads.length === 0 ? (
                 <div style={{
                   padding: '20px 12px', textAlign: 'center',
@@ -156,7 +159,9 @@ export default function KanbanBoard({ leads, onLeadClick }: Props) {
                 </div>
               ) : (
                 stageLeads.map(lead => (
-                  <LeadCard key={lead.id} lead={lead} onClick={() => onLeadClick(lead)} />
+                  <div key={lead.id} style={{ flexShrink: 0 }}>
+                    <LeadCard lead={lead} onClick={() => onLeadClick(lead)} />
+                  </div>
                 ))
               )}
             </div>
