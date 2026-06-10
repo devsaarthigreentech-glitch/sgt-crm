@@ -176,7 +176,7 @@
 // }
 import { useIsMobile } from '../hooks/useIsMobile'
 
-import { LayoutGrid, Inbox, Plus, BarChart3, Handshake, LayoutDashboard, User, LogOut } from 'lucide-react'
+import { LayoutGrid, Inbox, Plus, BarChart3, Handshake, LayoutDashboard, User } from 'lucide-react'
 
 type Page = 'home' | 'my-dashboard' | 'pipeline' | 'triage' | 'capture'
 
@@ -198,7 +198,7 @@ const NAV_ITEMS = [
   { id: 'capture'      as Page, label: 'Capture lead',  short: 'Capture',  icon: Plus          },
 ]
 
-export default function Sidebar({ current, navigate, onPartnerPortal, userName }: Props) {
+export default function Sidebar({ current, navigate, onPartnerPortal }: Props) {
   const isMobile = useIsMobile()
 
   // Mobile — bottom nav bar
