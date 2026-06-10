@@ -24,7 +24,7 @@ export default function App() {
 
   const navigate = (p: Page) => { setPage(p); setSelectedLead(null) }
 
-  const isMobile = useIsMobile();
+  const isMobile = useIsMobile()
 
   const [user, setUser] = useState<User | null>(null)
   const [authChecked, setAuthChecked] = useState(false)
@@ -72,9 +72,11 @@ export default function App() {
         current={page}
         navigate={navigate}
         role={user.role}
-        onLogout={() => { clearToken(); setUser(null) } }
-        onPartnerPortal={() => setPartnerMode(true)} userName={''}      />
-      <main style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', paddingTop: 20 }}>
+        userName={user.name}
+        onLogout={() => { clearToken(); setUser(null) }}
+        onPartnerPortal={() => setPartnerMode(true)}
+      />
+      <main style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
         {page === 'home' || page === 'my-dashboard' ? (
           <HomeDashboard
@@ -84,47 +86,6 @@ export default function App() {
             navigate={setPage}
           />
         ) : page === 'capture' ? (
-          // <CaptureForm
-          //   onCancel={() => navigate('pipeline')}
-          //   onSubmit={async (data) => {
-          //     try {
-          //       await api.createLead({
-          //         account: {
-          //           name:     data.companyName,
-          //           location: data.location,
-          //         },
-          //         primaryContact: data.contactName ? {
-          //           name:  data.contactName,
-          //           role:  data.contactRole,
-          //           email: data.contactEmail,
-          //           phone: data.contactPhone,
-          //         } : undefined,
-          //         leadType:        data.leadType,
-          //         vertical:        data.vertical || undefined,
-          //         commercialModel: data.model    || undefined,
-          //         origin:          data.origin   || undefined,
-          //         captureSource:   data.captureSource || 'INTERNAL',
-          //         estimatedValue:  data.estimatedValue ? parseInt(data.estimatedValue) : undefined,
-          //         estimatedCloseDate: data.estimatedCloseDate || undefined,
-          //         initialNotes:    data.notes    || undefined,
-          //         ownerName:       'Rohan Mehta',
-          //         referredBy:      data.referredBy || undefined,
-          //         metadata: {
-          //           partnerArchetype: data.partnerArchetype,
-          //           kolType:          data.kolType,
-          //           distributorType:  data.distributorType,
-          //           strategicType:    data.strategicType,
-          //           networkSize:      data.networkSize,
-          //           territory:        data.territory,
-          //         },
-          //       })
-          //       await loadLeads()
-          //       navigate('pipeline')
-          //     } catch (err) {
-          //       alert(err instanceof Error ? err.message : 'Failed to create lead')
-          //     }
-          //   }}
-          // />
           <CaptureForm
             onCancel={() => navigate('pipeline')}
             onSubmit={async (data) => {
@@ -161,39 +122,6 @@ export default function App() {
               setSelectedLead(null)
             }}
           />
-          // <LeadDetail
-          //   lead={{
-          //     // —— map your nested Lead -> flat shape. Confirm names against src/types.ts ——
-          //     id: (selectedLead as any).code ?? selectedLead.id ?? '',
-          //     company: (selectedLead as any).account?.name ?? '',
-          //     contactName: (selectedLead as any).primaryContact?.name ?? '',
-          //     stage: (selectedLead as any).stage ?? 'New',
-          //     leadType: (selectedLead as any).leadType ?? '',
-          //     owner: (selectedLead as any).ownerName ?? null,
-          //     value: (selectedLead as any).estimatedValue ?? 0,
-          //     estClose: (selectedLead as any).estimatedCloseDate ?? null,
-          //     daysInStage: (selectedLead as any).daysInStage ?? 0,
-          //     email: (selectedLead as any).primaryContact?.email ?? '',
-          //     phone: (selectedLead as any).primaryContact?.phone ?? '',
-          //     activities: ((selectedLead as any).activities ?? []).map((a: any) => ({
-          //       id: a.id, author: a.author ?? a.ownerName ?? '',
-          //       note: a.note ?? a.text ?? '', date: a.date ?? a.createdAt ?? '',
-          //       channel: a.channel, sentiment: a.sentiment,
-          //     })),
-          //   }}
-          //   stages={['New', 'Allocated', 'Qualifying', 'Discovery', 'Proposal', 'Negotiation']}
-          //   onBack={() => setSelectedLead(null)}
-          //   onAdvance={() => {/* TODO: call your stage-advance endpoint, then loadLeads() */ }}
-          //   onLogActivity={() => {/* TODO: open your existing log-activity UI */ }}
-          //   onSave={async (patch) => {
-          //     await fetch(`${import.meta.env.VITE_API_URL}/leads/${selectedLead.id}`, {
-          //       method: 'PATCH',
-          //       headers: { 'Content-Type': 'application/json' },
-          //       body: JSON.stringify(patch),
-          //     })
-          //     await loadLeads()
-          //   }}
-          // />
         ) : (
           <>
             <header style={{
@@ -210,7 +138,7 @@ export default function App() {
               </p>
             </header>
 
-            <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', paddingTop: 20 }}>
+            <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', paddingTop: 20 }}>
               {loading ? (
                 <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <div style={{ fontSize: 13, color: '#6A675F' }}>Loading leads…</div>
