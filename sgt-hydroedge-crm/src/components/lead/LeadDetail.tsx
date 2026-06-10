@@ -190,23 +190,9 @@ export default function LeadDetail({ lead, onBack, onDeleted }: Props) {
               </button>
             </div>
           )}
-          <div style={{ marginTop: 28, paddingTop: 16, borderTop: '1px solid #E8E3D2' }}>
-          <button
-            onClick={() => setShowDelete(true)}
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: 6,
-              background: 'none', border: 'none', cursor: 'pointer',
-              fontSize: 12.5, fontWeight: 600, color: '#A02B1F', padding: 0,
-            }}
-          >
-            <Trash2 size={13} strokeWidth={2} />
-            Delete lead
-          </button>
-        </div>
         </div>
       </div>
 
-      {/* Body */}
       {/* Body */}
       <div style={{
         flex: 1, overflowY: 'auto',

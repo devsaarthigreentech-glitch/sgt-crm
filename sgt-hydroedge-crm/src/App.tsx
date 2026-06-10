@@ -74,7 +74,7 @@ export default function App() {
         role={user.role}
         onLogout={() => { clearToken(); setUser(null) } }
         onPartnerPortal={() => setPartnerMode(true)} userName={''}      />
-      <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <main style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', paddingTop: 20 }}>
 
         {page === 'home' || page === 'my-dashboard' ? (
           <HomeDashboard

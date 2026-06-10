@@ -9,11 +9,11 @@ interface Props {
 }
 
 const STAGES: { id: LeadStage; color: string }[] = [
-  { id: 'New',         color: '#6A675F' },
-  { id: 'Allocated',   color: '#1E3A6B' },
-  { id: 'Qualifying',  color: '#A86A18' },
-  { id: 'Discovery',   color: '#0E5550' },
-  { id: 'Proposal',    color: '#C45A1E' },
+  { id: 'New', color: '#6A675F' },
+  { id: 'Allocated', color: '#1E3A6B' },
+  { id: 'Qualifying', color: '#A86A18' },
+  { id: 'Discovery', color: '#0E5550' },
+  { id: 'Proposal', color: '#C45A1E' },
   { id: 'Negotiation', color: '#5B3B6F' },
 ]
 
@@ -25,14 +25,13 @@ export default function KanbanBoard({ leads, onLeadClick }: Props) {
     const stageLeads = leads.filter(l => l.stage === activeStage)
 
     return (
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
         {/* Stage tabs — horizontal scroll */}
         <div style={{
-          display: 'flex', overflowX: 'auto',
-          borderBottom: '1px solid #DDD7C6',
-          backgroundColor: '#F4F0E5',
-          flexShrink: 0,
+          flex: 1, minHeight: 0, overflowY: 'auto',
+          padding: '12px 16px 80px',
+          display: 'flex', flexDirection: 'column', gap: 8,
         }}>
           {STAGES.map(stage => {
             const count = leads.filter(l => l.stage === stage.id).length
@@ -113,10 +112,10 @@ export default function KanbanBoard({ leads, onLeadClick }: Props) {
   // Desktop kanban
   return (
     <div style={{
-      flex: 1, overflowX: 'auto', overflowY: 'hidden',
+      flex: 1, minHeight: 0, overflowX: 'auto', overflowY: 'hidden',
       display: 'flex', gap: 12,
       padding: '0 24px 24px',
-      alignItems: 'flex-start',
+      alignItems: 'stretch',
     }}>
       {STAGES.map(stage => {
         const stageLeads = leads.filter(l => l.stage === stage.id)
@@ -125,10 +124,10 @@ export default function KanbanBoard({ leads, onLeadClick }: Props) {
         return (
           <div
             key={stage.id}
-            style={{ width: 268, minWidth: 268, display: 'flex', flexDirection: 'column' }}
+            style={{ width: 268, minWidth: 268, display: 'flex', flexDirection: 'column', minHeight: 0 }}
           >
             <div style={{ padding: '0 4px 8px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 3 }}>
+            <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto', paddingBottom: 20 }}>
                 <div style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: stage.color }} />
                 <span style={{ fontSize: 11.5, fontWeight: 700, color: '#161614', letterSpacing: '0.01em', textTransform: 'uppercase' }}>
                   {stage.id}
