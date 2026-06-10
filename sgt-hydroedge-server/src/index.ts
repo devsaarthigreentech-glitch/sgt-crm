@@ -5,6 +5,8 @@ import dotenv from 'dotenv'
 import { leadsRoutes } from './routes/leads'
 import partnerRoutes from './routes/partner.routes'
 import erpRoutes from './routes/erp';
+import jwt from '@fastify/jwt'
+import authRoutes from './routes/auth.js'
 
 dotenv.config()
 
@@ -39,6 +41,7 @@ async function start() {
   await app.register(leadsRoutes, { prefix: '/api/v1' })
   await app.register(partnerRoutes, { prefix: '/api/v1/partners/me' })
   app.register(erpRoutes, { prefix: '/api/v1' });
+  app.register(jwt, { secret: process.env.JWT_SECRET! })
 
   // Global error handler
   app.setErrorHandler((error: any, request, reply) => {
