@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { ArrowLeft, MapPin, Lock, Shield, Mail, Plus, Phone } from 'lucide-react'
+import { ArrowLeft, MapPin, Lock, Shield, Mail, Plus, Phone, Trash2 } from 'lucide-react'
 import type { Lead, Activity } from '../../types'
 import { formatINR, getVerticalColor } from '../../lib/utils'
 import { api } from '../../lib/api'
@@ -9,14 +9,29 @@ import { useIsMobile } from '../../hooks/useIsMobile'
 interface Props {
   lead: Lead
   onBack: () => void
+  onDeleted?: () => void
 }
 
-export default function LeadDetail({ lead, onBack }: Props) {
+export default function LeadDetail({ lead, onBack, onDeleted }: Props) {
   const isMobile = useIsMobile()
   const accentColor = getVerticalColor(lead.vertical ?? '')
   const [showDrawer, setShowDrawer] = useState(false)
   const [localActivities, setLocalActivities] = useState<Activity[]>([])
   const [apiActivities, setApiActivities] = useState<Activity[]>([])
+  const [showDelete, setShowDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
+  const handleDelete = async () => {
+    setDeleting(true)
+    try {
+      await api.deleteLead(lead.id, { actorName: 'Rohan Mehta' })
+      onDeleted?.()
+    } catch (err) {
+      console.error('Failed to delete lead', err)
+      alert('Could not delete this lead. Please try again.')
+      setDeleting(false)
+    }
+  }
 
   useEffect(() => {
     api.getActivities(lead.id).then(res => {
@@ -175,9 +190,23 @@ export default function LeadDetail({ lead, onBack }: Props) {
               </button>
             </div>
           )}
+          <div style={{ marginTop: 28, paddingTop: 16, borderTop: '1px solid #E8E3D2' }}>
+          <button
+            onClick={() => setShowDelete(true)}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              background: 'none', border: 'none', cursor: 'pointer',
+              fontSize: 12.5, fontWeight: 600, color: '#A02B1F', padding: 0,
+            }}
+          >
+            <Trash2 size={13} strokeWidth={2} />
+            Delete lead
+          </button>
+        </div>
         </div>
       </div>
 
+      {/* Body */}
       {/* Body */}
       <div style={{
         flex: 1, overflowY: 'auto',
@@ -190,14 +219,26 @@ export default function LeadDetail({ lead, onBack }: Props) {
             <ActivitySection activities={allActivities} />
           </div>
         ) : (
-          <div style={{
-            display: 'grid', gridTemplateColumns: '1fr 300px',
-            gap: 32, maxWidth: 1000,
-          }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 32, maxWidth: 1000 }}>
             <ActivitySection activities={allActivities} />
             <FactsRail lead={lead} />
           </div>
         )}
+
+        {/* Danger zone */}
+        <div style={{ marginTop: 28, paddingTop: 16, borderTop: '1px solid #E8E3D2' }}>
+          <button
+            onClick={() => setShowDelete(true)}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              background: 'none', border: 'none', cursor: 'pointer',
+              fontSize: 12.5, fontWeight: 600, color: '#A02B1F', padding: 0,
+            }}
+          >
+            <Trash2 size={13} strokeWidth={2} />
+            Delete lead
+          </button>
+        </div>
       </div>
 
       {/* Mobile bottom action bar — sits above bottom nav */}
@@ -256,6 +297,62 @@ export default function LeadDetail({ lead, onBack }: Props) {
             }
           }}
         />
+      )}
+      {showDelete && (
+        <div
+          onClick={() => !deleting && setShowDelete(false)}
+          style={{
+            position: 'fixed', inset: 0, backgroundColor: 'rgba(22,22,20,0.45)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 60, padding: 20,
+          }}
+        >
+          <div onClick={e => e.stopPropagation()} style={{
+            backgroundColor: '#fff', borderRadius: 12, padding: 22,
+            maxWidth: 380, width: '100%', boxShadow: '0 8px 30px rgba(0,0,0,0.18)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+              <div style={{
+                width: 34, height: 34, borderRadius: '50%', backgroundColor: '#F0D5D0',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              }}>
+                <Trash2 size={16} strokeWidth={2} style={{ color: '#A02B1F' }} />
+              </div>
+              <h3 style={{ fontSize: 15.5, fontWeight: 600, color: '#161614', margin: 0 }}>
+                Delete this lead?
+              </h3>
+            </div>
+            <p style={{ fontSize: 13, color: '#6A675F', lineHeight: 1.5, margin: '0 0 18px' }}>
+              <strong style={{ color: '#363633' }}>{lead.company}</strong> will be removed from
+              your pipeline. It's recoverable in the database but won't appear anywhere in the app.
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowDelete(false)}
+                disabled={deleting}
+                style={{
+                  padding: '8px 14px', backgroundColor: '#fff', color: '#161614',
+                  border: '1px solid #DDD7C6', borderRadius: 7,
+                  fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                style={{
+                  padding: '8px 14px', backgroundColor: '#A02B1F', color: '#fff',
+                  border: 'none', borderRadius: 7,
+                  fontSize: 13, fontWeight: 600, cursor: deleting ? 'default' : 'pointer',
+                  opacity: deleting ? 0.7 : 1,
+                }}
+              >
+                {deleting ? 'Deleting…' : 'Delete lead'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

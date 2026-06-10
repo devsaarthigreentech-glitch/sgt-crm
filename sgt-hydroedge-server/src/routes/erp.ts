@@ -1,6 +1,6 @@
 // src/routes/erp.ts
 import { FastifyInstance } from 'fastify';
-import { getBuildable, getFiscalYears, getPnl } from '../services/erpnext.js';
+import { getBuildable, getFiscalYears, getIncomeBreakdown, getPnl, getUpcomingOrders } from '../services/erpnext.js';
 
 export default async function erpRoutes(app: FastifyInstance) {
   app.get('/erp/buildable', async (_req, reply) => {
@@ -27,5 +27,17 @@ export default async function erpRoutes(app: FastifyInstance) {
     };
     const r = await fetch(`${process.env.ERPNEXT_URL}/api/method/frappe.auth.get_logged_user`, { headers });
     return { status: r.status, sentPrefix: headers.Authorization.slice(0, 14), body: await r.text() };
+  });
+
+  app.get('/erp/pnl/income-breakdown', async (req, reply) => {
+    const { from, to } = req.query as { from?: string; to?: string };
+    try { return await getIncomeBreakdown(from, to); }
+    catch (e: any) { reply.code(502); return { error: e.message }; }
+  });
+
+  app.get('/erp/orders/upcoming', async (req, reply) => {
+    const { limit } = req.query as { limit?: string };
+    try { return await getUpcomingOrders(limit ? Number(limit) : undefined); }
+    catch (e: any) { reply.code(502); return { error: e.message }; }
   });
 }

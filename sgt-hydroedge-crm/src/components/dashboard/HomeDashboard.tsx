@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   TrendingUp, AlertTriangle, Clock, Users,
   CheckCircle, Package, ArrowRight, Plus,
-  LayoutGrid, Activity, ChevronRight
+  LayoutGrid, Activity, ChevronRight, Truck
 } from 'lucide-react'
 import type { Lead } from '../../types'
 import { formatINR, getVerticalColor } from '../../lib/utils'
@@ -11,6 +11,7 @@ import ErpInsights from './ErpInsights'
 
 interface Props {
   leads: Lead[]
+  view: 'director' | 'sales'
   onLeadClick: (lead: Lead) => void
   navigate: (page: any) => void
 }
@@ -39,13 +40,92 @@ function formatDate(): string {
   })
 }
 
-export default function HomeDashboard({ leads, onLeadClick, navigate }: Props) {
+// export default function HomeDashboard({ leads, onLeadClick, navigate }: Props) {
+//   const isMobile = useIsMobile()
+//   const [tab, setTab] = useState<'director' | 'sales'>('director')
+
+//   const activeLeads = leads.filter(l =>
+//     !['Closed Won', 'Closed Lost'].includes(l.stage)
+//   )
+
+//   return (
+//     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+//       {/* Header */}
+//       <header style={{
+//         padding: isMobile ? '14px 16px 12px' : '20px 28px 16px',
+//         borderBottom: '1px solid #DDD7C6',
+//         backgroundColor: '#F4F0E5', flexShrink: 0,
+//       }}>
+//         <div style={{ marginBottom: 14 }}>
+//           <h1 style={{
+//             fontSize: isMobile ? 19 : 23, fontWeight: 600,
+//             color: '#161614', letterSpacing: '-0.03em', margin: 0,
+//           }}>
+//             {getGreeting()},{' '}
+//             <span style={{ color: '#0E5550' }}>
+//               {tab === 'director' ? DIRECTOR_NAME : SALES_REP_NAME.split(' ')[0]}
+//             </span>
+//           </h1>
+//           <p style={{ fontSize: 12.5, color: '#6A675F', marginTop: 4 }}>
+//             {formatDate()} · Here's where things stand
+//           </p>
+//         </div>
+
+//         {/* Tab switcher */}
+//         <div style={{
+//           display: 'inline-flex', backgroundColor: '#EDE7D8',
+//           borderRadius: 8, padding: 3, gap: 2,
+//         }}>
+//           {([
+//             { id: 'director', label: 'Director view' },
+//             { id: 'sales',    label: 'My dashboard'  },
+//           ] as const).map(t => (
+//             <button
+//               key={t.id}
+//               onClick={() => setTab(t.id)}
+//               style={{
+//                 padding: '6px 14px', borderRadius: 6, border: 'none',
+//                 fontFamily: 'inherit', fontSize: 12.5, fontWeight: tab === t.id ? 700 : 500,
+//                 backgroundColor: tab === t.id ? '#fff' : 'transparent',
+//                 color: tab === t.id ? '#161614' : '#6A675F',
+//                 cursor: 'pointer',
+//                 boxShadow: tab === t.id ? '0 1px 3px rgba(22,22,20,0.08)' : 'none',
+//               }}
+//             >
+//               {t.label}
+//             </button>
+//           ))}
+//         </div>
+//       </header>
+
+//       {/* Content */}
+//       <div style={{
+//         flex: 1, overflowY: 'auto',
+//         padding: isMobile ? '16px 16px 80px' : '24px 28px 40px',
+//         backgroundColor: '#F4F0E5',
+//       }}>
+//         {tab === 'director'
+//           ? <DirectorDashboard leads={leads} activeLeads={activeLeads} isMobile={isMobile} onLeadClick={onLeadClick} navigate={navigate} />
+//           : <SalesRepDashboard leads={leads} activeLeads={activeLeads} isMobile={isMobile} onLeadClick={onLeadClick} navigate={navigate} />
+//         }
+//       </div>
+//     </div>
+//   )
+// }
+
+// ─────────────────────────────────────────────
+// Director Dashboard
+// ─────────────────────────────────────────────
+
+export default function HomeDashboard({ leads, view, onLeadClick, navigate }: Props) {
   const isMobile = useIsMobile()
-  const [tab, setTab] = useState<'director' | 'sales'>('director')
 
   const activeLeads = leads.filter(l =>
     !['Closed Won', 'Closed Lost'].includes(l.stage)
   )
+
+  const name = view === 'director' ? DIRECTOR_NAME : SALES_REP_NAME.split(' ')[0]
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -56,46 +136,16 @@ export default function HomeDashboard({ leads, onLeadClick, navigate }: Props) {
         borderBottom: '1px solid #DDD7C6',
         backgroundColor: '#F4F0E5', flexShrink: 0,
       }}>
-        <div style={{ marginBottom: 14 }}>
-          <h1 style={{
-            fontSize: isMobile ? 19 : 23, fontWeight: 600,
-            color: '#161614', letterSpacing: '-0.03em', margin: 0,
-          }}>
-            {getGreeting()},{' '}
-            <span style={{ color: '#0E5550' }}>
-              {tab === 'director' ? DIRECTOR_NAME : SALES_REP_NAME.split(' ')[0]}
-            </span>
-          </h1>
-          <p style={{ fontSize: 12.5, color: '#6A675F', marginTop: 4 }}>
-            {formatDate()} · Here's where things stand
-          </p>
-        </div>
-
-        {/* Tab switcher */}
-        <div style={{
-          display: 'inline-flex', backgroundColor: '#EDE7D8',
-          borderRadius: 8, padding: 3, gap: 2,
+        <h1 style={{
+          fontSize: isMobile ? 19 : 23, fontWeight: 600,
+          color: '#161614', letterSpacing: '-0.03em', margin: 0,
         }}>
-          {([
-            { id: 'director', label: 'Director view' },
-            { id: 'sales',    label: 'My dashboard'  },
-          ] as const).map(t => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              style={{
-                padding: '6px 14px', borderRadius: 6, border: 'none',
-                fontFamily: 'inherit', fontSize: 12.5, fontWeight: tab === t.id ? 700 : 500,
-                backgroundColor: tab === t.id ? '#fff' : 'transparent',
-                color: tab === t.id ? '#161614' : '#6A675F',
-                cursor: 'pointer',
-                boxShadow: tab === t.id ? '0 1px 3px rgba(22,22,20,0.08)' : 'none',
-              }}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+          {getGreeting()},{' '}
+          <span style={{ color: '#0E5550' }}>{name}</span>
+        </h1>
+        <p style={{ fontSize: 12.5, color: '#6A675F', marginTop: 4 }}>
+          {formatDate()} · {view === 'director' ? "Here's where things stand" : 'Your leads and tasks'}
+        </p>
       </header>
 
       {/* Content */}
@@ -104,7 +154,7 @@ export default function HomeDashboard({ leads, onLeadClick, navigate }: Props) {
         padding: isMobile ? '16px 16px 80px' : '24px 28px 40px',
         backgroundColor: '#F4F0E5',
       }}>
-        {tab === 'director'
+        {view === 'director'
           ? <DirectorDashboard leads={leads} activeLeads={activeLeads} isMobile={isMobile} onLeadClick={onLeadClick} navigate={navigate} />
           : <SalesRepDashboard leads={leads} activeLeads={activeLeads} isMobile={isMobile} onLeadClick={onLeadClick} navigate={navigate} />
         }
@@ -112,10 +162,6 @@ export default function HomeDashboard({ leads, onLeadClick, navigate }: Props) {
     </div>
   )
 }
-
-// ─────────────────────────────────────────────
-// Director Dashboard
-// ─────────────────────────────────────────────
 
 function DirectorDashboard({ leads, activeLeads, isMobile, onLeadClick, navigate }: {
   leads: Lead[], activeLeads: Lead[], isMobile: boolean,
@@ -180,6 +226,8 @@ function DirectorDashboard({ leads, activeLeads, isMobile, onLeadClick, navigate
       </div>
 
       <ErpInsights />
+
+      <UpcomingOrders />
 
       {/* Alerts */}
       {alerts.length > 0 && (
@@ -570,9 +618,132 @@ function SalesRepDashboard({ leads, activeLeads, isMobile, onLeadClick, navigate
         </div>
       </Section>
 
+      
+
     </div>
   )
 }
+
+// ─────────────────────────────────────────────
+// Upcoming orders (ERPNext Sales Orders)
+// ─────────────────────────────────────────────
+
+const ORDERS_API = import.meta.env.VITE_API_URL ?? '/api/v1'
+
+type UpcomingOrder = {
+  id: string; customer: string; placedOn: string | null
+  deliveryDate: string | null; status: string; total: number; delivered: number
+}
+type OrdersData = { lastOrder: UpcomingOrder | null; upcoming: UpcomingOrder[] }
+
+function fmtOrderDate(d: string | null): string {
+  if (!d) return '—'
+  const dt = new Date(d)
+  if (isNaN(dt.getTime())) return d
+  return dt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
+function daysFromToday(d: string | null): number | null {
+  if (!d) return null
+  const dt = new Date(d)
+  if (isNaN(dt.getTime())) return null
+  return Math.round((dt.setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / 86400000)
+}
+
+function UpcomingOrders() {
+  const [data, setData] = useState<OrdersData | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let ignore = false
+    fetch(`${ORDERS_API}/erp/orders/upcoming`)
+      .then(r => r.json())
+      .then(d => { if (ignore) return; if (d.error) setErr(d.error); else setData(d); setLoading(false) })
+      .catch(e => { if (!ignore) { setErr(String(e)); setLoading(false) } })
+    return () => { ignore = true }
+  }, [])
+
+  return (
+    <Section title="Upcoming orders">
+      {loading ? (
+        <div style={ordersEmptyBox}>Loading orders…</div>
+      ) : err ? (
+        <div style={{ ...ordersEmptyBox, color: '#A02B1F' }}>ERPNext: {err}</div>
+      ) : !data || (!data.lastOrder && data.upcoming.length === 0) ? (
+        <div style={ordersEmptyBox}>No orders yet — syncs from ERPNext once Sales Orders are created.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {data.lastOrder && (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 12, padding: '11px 14px',
+              backgroundColor: '#fff', borderRadius: 7, border: '1px solid #E8E3D2',
+              borderLeft: '3px solid #1E3A6B',
+            }}>
+              <Clock size={15} strokeWidth={2} style={{ color: '#1E3A6B', flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 10.5, fontWeight: 700, color: '#6A675F', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                  Last order placed
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#161614', marginTop: 2 }}>
+                  {data.lastOrder.customer}
+                </div>
+                <div style={{ fontSize: 11.5, color: '#6A675F', marginTop: 1 }}>
+                  {fmtOrderDate(data.lastOrder.placedOn)} · {data.lastOrder.id} · {data.lastOrder.status}
+                </div>
+              </div>
+              <div style={{ fontFamily: 'monospace', fontSize: 13, fontWeight: 600, color: '#161614', flexShrink: 0 }}>
+                {formatINR(data.lastOrder.total)}
+              </div>
+            </div>
+          )}
+
+          {data.upcoming.length > 0 && (
+            <>
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: '#6A675F', letterSpacing: '0.06em', textTransform: 'uppercase', marginTop: 2 }}>
+                Expected deliveries
+              </div>
+              {data.upcoming.map(o => {
+                const dleft = daysFromToday(o.deliveryDate)
+                return (
+                  <div key={o.id} style={{
+                    display: 'flex', alignItems: 'center', gap: 12, padding: '11px 14px',
+                    backgroundColor: '#fff', borderRadius: 7, border: '1px solid #E8E3D2',
+                    borderLeft: '3px solid #0E5550',
+                  }}>
+                    <Truck size={15} strokeWidth={2} style={{ color: '#0E5550', flexShrink: 0 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: '#161614' }}>{o.customer}</div>
+                      <div style={{ fontSize: 11.5, color: '#6A675F', marginTop: 1 }}>
+                        {o.id} · {o.status}{o.delivered > 0 ? ` · ${Math.round(o.delivered)}% delivered` : ''}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 600, color: '#161614' }}>{fmtOrderDate(o.deliveryDate)}</div>
+                      {dleft !== null && (
+                        <div style={{
+                          fontSize: 10.5, fontWeight: 600, marginTop: 2,
+                          color: dleft <= 3 ? '#A86A18' : '#3B9D6E',
+                        }}>
+                          {dleft === 0 ? 'Due today' : dleft === 1 ? 'In 1 day' : `In ${dleft} days`}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </>
+          )}
+        </div>
+      )}
+    </Section>
+  )
+}
+
+const ordersEmptyBox = {
+  padding: '20px', textAlign: 'center', fontSize: 12.5, color: '#A39F94',
+  backgroundColor: '#fff', borderRadius: 8, border: '1px solid #E8E3D2',
+} as const
 
 // ─────────────────────────────────────────────
 // Shared atoms

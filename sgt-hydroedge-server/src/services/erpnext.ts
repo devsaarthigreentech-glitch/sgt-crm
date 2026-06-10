@@ -195,3 +195,88 @@ export async function getPnl(from?: string, to?: string) {
       return { from: from ?? null, to: to ?? null, income, expense, netProfit, margin: income ? netProfit / income : 0 };
     });
   }
+
+  // ---- income broken down by account (mirrors getPnl's income math exactly) ----
+export async function getIncomeBreakdown(from?: string, to?: string) {
+    return cached(`income-breakdown:${from ?? 'all'}:${to ?? 'all'}`, 10 * 60_000, async () => {
+      const accounts = await getList('Account', {
+        filters: [['root_type', '=', 'Income']],
+        fields: ['name', 'account_name'],
+      });
+      const isIncome = new Set<string>();
+      const labelBy: Record<string, string> = {};
+      for (const a of accounts) { isIncome.add(a.name); labelBy[a.name] = a.account_name || a.name; }
+  
+      const filters: unknown[] = [['is_cancelled', '=', 0]];
+      if (from && to) filters.push(['posting_date', 'between', [from, to]]);
+  
+      const gl = await getList('GL Entry', { filters, fields: ['account', 'debit', 'credit'] });
+  
+      const byAccount: Record<string, number> = {};
+      let total = 0;
+      for (const e of gl) {
+        if (!isIncome.has(e.account)) continue;
+        const amt = Number(e.credit || 0) - Number(e.debit || 0);
+        byAccount[e.account] = (byAccount[e.account] || 0) + amt;
+        total += amt;
+      }
+  
+      const rows = Object.entries(byAccount)
+        .filter(([, amt]) => Math.abs(amt) > 0.005)
+        .map(([account, amount]) => ({
+          account,
+          label: labelBy[account] ?? account,
+          amount,
+          pct: total ? amount / total : 0,
+        }))
+        .sort((a, b) => b.amount - a.amount);
+  
+      return { from: from ?? null, to: to ?? null, total, accounts: rows };
+    });
+  }
+  
+  // ---- upcoming orders: most recent placed + next expected deliveries ----
+  export async function getUpcomingOrders(limit = 5) {
+    return cached(`upcoming-orders:${limit}`, 5 * 60_000, async () => {
+      const today = new Date().toISOString().slice(0, 10);
+      const SO = `/api/resource/${encodeURIComponent('Sales Order')}`;
+  
+      // submitted, not closed, not fully delivered, delivery date today or later
+      const upcoming = await frappeGet(SO, {
+        filters: [
+          ['docstatus', '=', 1],
+          ['status', '!=', 'Closed'],
+          ['per_delivered', '<', 100],
+          ['delivery_date', '>=', today],
+        ],
+        fields: ['name', 'customer', 'customer_name', 'transaction_date',
+                 'delivery_date', 'status', 'grand_total', 'per_delivered'],
+        order_by: 'delivery_date asc',
+        limit_page_length: limit,
+      });
+  
+      // most recently placed submitted order
+      const recent = await frappeGet(SO, {
+        filters: [['docstatus', '=', 1]],
+        fields: ['name', 'customer', 'customer_name', 'transaction_date',
+                 'delivery_date', 'status', 'grand_total'],
+        order_by: 'transaction_date desc',
+        limit_page_length: 1,
+      });
+  
+      const norm = (o: any) => ({
+        id: o.name,
+        customer: o.customer_name || o.customer,
+        placedOn: o.transaction_date,
+        deliveryDate: o.delivery_date ?? null,
+        status: o.status,
+        total: Number(o.grand_total || 0),
+        delivered: Number(o.per_delivered || 0),
+      });
+  
+      return {
+        lastOrder: recent?.length ? norm(recent[0]) : null,
+        upcoming: (upcoming ?? []).map(norm),
+      };
+    });
+  }

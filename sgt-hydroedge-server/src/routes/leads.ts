@@ -533,6 +533,42 @@ export async function leadsRoutes(fastify: FastifyInstance) {
     return rows[0];
   });
 
+  // DELETE /leads/:id  (soft delete)
+  fastify.delete<{ Params: { id: string } }>('/leads/:id', async (request, reply) => {
+    const { id } = request.params
+    const body = (request.body ?? {}) as { reason?: string; actorName?: string }
+
+    const lead = await query(
+      `SELECT id, stage FROM lead_service.leads WHERE id = $1 AND deleted_at IS NULL`,
+      [id]
+    )
+    if (lead.rows.length === 0) {
+      return reply.status(404).send({ error: 'Lead not found' })
+    }
+
+    await query(
+      `UPDATE lead_service.leads
+     SET deleted_at = NOW(), updated_at = NOW(), version = version + 1
+     WHERE id = $1`,
+      [id]
+    )
+
+    await query(
+      `INSERT INTO lead_service.lead_audit_log
+       (lead_id, actor_name, action, from_state, reason)
+     VALUES ($1, $2, $3, $4, $5)`,
+      [
+        id,
+        body.actorName ?? 'System',
+        'lead_deleted',
+        JSON.stringify({ stage: lead.rows[0].stage }),
+        body.reason ?? null,
+      ]
+    )
+
+    return reply.send({ data: { id, deleted: true } })
+  })
+
   // GET /pipeline
   fastify.get('/pipeline', async (request, reply) => {
     const result = await query(`

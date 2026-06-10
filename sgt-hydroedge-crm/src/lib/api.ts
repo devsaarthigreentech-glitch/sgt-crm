@@ -20,15 +20,15 @@ async function request<T>(
   return res.json()
 }
 export const stageApi = {
-  advance:   (id: string) => request<{ data: any }>(`/leads/${id}/advance`, { method: 'POST' }),
-  qualify:   (id: string) => request<{ data: any }>(`/leads/${id}/qualify`, { method: 'POST' }),
-  handoff:   (id: string, target: 'poc' | 'quote') =>
+  advance: (id: string) => request<{ data: any }>(`/leads/${id}/advance`, { method: 'POST' }),
+  qualify: (id: string) => request<{ data: any }>(`/leads/${id}/qualify`, { method: 'POST' }),
+  handoff: (id: string, target: 'poc' | 'quote') =>
     request<{ data: any }>(`/leads/${id}/handoff`, { method: 'POST', body: JSON.stringify({ target }) }),
-  closeWon:  (id: string, p: { orderRef?: string; override?: boolean; reason?: string }) =>
+  closeWon: (id: string, p: { orderRef?: string; override?: boolean; reason?: string }) =>
     request<{ data: any }>(`/leads/${id}/close`, { method: 'POST', body: JSON.stringify({ outcome: 'won', ...p }) }),
   closeLost: (id: string, p: { lossReason: string; note?: string }) =>
     request<{ data: any }>(`/leads/${id}/close`, { method: 'POST', body: JSON.stringify({ outcome: 'lost', ...p }) }),
-  reopen:    (id: string, reason: string) =>
+  reopen: (id: string, reason: string) =>
     request<{ data: any }>(`/leads/${id}/reopen`, { method: 'POST', body: JSON.stringify({ reason }) }),
   transitions: (id: string) => request<{ data: any[] }>(`/leads/${id}/transitions`),
 }
@@ -48,6 +48,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+
+  deleteLead: (id: string,body?: { reason?: string; actorName?: string }) =>
+    request<{ data: any }>(`/leads/${id}`,
+      {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body ?? {}),
+      }),
+
 
   // Activities
   getActivities: (leadId: string) =>

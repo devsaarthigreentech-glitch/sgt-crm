@@ -44,6 +44,10 @@ function readyFor(p: Product, target: number) {
     const [years, setYears] = useState<{ name: string; from: string; to: string }[]>([]);
     const [period, setPeriod] = useState<string>(''); // FY name or '__all__'
     const [err, setErr] = useState<string | null>(null);
+    const [incomeOpen, setIncomeOpen] = useState(false);
+    const [breakdown, setBreakdown] = useState<{ total: number; accounts: { account: string; label: string; amount: number; pct: number }[] } | null>(null);
+    const [bdLoading, setBdLoading] = useState(false);
+    const [bdErr, setBdErr] = useState<string | null>(null);
   
     // load buildable + fiscal years once
     useEffect(() => {
@@ -78,6 +82,26 @@ function readyFor(p: Product, target: number) {
         .catch(() => {});
       return () => { ignore = true; };
     }, [period, years]);
+
+    const periodRange = () => {
+      if (period && period !== '__all__') {
+        const y = years.find((y) => y.name === period);
+        if (y) return { from: y.from, to: y.to };
+      }
+      return null;
+    };
+
+    const openIncome = () => {
+      setIncomeOpen(true);
+      setBdLoading(true); setBdErr(null); setBreakdown(null);
+      const rng = periodRange();
+      let url = `${API}/erp/pnl/income-breakdown`;
+      if (rng) url += `?from=${rng.from}&to=${rng.to}`;
+      fetch(url).then((r) => r.json())
+        .then((d) => { if (d.error) setBdErr(d.error); else setBreakdown(d); })
+        .catch((e) => setBdErr(String(e)))
+        .finally(() => setBdLoading(false));
+    };
   
     const families = useMemo(() => {
       const m: Record<string, Product[]> = {};
@@ -98,7 +122,9 @@ function readyFor(p: Product, target: number) {
   
         {pnl && (
           <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
-            <Stat label="Income" value={inr(pnl.income)} color={C.green2} />
+            <div onClick={openIncome} title="View income by account" style={{ cursor: 'pointer' }}>
+              <Stat label="Income" value={inr(pnl.income)} color={C.green2} />
+            </div>
             <Stat label="Expense" value={inr(pnl.expense)} color={C.gold} />
             <Stat label="Net P&L" value={inr(pnl.netProfit)} color={pnl.netProfit >= 0 ? C.healthy : C.red} />
             <Stat label="Margin" value={(pnl.margin * 100).toFixed(1) + '%'} color={pnl.margin >= 0 ? C.healthy : C.red} />
@@ -119,6 +145,44 @@ function readyFor(p: Product, target: number) {
             </div>
           </div>
         ))}
+
+{incomeOpen && (
+          <div onClick={() => setIncomeOpen(false)} style={bdOverlay}>
+            <div onClick={(e) => e.stopPropagation()} style={bdModal}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <h3 style={{ margin: 0, fontSize: 16, color: C.forest }}>Income by account</h3>
+                <button onClick={() => setIncomeOpen(false)} style={bdClose}>✕</button>
+              </div>
+              <div style={{ fontSize: 12, color: '#777', margin: '4px 0 14px' }}>
+                {period === '__all__' ? 'All time' : period}
+                {breakdown ? ` · total ${inr(breakdown.total)}` : ''}
+              </div>
+              {bdLoading ? (
+                <div style={{ color: C.green2, fontSize: 13 }}>Loading…</div>
+              ) : bdErr ? (
+                <div style={{ color: C.red, fontSize: 13 }}>ERPNext: {bdErr}</div>
+              ) : !breakdown || breakdown.accounts.length === 0 ? (
+                <div style={{ color: '#777', fontSize: 13 }}>No income postings in this period.</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '55vh', overflowY: 'auto' }}>
+                  {breakdown.accounts.map((a) => (
+                    <div key={a.account}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13, marginBottom: 4 }}>
+                        <span style={{ color: C.forest, fontWeight: 600 }}>{a.label}</span>
+                        <span style={{ whiteSpace: 'nowrap', fontWeight: 700, color: a.amount >= 0 ? C.green2 : C.red }}>
+                          {inr(a.amount)} <span style={{ color: '#999', fontWeight: 500, fontSize: 11 }}>{(a.pct * 100).toFixed(1)}%</span>
+                        </span>
+                      </div>
+                      <div style={{ height: 6, background: '#f0efe8', borderRadius: 3, overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${Math.max(0, Math.min(100, a.pct * 100))}%`, background: C.green2, borderRadius: 3 }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -192,3 +256,15 @@ function ProductCard({ p }: { p: Product }) {
       </div>
     );
   }
+
+  const bdOverlay = {
+    position: 'fixed', inset: 0, background: 'rgba(20,20,18,0.45)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, zIndex: 100,
+  } as const;
+  const bdModal = {
+    background: '#fff', borderRadius: 14, padding: '18px 20px',
+    width: '100%', maxWidth: 440, boxShadow: '0 12px 40px rgba(0,0,0,0.2)',
+  } as const;
+  const bdClose = {
+    border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 16, color: '#999', lineHeight: 1,
+  } as const;

@@ -9,8 +9,10 @@ import { api } from './lib/api'
 import { useIsMobile } from './hooks/useIsMobile'
 import TriageQueue from './components/triage/TriageQueue'
 import HomeDashboard from './components/dashboard/HomeDashboard'
+import { me, clearToken, type User } from './lib/auth'
+import Login from './components/auth/Login'
 
-type Page = 'home' | 'pipeline' | 'triage' | 'capture'
+type Page = 'home' | 'my-dashboard' | 'pipeline' | 'triage' | 'capture'
 
 export default function App() {
   const [page, setPage] = useState<Page>('home')
@@ -23,6 +25,17 @@ export default function App() {
   const navigate = (p: Page) => { setPage(p); setSelectedLead(null) }
 
   const isMobile = useIsMobile();
+
+  const [user, setUser] = useState<User | null>(null)
+  const [authChecked, setAuthChecked] = useState(false)
+
+  useEffect(() => {
+    me().then(u => {
+      setUser(u)
+      if (u) setPage(u.role === 'director' ? 'home' : 'my-dashboard')
+      setAuthChecked(true)
+    })
+  }, [])
 
   // Load leads from API
   useEffect(() => {
@@ -50,18 +63,23 @@ export default function App() {
     )
   }
 
+  if (!authChecked) return <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6A675F' }}>Loading…</div>
+  if (!user) return <Login onSuccess={u => { setUser(u); setPage(u.role === 'director' ? 'home' : 'my-dashboard') }} />
+
   return (
     <div style={{ height: '100vh', display: 'flex', overflow: 'hidden' }}>
       <Sidebar
         current={page}
         navigate={navigate}
-        onPartnerPortal={() => setPartnerMode(true)}
-      />
+        role={user.role}
+        onLogout={() => { clearToken(); setUser(null) } }
+        onPartnerPortal={() => setPartnerMode(true)} userName={''}      />
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-        {page === 'home' ? (
+        {page === 'home' || page === 'my-dashboard' ? (
           <HomeDashboard
             leads={leads}
+            view={page === 'home' ? 'director' : 'sales'}
             onLeadClick={lead => { setSelectedLead(lead); setPage('pipeline') }}
             navigate={setPage}
           />
@@ -135,10 +153,14 @@ export default function App() {
             onRefresh={loadLeads}
           />
         ) : selectedLead ? (
-           <LeadDetail
-          lead={selectedLead}
-          onBack={() => setSelectedLead(null)}
-        />
+          <LeadDetail
+            lead={selectedLead}
+            onBack={() => setSelectedLead(null)}
+            onDeleted={async () => {
+              await loadLeads()
+              setSelectedLead(null)
+            }}
+          />
           // <LeadDetail
           //   lead={{
           //     // —— map your nested Lead -> flat shape. Confirm names against src/types.ts ——
