@@ -12,6 +12,7 @@ import ErpInsights from './ErpInsights'
 interface Props {
   leads: Lead[]
   view: 'director' | 'sales'
+  userName?: string
   onLeadClick: (lead: Lead) => void
   navigate: (page: any) => void
 }
@@ -118,14 +119,14 @@ function formatDate(): string {
 // Director Dashboard
 // ─────────────────────────────────────────────
 
-export default function HomeDashboard({ leads, view, onLeadClick, navigate }: Props) {
+export default function HomeDashboard({ leads, view, userName, onLeadClick, navigate }: Props) {
   const isMobile = useIsMobile()
 
   const activeLeads = leads.filter(l =>
     !['Closed Won', 'Closed Lost'].includes(l.stage)
   )
 
-  const name = view === 'director' ? DIRECTOR_NAME : SALES_REP_NAME.split(' ')[0]
+  const name = (userName ?? (view === 'director' ? DIRECTOR_NAME : SALES_REP_NAME)).split(' ')[0]
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -156,7 +157,7 @@ export default function HomeDashboard({ leads, view, onLeadClick, navigate }: Pr
       }}>
         {view === 'director'
           ? <DirectorDashboard leads={leads} activeLeads={activeLeads} isMobile={isMobile} onLeadClick={onLeadClick} navigate={navigate} />
-          : <SalesRepDashboard leads={leads} activeLeads={activeLeads} isMobile={isMobile} onLeadClick={onLeadClick} navigate={navigate} />
+          : <SalesRepDashboard leads={leads} activeLeads={activeLeads} isMobile={isMobile} onLeadClick={onLeadClick} navigate={navigate} repName={userName ?? SALES_REP_NAME} />
         }
       </div>
     </div>
@@ -430,11 +431,11 @@ function DirectorDashboard({ leads, activeLeads, isMobile, onLeadClick, navigate
 // Sales Rep Dashboard
 // ─────────────────────────────────────────────
 
-function SalesRepDashboard({ leads, activeLeads, isMobile, onLeadClick, navigate }: {
+function SalesRepDashboard({ leads, activeLeads, isMobile, onLeadClick, navigate, repName }: {
   leads: Lead[], activeLeads: Lead[], isMobile: boolean,
-  onLeadClick: (l: Lead) => void, navigate: (p: any) => void,
+  onLeadClick: (l: Lead) => void, navigate: (p: any) => void, repName: string,
 }) {
-  const myLeads = activeLeads.filter(l => l.owner === SALES_REP_ID)
+  const myLeads = activeLeads.filter(l => l.owner === repName)
   const myPipeline = myLeads.reduce((s, l) => s + l.value, 0)
   const myBreaches = myLeads.filter(l => l.slaState === 'breach')
   const myRisk     = myLeads.filter(l => l.slaState === 'risk')
@@ -475,7 +476,7 @@ function SalesRepDashboard({ leads, activeLeads, isMobile, onLeadClick, navigate
         />
         <StatCard
           label="Closed won"
-          value={String(leads.filter(l => l.stage === 'Closed Won' && l.owner === SALES_REP_ID).length)}
+          value={String(leads.filter(l => l.stage === 'Closed Won' && l.owner === repName).length)}
           sub="deals this month"
           accent="#3D6B1C"
           icon={<CheckCircle size={16} strokeWidth={2} />}
