@@ -19,7 +19,6 @@ interface Props {
 
 const DIRECTOR_NAME = 'Aryan'
 const SALES_REP_NAME = 'Rohan Mehta'
-const SALES_REP_ID = 'Rohan Mehta' // matches owner field
 
 const STAGES = ['New', 'Allocated', 'Qualifying', 'Discovery', 'Proposal', 'Negotiation']
 const STAGE_COLORS: Record<string, string> = {
