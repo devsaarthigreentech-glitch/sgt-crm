@@ -20,6 +20,10 @@
 // };
 // type Pnl = { income: number; expense: number; netProfit: number; margin: number };
 
+// type IncomeItemRow = { invoice: string; date: string; party: string; item: string; qty: number; amount: number };
+// type ExpenseRow = { account: string; label: string; amount: number; isGroup: boolean };
+// type ExpenseLevel = { parent: string | null; parentLabel: string; total: number; rows: ExpenseRow[] };
+
 // function readyFor(p: Product, target: number) {
 //     const shortages: { itemName: string; need: number; available: number; short: number; leadTimeDays: number }[] = [];
 //     let procureDays = 0;
@@ -44,18 +48,26 @@
 //     const [years, setYears] = useState<{ name: string; from: string; to: string }[]>([]);
 //     const [period, setPeriod] = useState<string>(''); // FY name or '__all__'
 //     const [err, setErr] = useState<string | null>(null);
+
+//     // Income drill-down (invoice line items)
 //     const [incomeOpen, setIncomeOpen] = useState(false);
-//     const [breakdown, setBreakdown] = useState<{ total: number; accounts: { account: string; label: string; amount: number; pct: number }[] } | null>(null);
-//     const [bdLoading, setBdLoading] = useState(false);
-//     const [bdErr, setBdErr] = useState<string | null>(null);
-  
+//     const [incomeItems, setIncomeItems] = useState<{ total: number; rows: IncomeItemRow[] } | null>(null);
+//     const [incLoading, setIncLoading] = useState(false);
+//     const [incErr, setIncErr] = useState<string | null>(null);
+
+//     // Expense drill-down (one tree level at a time)
+//     const [expenseOpen, setExpenseOpen] = useState(false);
+//     const [expStack, setExpStack] = useState<ExpenseLevel[]>([]); // breadcrumb of levels
+//     const [expLoading, setExpLoading] = useState(false);
+//     const [expErr, setExpErr] = useState<string | null>(null);
+
 //     // load buildable + fiscal years once
 //     useEffect(() => {
 //       let ignore = false;
 //       fetch(`${API}/erp/buildable`).then((r) => r.json())
 //         .then((d) => { if (ignore) return; if (d.error) setErr(d.error); else { setProducts(d); setErr(null); } })
 //         .catch((e) => { if (!ignore) setErr(String(e)); });
-  
+
 //       fetch(`${API}/erp/fiscal-years`).then((r) => r.json())
 //         .then((d) => {
 //           if (ignore || !Array.isArray(d)) return;
@@ -67,7 +79,7 @@
 //         .catch(() => { if (!ignore) setPeriod('__all__'); });
 //       return () => { ignore = true; };
 //     }, []);
-  
+
 //     // (re)load P&L whenever the selected period changes
 //     useEffect(() => {
 //       if (!period) return;
@@ -90,25 +102,49 @@
 //       }
 //       return null;
 //     };
+//     const rangeQS = () => {
+//       const rng = periodRange();
+//       return rng ? `?from=${rng.from}&to=${rng.to}` : '';
+//     };
 
+//     // ── Income: open modal, load invoice line items ──
 //     const openIncome = () => {
 //       setIncomeOpen(true);
-//       setBdLoading(true); setBdErr(null); setBreakdown(null);
-//       const rng = periodRange();
-//       let url = `${API}/erp/pnl/income-breakdown`;
-//       if (rng) url += `?from=${rng.from}&to=${rng.to}`;
-//       fetch(url).then((r) => r.json())
-//         .then((d) => { if (d.error) setBdErr(d.error); else setBreakdown(d); })
-//         .catch((e) => setBdErr(String(e)))
-//         .finally(() => setBdLoading(false));
+//       setIncLoading(true); setIncErr(null); setIncomeItems(null);
+//       fetch(`${API}/erp/pnl/income-items${rangeQS()}`).then((r) => r.json())
+//         .then((d) => { if (d.error) setIncErr(d.error); else setIncomeItems(d); })
+//         .catch((e) => setIncErr(String(e)))
+//         .finally(() => setIncLoading(false));
 //     };
-  
+
+//     // ── Expense: load direct children of a node (null = root Expenses) ──
+//     const loadExpenseLevel = (parent: string | null, replaceStack?: boolean) => {
+//       setExpLoading(true); setExpErr(null);
+//       const sep = rangeQS() ? '&' : '?';
+//       const url = `${API}/erp/pnl/expense-children${rangeQS()}${parent ? `${sep}parent=${encodeURIComponent(parent)}` : ''}`;
+//       fetch(url).then((r) => r.json())
+//         .then((d) => {
+//           if (d.error) { setExpErr(d.error); return; }
+//           setExpStack((prev) => (replaceStack ? [d] : [...prev, d]));
+//         })
+//         .catch((e) => setExpErr(String(e)))
+//         .finally(() => setExpLoading(false));
+//     };
+
+//     const openExpense = () => {
+//       setExpenseOpen(true);
+//       setExpStack([]);
+//       loadExpenseLevel(null, true);
+//     };
+
 //     const families = useMemo(() => {
 //       const m: Record<string, Product[]> = {};
 //       (products ?? []).forEach((p) => (m[p.family] ??= []).push(p));
 //       return m;
 //     }, [products]);
-  
+
+//     const expLevel = expStack[expStack.length - 1] ?? null;
+
 //     return (
 //       <div style={{ background: C.off, padding: 20, borderRadius: 14, fontFamily: 'system-ui, sans-serif' }}>
 //         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, gap: 12, flexWrap: 'wrap' }}>
@@ -119,24 +155,26 @@
 //             <option value="__all__">Total (all time)</option>
 //           </select>
 //         </div>
-  
+
 //         {pnl && (
 //           <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
-//             <div onClick={openIncome} title="View income by account" style={{ cursor: 'pointer' }}>
+//             <div onClick={openIncome} title="View income by party & item" style={{ cursor: 'pointer' }}>
 //               <Stat label="Income" value={inr(pnl.income)} color={C.green2} />
 //             </div>
-//             <Stat label="Expense" value={inr(pnl.expense)} color={C.gold} />
+//             <div onClick={openExpense} title="Drill into expense heads" style={{ cursor: 'pointer' }}>
+//               <Stat label="Expense" value={inr(pnl.expense)} color={C.gold} />
+//             </div>
 //             <Stat label="Net P&L" value={inr(pnl.netProfit)} color={pnl.netProfit >= 0 ? C.healthy : C.red} />
 //             <Stat label="Margin" value={(pnl.margin * 100).toFixed(1) + '%'} color={pnl.margin >= 0 ? C.healthy : C.red} />
 //           </div>
 //         )}
-  
+
 //         {err && <div style={{ color: C.red, fontSize: 13 }}>ERPNext: {err}</div>}
 //         {!products && !err && <div style={{ color: C.green2, fontSize: 13 }}>Loading capacity…</div>}
 //         {products && products.length === 0 && (
 //           <div style={{ color: C.green2, fontSize: 13 }}>No final-assembly BOMs found in ERPNext.</div>
 //         )}
-  
+
 //         {Object.entries(families).map(([family, items]) => (
 //           <div key={family} style={{ marginBottom: 18 }}>
 //             <div style={{ color: C.gold, fontSize: 12, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 8 }}>{family}</div>
@@ -146,38 +184,126 @@
 //           </div>
 //         ))}
 
-// {incomeOpen && (
+//         {/* ── Income modal: party · item · amount per invoice line ── */}
+//         {incomeOpen && (
 //           <div onClick={() => setIncomeOpen(false)} style={bdOverlay}>
-//             <div onClick={(e) => e.stopPropagation()} style={bdModal}>
+//             <div onClick={(e) => e.stopPropagation()} style={{ ...bdModal, maxWidth: 640 }}>
 //               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-//                 <h3 style={{ margin: 0, fontSize: 16, color: C.forest }}>Income by account</h3>
+//                 <h3 style={{ margin: 0, fontSize: 16, color: C.forest }}>Income · what was sold</h3>
 //                 <button onClick={() => setIncomeOpen(false)} style={bdClose}>✕</button>
 //               </div>
 //               <div style={{ fontSize: 12, color: '#777', margin: '4px 0 14px' }}>
 //                 {period === '__all__' ? 'All time' : period}
-//                 {breakdown ? ` · total ${inr(breakdown.total)}` : ''}
+//                 {incomeItems ? ` · ${incomeItems.rows.length} invoice lines · total ${inr(incomeItems.total)}` : ''}
 //               </div>
-//               {bdLoading ? (
-//                 <div style={{ color: C.green2, fontSize: 13 }}>Loading…</div>
-//               ) : bdErr ? (
-//                 <div style={{ color: C.red, fontSize: 13 }}>ERPNext: {bdErr}</div>
-//               ) : !breakdown || breakdown.accounts.length === 0 ? (
-//                 <div style={{ color: '#777', fontSize: 13 }}>No income postings in this period.</div>
+//               {incLoading ? (
+//                 <div style={{ color: C.green2, fontSize: 13 }}>Loading invoice items…</div>
+//               ) : incErr ? (
+//                 <div style={{ color: C.red, fontSize: 13 }}>ERPNext: {incErr}</div>
+//               ) : !incomeItems || incomeItems.rows.length === 0 ? (
+//                 <div style={{ color: '#777', fontSize: 13 }}>No sales invoices in this period.</div>
 //               ) : (
-//                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '55vh', overflowY: 'auto' }}>
-//                   {breakdown.accounts.map((a) => (
-//                     <div key={a.account}>
-//                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13, marginBottom: 4 }}>
-//                         <span style={{ color: C.forest, fontWeight: 600 }}>{a.label}</span>
-//                         <span style={{ whiteSpace: 'nowrap', fontWeight: 700, color: a.amount >= 0 ? C.green2 : C.red }}>
-//                           {inr(a.amount)} <span style={{ color: '#999', fontWeight: 500, fontSize: 11 }}>{(a.pct * 100).toFixed(1)}%</span>
-//                         </span>
+//                 <div style={{ maxHeight: '60vh', overflowY: 'auto' }}>
+//                   {/* header row */}
+//                   <div style={{
+//                     display: 'grid', gridTemplateColumns: '1.2fr 1.4fr auto',
+//                     gap: 10, padding: '6px 8px', position: 'sticky', top: 0, background: '#fff',
+//                     fontSize: 10.5, fontWeight: 700, color: '#999', letterSpacing: 0.5,
+//                     textTransform: 'uppercase', borderBottom: `1.5px solid ${C.forest}`,
+//                   }}>
+//                     <span>Party</span><span>Item sold</span><span style={{ textAlign: 'right' }}>Amount</span>
+//                   </div>
+//                   {incomeItems.rows.map((r, i) => (
+//                     <div key={i} style={{
+//                       display: 'grid', gridTemplateColumns: '1.2fr 1.4fr auto',
+//                       gap: 10, padding: '8px 8px', borderBottom: '1px solid #f0efe8',
+//                       fontSize: 12.5, alignItems: 'start',
+//                     }}>
+//                       <div>
+//                         <div style={{ color: C.forest, fontWeight: 600 }}>{r.party}</div>
+//                         <div style={{ fontSize: 10.5, color: '#aaa', marginTop: 2 }}>
+//                           {r.invoice}{r.date ? ` · ${new Date(r.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' })}` : ''}
+//                         </div>
 //                       </div>
-//                       <div style={{ height: 6, background: '#f0efe8', borderRadius: 3, overflow: 'hidden' }}>
-//                         <div style={{ height: '100%', width: `${Math.max(0, Math.min(100, a.pct * 100))}%`, background: C.green2, borderRadius: 3 }} />
+//                       <div style={{ color: '#444' }}>
+//                         {r.item}
+//                         {r.qty ? <span style={{ color: '#999', fontSize: 11 }}> × {Number(r.qty.toFixed(2))}</span> : null}
+//                       </div>
+//                       <div style={{ textAlign: 'right', fontWeight: 700, whiteSpace: 'nowrap', color: r.amount >= 0 ? C.green2 : C.red }}>
+//                         {inr(r.amount)}
 //                       </div>
 //                     </div>
 //                   ))}
+//                 </div>
+//               )}
+//             </div>
+//           </div>
+//         )}
+
+//         {/* ── Expense modal: one tree level at a time ── */}
+//         {expenseOpen && (
+//           <div onClick={() => setExpenseOpen(false)} style={bdOverlay}>
+//             <div onClick={(e) => e.stopPropagation()} style={{ ...bdModal, maxWidth: 520 }}>
+//               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+//                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+//                   {expStack.length > 1 && (
+//                     <button
+//                       onClick={() => setExpStack((s) => s.slice(0, -1))}
+//                       title="Back"
+//                       style={{ border: 'none', background: '#f0efe8', borderRadius: 6, cursor: 'pointer', padding: '4px 9px', fontSize: 13, color: C.forest, fontWeight: 700 }}
+//                     >←</button>
+//                   )}
+//                   <h3 style={{ margin: 0, fontSize: 16, color: C.forest, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+//                     {expLevel ? expLevel.parentLabel : 'Expenses'}
+//                   </h3>
+//                 </div>
+//                 <button onClick={() => setExpenseOpen(false)} style={bdClose}>✕</button>
+//               </div>
+//               <div style={{ fontSize: 12, color: '#777', margin: '4px 0 14px' }}>
+//                 {period === '__all__' ? 'All time' : period}
+//                 {expLevel ? ` · total ${inr(expLevel.total)}` : ''}
+//                 {expStack.length > 1 && (
+//                   <span style={{ color: '#bbb' }}> · {expStack.map((l) => l.parentLabel).join(' › ')}</span>
+//                 )}
+//               </div>
+
+//               {expLoading ? (
+//                 <div style={{ color: C.green2, fontSize: 13 }}>Loading…</div>
+//               ) : expErr ? (
+//                 <div style={{ color: C.red, fontSize: 13 }}>ERPNext: {expErr}</div>
+//               ) : !expLevel || expLevel.rows.length === 0 ? (
+//                 <div style={{ color: '#777', fontSize: 13 }}>No expense postings under this head.</div>
+//               ) : (
+//                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '55vh', overflowY: 'auto' }}>
+//                   {expLevel.rows.map((r) => {
+//                     const pct = expLevel.total ? Math.abs(r.amount) / Math.abs(expLevel.total) : 0;
+//                     return (
+//                       <div
+//                         key={r.account}
+//                         onClick={() => { if (r.isGroup) loadExpenseLevel(r.account); }}
+//                         style={{
+//                           cursor: r.isGroup ? 'pointer' : 'default',
+//                           padding: '8px 10px', borderRadius: 8,
+//                           border: '1px solid #f0efe8',
+//                           background: r.isGroup ? '#FCFBF6' : '#fff',
+//                         }}
+//                         title={r.isGroup ? 'Click to see the heads under this' : undefined}
+//                       >
+//                         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13, marginBottom: 5 }}>
+//                           <span style={{ color: C.forest, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+//                             {r.label}
+//                             {r.isGroup && <span style={{ color: C.gold, fontSize: 12 }}>▸</span>}
+//                           </span>
+//                           <span style={{ whiteSpace: 'nowrap', fontWeight: 700, color: r.amount >= 0 ? C.forest : C.healthy }}>
+//                             {inr(r.amount)} <span style={{ color: '#999', fontWeight: 500, fontSize: 11 }}>{(pct * 100).toFixed(1)}%</span>
+//                           </span>
+//                         </div>
+//                         <div style={{ height: 6, background: '#f0efe8', borderRadius: 3, overflow: 'hidden' }}>
+//                           <div style={{ height: '100%', width: `${Math.max(0, Math.min(100, pct * 100))}%`, background: C.gold, borderRadius: 3 }} />
+//                         </div>
+//                       </div>
+//                     );
+//                   })}
 //                 </div>
 //               )}
 //             </div>
@@ -202,12 +328,12 @@
 //     const r = readyFor(p, target);
 //     const hasShortage = r.shortages.length > 0;
 //     const fmt = (n: number) => Number(n.toFixed(2)).toLocaleString('en-IN');
-  
+
 //     return (
 //       <div style={{ background: '#fff', border: '1px solid #e8e8e0', borderRadius: 12, padding: 16 }}>
 //         <div style={{ fontSize: 13, fontWeight: 600, color: C.forest, marginBottom: 2 }}>{p.itemName}</div>
 //         <div style={{ fontSize: 11, color: '#999', marginBottom: 10 }}>{p.itemCode}</div>
-  
+
 //         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
 //           <span style={{ fontSize: 34, fontWeight: 800, color: C.green2 }}>{p.buildableNow}</span>
 //           <span style={{ fontSize: 12, color: '#777' }}>buildable now</span>
@@ -215,14 +341,14 @@
 //         <div style={{ fontSize: 11, color: '#666', marginTop: 6 }}>
 //           Ready by <b>{p.readyDateForBuildable}</b> ({p.assemblyLeadDays}d assembly)
 //         </div>
-  
+
 //         <div style={{ borderTop: '1px solid #f0f0ea', marginTop: 12, paddingTop: 12 }}>
 //           <label style={{ fontSize: 11, color: '#777' }}>If I want&nbsp;
 //             <input type="number" min={1} value={target}
 //               onChange={(e) => setTarget(Math.max(1, Number(e.target.value) || 1))}
 //               style={{ width: 64, padding: '3px 6px', border: '1px solid #ddd', borderRadius: 6, fontSize: 13 }} /> units →
 //           </label>
-  
+
 //           <div style={{ marginTop: 6, fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
 //             {hasShortage ? (
 //               <>
@@ -238,7 +364,7 @@
 //               <span style={{ color: C.healthy }}>All in stock · ready by <b style={{ color: C.forest }}>{r.date}</b> ({r.days}d)</span>
 //             )}
 //           </div>
-  
+
 //           {hasShortage && open && (
 //             <div style={{ marginTop: 8, background: '#FCF6EE', border: '1px solid #efe3cd', borderRadius: 8, padding: 10 }}>
 //               {r.shortages.map((s, i) => (
@@ -593,7 +719,11 @@ function Stat({ label, value, color }: { label: string; value: string; color: st
 }
 
 function ProductCard({ p }: { p: Product }) {
-    const [target, setTarget] = useState<number>(p.buildableNow || 1);
+    // Keep the raw string so the user can clear the field and type multi-digit
+    // numbers (e.g. backspace to empty, then type "20"). We only clamp to a valid
+    // number for the calculation and on blur — never on every keystroke.
+    const [targetText, setTargetText] = useState<string>(String(p.buildableNow || 1));
+    const target = Math.max(1, Number(targetText) || 1);
     const [open, setOpen] = useState(false);
     const r = readyFor(p, target);
     const hasShortage = r.shortages.length > 0;
@@ -614,8 +744,11 @@ function ProductCard({ p }: { p: Product }) {
 
         <div style={{ borderTop: '1px solid #f0f0ea', marginTop: 12, paddingTop: 12 }}>
           <label style={{ fontSize: 11, color: '#777' }}>If I want&nbsp;
-            <input type="number" min={1} value={target}
-              onChange={(e) => setTarget(Math.max(1, Number(e.target.value) || 1))}
+            <input
+              type="number" min={1} value={targetText}
+              onChange={(e) => setTargetText(e.target.value)}
+              onBlur={() => setTargetText(String(Math.max(1, Number(targetText) || 1)))}
+              onFocus={(e) => e.currentTarget.select()}
               style={{ width: 64, padding: '3px 6px', border: '1px solid #ddd', borderRadius: 6, fontSize: 13 }} /> units →
           </label>
 

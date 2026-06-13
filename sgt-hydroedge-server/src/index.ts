@@ -8,6 +8,7 @@ import erpRoutes from './routes/erp';
 import jwt from '@fastify/jwt'
 import authRoutes from './routes/auth.js'
 import { usersRoutes } from './routes/users.js'
+import targetRoutes from './routes/targets.js'
 
 dotenv.config()
 
@@ -45,6 +46,7 @@ async function start() {
   app.register(erpRoutes, { prefix: '/api/v1' });
   await app.register(authRoutes,   { prefix: '/api/v1' })
   await app.register(usersRoutes, { prefix: '/api/v1' })
+  await app.register(targetRoutes, {prefix: '/api/v1'})
 
   // Global error handler
   app.setErrorHandler((error: any, request, reply) => {
