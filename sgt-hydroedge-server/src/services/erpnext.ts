@@ -513,17 +513,22 @@ async function sumStock(codes: string[]) {
 
 // ---- lead times + item group (the "family" label) ----
 async function itemMeta(codes: string[]) {
-    const map: Record<string, { leadTimeDays: number; itemGroup: string; itemName: string }> = {};
+    const map: Record<string, { leadTimeDays: number; itemGroup: string; itemName: string; rate: number }> = {};
     for (const chunk of chunked(codes, 100)) {
         const items = await getList('Item', {
             filters: [['item_code', 'in', chunk]],
-            fields: ['item_code', 'lead_time_days', 'item_group', 'item_name'],
+            fields: ['item_code', 'lead_time_days', 'item_group', 'item_name',
+                     'last_purchase_rate', 'valuation_rate'],
         });
         for (const it of items) {
+            // Prefer last purchase rate; fall back to valuation rate so the
+            // shortage cost is never blank when an item was never purchased.
+            const rate = Number(it.last_purchase_rate || 0) || Number(it.valuation_rate || 0) || 0;
             map[it.item_code] = {
                 leadTimeDays: Number(it.lead_time_days || 0),
                 itemGroup: it.item_group || 'Other',
                 itemName: it.item_name || it.item_code,
+                rate,
             };
         }
     }
@@ -565,6 +570,7 @@ export async function getBuildable() {
                     available: s.actual,
                     reserved: s.reserved,
                     leadTimeDays: m?.leadTimeDays ?? 0,
+                    rate: m?.rate ?? 0,   // last purchase rate (₹) for shortage costing
                     maxUnits,
                 };
             });
@@ -674,7 +680,8 @@ export async function getIncomeBreakdown(from?: string, to?: string) {
           ['delivery_date', '>=', today],
         ],
         fields: ['name', 'customer', 'customer_name', 'transaction_date',
-                 'delivery_date', 'status', 'grand_total', 'per_delivered'],
+                 'delivery_date', 'status', 'grand_total', 'base_grand_total',
+                 'currency', 'conversion_rate', 'per_delivered'],
         order_by: 'delivery_date asc',
         limit_page_length: limit,
       });
@@ -683,20 +690,32 @@ export async function getIncomeBreakdown(from?: string, to?: string) {
       const recent = await frappeGet(SO, {
         filters: [['docstatus', '=', 1]],
         fields: ['name', 'customer', 'customer_name', 'transaction_date',
-                 'delivery_date', 'status', 'grand_total'],
+                 'delivery_date', 'status', 'grand_total', 'base_grand_total',
+                 'currency', 'conversion_rate'],
         order_by: 'transaction_date desc',
         limit_page_length: 1,
       });
   
-      const norm = (o: any) => ({
-        id: o.name,
-        customer: o.customer_name || o.customer,
-        placedOn: o.transaction_date,
-        deliveryDate: o.delivery_date ?? null,
-        status: o.status,
-        total: Number(o.grand_total || 0),
-        delivered: Number(o.per_delivered || 0),
-      });
+      const COMPANY_CCY = process.env.ERP_COMPANY_CURRENCY ?? 'INR';
+      const norm = (o: any) => {
+        const txnCcy = o.currency || COMPANY_CCY;
+        const isForeign = txnCcy !== COMPANY_CCY;
+        const inrTotal = Number(o.base_grand_total
+          || Number(o.grand_total || 0) * Number(o.conversion_rate || 1));
+        return {
+          id: o.name,
+          customer: o.customer_name || o.customer,
+          placedOn: o.transaction_date,
+          deliveryDate: o.delivery_date ?? null,
+          status: o.status,
+          total: inrTotal,                      // INR (company currency)
+          currency: txnCcy,
+          isForeign,
+          origTotal: isForeign ? Number(o.grand_total || 0) : null,
+          conversionRate: isForeign ? Number(o.conversion_rate || 0) : null,
+          delivered: Number(o.per_delivered || 0),
+        };
+      };
   
       return {
         lastOrder: recent?.length ? norm(recent[0]) : null,
@@ -901,8 +920,12 @@ export async function getIncomeBreakdown(from?: string, to?: string) {
           ['status', 'not in', ['Closed', 'Completed', 'Cancelled']],
           ['per_delivered', '<', 100],
         ],
+        // grand_total is in the order's TRANSACTION currency (e.g. USD);
+        // base_grand_total is always in company currency (INR). We report INR
+        // and surface the original for display.
         fields: ['name', 'customer', 'customer_name', 'transaction_date',
-                 'delivery_date', 'status', 'grand_total', 'per_delivered'],
+                 'delivery_date', 'status', 'grand_total', 'base_grand_total',
+                 'currency', 'conversion_rate', 'per_delivered'],
         order_by: 'transaction_date asc',
         limit_page_length: limit,
       });
@@ -910,18 +933,28 @@ export async function getIncomeBreakdown(from?: string, to?: string) {
       const today = new Date();
       const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 
+      const COMPANY_CCY = process.env.ERP_COMPANY_CURRENCY ?? 'INR';
       const orders = (open ?? []).map((o: any) => {
         const placed = o.transaction_date ? new Date(o.transaction_date) : null;
         const ageDays = placed ? Math.max(0, Math.round((startOfDay(today) - startOfDay(placed)) / 86400000)) : null;
+        const txnCcy = o.currency || COMPANY_CCY;
+        // base_grand_total is INR; if a doc somehow lacks it, derive from rate.
+        const inrTotal = Number(o.base_grand_total
+          || Number(o.grand_total || 0) * Number(o.conversion_rate || 1));
+        const isForeign = txnCcy !== COMPANY_CCY;
         return {
           id: o.name,
           customer: o.customer_name || o.customer,
           placedOn: o.transaction_date ?? null,
           deliveryDate: o.delivery_date ?? null,
           status: o.status,
-          total: Number(o.grand_total || 0),
+          total: inrTotal,                       // always INR (company currency)
+          currency: txnCcy,                      // original transaction currency
+          isForeign,
+          origTotal: isForeign ? Number(o.grand_total || 0) : null,  // amount in USD etc
+          conversionRate: isForeign ? Number(o.conversion_rate || 0) : null,
           delivered: Number(o.per_delivered || 0),
-          ageDays, // days since the order was placed (still open)
+          ageDays,
         };
       });
 

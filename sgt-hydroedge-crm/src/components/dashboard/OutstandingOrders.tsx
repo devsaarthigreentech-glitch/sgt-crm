@@ -22,6 +22,7 @@ const fmtDate = (d: string | null) => {
 type Order = {
   id: string; customer: string; placedOn: string | null; deliveryDate: string | null
   status: string; total: number; delivered: number; ageDays: number | null
+  currency?: string; isForeign?: boolean; origTotal?: number | null; conversionRate?: number | null
 }
 type Data = {
   count: number; outstandingValue: number; orders: Order[]
@@ -94,6 +95,12 @@ export default function OutstandingOrders() {
                     <div style={{ fontFamily: 'monospace', fontSize: 13, fontWeight: 600, color: '#161614' }}>
                       {inrShort(o.total)}
                     </div>
+                    {o.isForeign && o.origTotal != null && (
+                      <div style={{ fontSize: 10.5, color: '#6A675F', marginTop: 1, fontFamily: 'monospace' }}>
+                        {o.currency} {o.origTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {o.conversionRate ? ` @ ${o.conversionRate}` : ''}
+                      </div>
+                    )}
                     {o.ageDays != null && (
                       <div style={{
                         fontSize: 10.5, fontWeight: 600, marginTop: 2,
