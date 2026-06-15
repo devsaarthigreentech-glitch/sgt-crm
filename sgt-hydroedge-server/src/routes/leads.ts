@@ -735,6 +735,10 @@ function formatLead(row: any) {
     initialNotes: row.initial_notes,
     leadType: row.lead_type ?? 'Prospect',
     referredBy: row.referred_by,
+    closeOutcome: row.close_outcome ?? null,     // 'WON' | 'LOST' | null
+    closeReason: row.close_reason ?? null,
+    competitorName: row.competitor_name ?? null,
+    closedAt: row.actual_close_date ?? null,
     reservedAccount: row.anchor_account ?? false,
     erpnextLeadId: row.erpnext_lead_id,
     version: row.version,

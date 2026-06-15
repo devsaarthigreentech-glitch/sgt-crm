@@ -53,5 +53,12 @@ export interface Lead {
   daysInStage: number
   protection?: Protection
   referredBy?: string
+  closeOutcome?: 'WON' | 'LOST' | null
+  closeReason?: string | null
+  competitorName?: string | null
+  closedAt?: string | null
+  initialNotes?: string | null
+  captureSource?: string | null
   createdAt: string
+  updatedAt?: string
 }
