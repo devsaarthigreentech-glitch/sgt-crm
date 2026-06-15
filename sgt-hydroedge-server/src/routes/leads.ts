@@ -656,6 +656,7 @@ const UpdateLeadSchema = z.object({
   contactRole: z.string().optional(),
   email: z.string().optional(),
   phone: z.string().optional(),
+  onHold: z.boolean().optional(),
 })
 
 const CreateLeadSchema = z.object({
@@ -735,6 +736,7 @@ function formatLead(row: any) {
     initialNotes: row.initial_notes,
     leadType: row.lead_type ?? 'Prospect',
     referredBy: row.referred_by,
+    onHold: row.on_hold ?? false,
     closeOutcome: row.close_outcome ?? null,     // 'WON' | 'LOST' | null
     closeReason: row.close_reason ?? null,
     competitorName: row.competitor_name ?? null,
@@ -1112,9 +1114,17 @@ export async function leadsRoutes(fastify: FastifyInstance) {
       return reply.status(404).send({ error: 'Lead not found' })
     }
 
-    if (lead.rows[0].stage !== 'Negotiation') {
+    // Won requires reaching Negotiation (a real commercial close).
+    // Lost can happen at any active stage — a deal can die anytime.
+    const ACTIVE = ['New', 'Allocated', 'Qualifying', 'Discovery', 'Proposal', 'Negotiation']
+    if (body.outcome === 'WON' && lead.rows[0].stage !== 'Negotiation') {
       return reply.status(422).send({
-        error: 'Only leads in Negotiation can be closed',
+        error: 'A deal can only be marked Won from the Negotiation stage',
+      })
+    }
+    if (body.outcome === 'LOST' && !ACTIVE.includes(lead.rows[0].stage)) {
+      return reply.status(422).send({
+        error: 'This lead is already closed',
       })
     }
 
@@ -1182,6 +1192,7 @@ export async function leadsRoutes(fastify: FastifyInstance) {
       vals.push(body.value == null ? null : Math.round(body.value * 100)) // rupees -> paise
     }
     if ('estClose' in body) { sets.push(`estimated_close_date = $${i++}`); vals.push(body.estClose || null) }
+    if ('onHold' in body)   { sets.push(`on_hold = $${i++}`); vals.push(body.onHold ? true : false) }
 
     if (sets.length) {
       vals.push(id)
@@ -1315,7 +1326,7 @@ export async function leadsRoutes(fastify: FastifyInstance) {
     const { id } = request.params
 
     const lead = await query(
-      `SELECT id FROM lead_service.leads WHERE id = $1 AND deleted_at IS NULL`,
+      `SELECT id, stage FROM lead_service.leads WHERE id = $1 AND deleted_at IS NULL`,
       [id]
     )
 
@@ -1323,16 +1334,24 @@ export async function leadsRoutes(fastify: FastifyInstance) {
       return reply.status(404).send({ error: 'Lead not found' })
     }
 
+    // If the lead is still 'New', classification moves it to 'Allocated'.
+    // But if it was already advanced further while unassigned, keep its current
+    // stage — assigning an owner shouldn't drag a Qualifying/Discovery lead back.
+    const currentStage = lead.rows[0].stage
+    const movingFromNew = currentStage === 'New'
+    const targetStage = movingFromNew ? 'Allocated' : currentStage
+
     await query(
       `UPDATE lead_service.leads
      SET lead_type = $1,
          vertical  = COALESCE($2, vertical),
          owner_name = $3,
-         stage = 'Allocated',
-         stage_changed_at = NOW(),
+         stage = $4,
+         -- only reset the SLA clock when the stage actually changes
+         stage_changed_at = CASE WHEN $4 <> stage THEN NOW() ELSE stage_changed_at END,
          updated_at = NOW()
-     WHERE id = $4`,
-      [body.leadType, body.vertical ?? null, body.ownerName, id]
+     WHERE id = $5`,
+      [body.leadType, body.vertical ?? null, body.ownerName, targetStage, id]
     )
 
     await query(
@@ -1341,11 +1360,144 @@ export async function leadsRoutes(fastify: FastifyInstance) {
      VALUES ($1, $2, $3, $4, $5)`,
       [
         id, body.ownerName, 'triage_classified',
-        JSON.stringify({ stage: 'New', owner: null }),
-        JSON.stringify({ stage: 'Allocated', leadType: body.leadType, owner: body.ownerName }),
+        JSON.stringify({ stage: currentStage, owner: null }),
+        JSON.stringify({ stage: targetStage, leadType: body.leadType, owner: body.ownerName }),
       ]
     )
 
     return reply.send({ data: { id, leadType: body.leadType, owner: body.ownerName } })
+  })
+
+  // ─── Contacts ──────────────────────────────────────────────────────────────
+  // A lead belongs to an account; contacts hang off the account. The lead's
+  // primary_contact_id points at one of them. `role` is a free-text description.
+
+  // GET /leads/:id/contacts — all contacts for this lead's account
+  fastify.get<{ Params: { id: string } }>('/leads/:id/contacts', async (req, reply) => {
+    const { id } = req.params
+    const leadRes = await query(
+      `SELECT account_id, primary_contact_id FROM lead_service.leads
+       WHERE id = $1 AND deleted_at IS NULL`,
+      [id]
+    )
+    if (leadRes.rows.length === 0) return reply.status(404).send({ error: 'Lead not found' })
+    const { account_id, primary_contact_id } = leadRes.rows[0]
+
+    const rows = await query(
+      `SELECT id, name, role, email, phone, is_primary, created_at
+         FROM lead_service.contacts
+        WHERE account_id = $1 AND deleted_at IS NULL
+        ORDER BY is_primary DESC, created_at ASC`,
+      [account_id]
+    )
+    return reply.send({
+      data: rows.rows.map(c => ({
+        id: c.id,
+        name: c.name,
+        description: c.role,        // free-text role/description
+        email: c.email,
+        phone: c.phone,
+        isPrimary: c.id === primary_contact_id || c.is_primary === true,
+      })),
+    })
+  })
+
+  // POST /leads/:id/contacts — add an additional contact to the account
+  fastify.post<{ Params: { id: string } }>('/leads/:id/contacts', async (req, reply) => {
+    const body = z.object({
+      name: z.string().min(1),
+      description: z.string().optional(),   // free text
+      email: z.string().optional(),
+      phone: z.string().optional(),
+      makePrimary: z.boolean().optional(),
+    }).parse(req.body)
+
+    const leadRes = await query(
+      `SELECT account_id FROM lead_service.leads WHERE id = $1 AND deleted_at IS NULL`,
+      [req.params.id]
+    )
+    if (leadRes.rows.length === 0) return reply.status(404).send({ error: 'Lead not found' })
+    const accountId = leadRes.rows[0].account_id
+
+    const ins = await query(
+      `INSERT INTO lead_service.contacts (account_id, name, role, email, phone, is_primary, source)
+       VALUES ($1, $2, $3, $4, $5, $6, 'MANUAL') RETURNING id`,
+      [accountId, body.name, body.description ?? null, body.email ?? null, body.phone ?? null, body.makePrimary === true]
+    )
+    const newId = ins.rows[0].id
+
+    if (body.makePrimary) {
+      // demote other primaries on this account, point the lead at the new one
+      await query(
+        `UPDATE lead_service.contacts SET is_primary = FALSE
+          WHERE account_id = $1 AND id <> $2`,
+        [accountId, newId]
+      )
+      await query(
+        `UPDATE lead_service.leads SET primary_contact_id = $1, updated_at = NOW()
+          WHERE id = $2`,
+        [newId, req.params.id]
+      )
+    }
+    return reply.send({ data: { id: newId } })
+  })
+
+  // PATCH /contacts/:contactId — edit a contact's fields
+  fastify.patch<{ Params: { contactId: string } }>('/contacts/:contactId', async (req, reply) => {
+    const { contactId } = req.params
+    const body = z.object({
+      name: z.string().optional(),
+      description: z.string().optional(),
+      email: z.string().optional(),
+      phone: z.string().optional(),
+    }).parse(req.body)
+
+    const sets: string[] = []
+    const vals: unknown[] = []
+    let i = 1
+    if ('name' in body)        { sets.push(`name = $${i++}`);  vals.push(body.name) }
+    if ('description' in body) { sets.push(`role = $${i++}`);  vals.push(body.description || null) }
+    if ('email' in body)       { sets.push(`email = $${i++}`); vals.push(body.email || null) }
+    if ('phone' in body)       { sets.push(`phone = $${i++}`); vals.push(body.phone || null) }
+    if (!sets.length) return reply.status(400).send({ error: 'no fields supplied' })
+
+    vals.push(contactId)
+    const r = await query(
+      `UPDATE lead_service.contacts SET ${sets.join(', ')}, updated_at = NOW()
+        WHERE id = $${i} AND deleted_at IS NULL RETURNING id`,
+      vals
+    )
+    if (r.rows.length === 0) return reply.status(404).send({ error: 'Contact not found' })
+    return reply.send({ data: { id: contactId } })
+  })
+
+  // POST /leads/:id/contacts/:contactId/primary — make a contact the primary
+  fastify.post<{ Params: { id: string; contactId: string } }>('/leads/:id/contacts/:contactId/primary', async (req, reply) => {
+    const { id, contactId } = req.params
+    const leadRes = await query(
+      `SELECT account_id FROM lead_service.leads WHERE id = $1 AND deleted_at IS NULL`,
+      [id]
+    )
+    if (leadRes.rows.length === 0) return reply.status(404).send({ error: 'Lead not found' })
+    const accountId = leadRes.rows[0].account_id
+
+    await query(`UPDATE lead_service.contacts SET is_primary = (id = $2) WHERE account_id = $1`, [accountId, contactId])
+    await query(`UPDATE lead_service.leads SET primary_contact_id = $1, updated_at = NOW() WHERE id = $2`, [contactId, id])
+    return reply.send({ data: { id, primaryContactId: contactId } })
+  })
+
+  // DELETE /contacts/:contactId — soft delete (can't delete the primary)
+  fastify.delete<{ Params: { contactId: string } }>('/contacts/:contactId', async (req, reply) => {
+    const { contactId } = req.params
+    const c = await query(
+      `SELECT is_primary FROM lead_service.contacts WHERE id = $1 AND deleted_at IS NULL`,
+      [contactId]
+    )
+    if (c.rows.length === 0) return reply.status(404).send({ error: 'Contact not found' })
+    if (c.rows[0].is_primary) {
+      return reply.status(422).send({ error: 'Set another contact as primary before removing this one' })
+    }
+    await query(`UPDATE lead_service.contacts SET deleted_at = NOW() WHERE id = $1`, [contactId])
+    return reply.send({ data: { id: contactId, deleted: true } })
   })
 }

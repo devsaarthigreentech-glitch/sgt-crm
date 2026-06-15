@@ -59,6 +59,7 @@ export interface Lead {
   closedAt?: string | null
   initialNotes?: string | null
   captureSource?: string | null
+  onHold?: boolean
   createdAt: string
   updatedAt?: string
 }

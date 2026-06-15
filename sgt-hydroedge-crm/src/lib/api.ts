@@ -258,11 +258,28 @@ export const api = {
     contactRole?: string
     email?: string
     phone?: string
+    onHold?: boolean
   }) =>
     request<{ data: any }>(`/leads/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(body),
     }),
+
+  // Contacts (account-level; `description` is free text)
+  getContacts: (leadId: string) =>
+    request<{ data: { id: string; name: string; description: string | null; email: string | null; phone: string | null; isPrimary: boolean }[] }>(`/leads/${leadId}/contacts`),
+
+  addContact: (leadId: string, body: { name: string; description?: string; email?: string; phone?: string; makePrimary?: boolean }) =>
+    request<{ data: any }>(`/leads/${leadId}/contacts`, { method: 'POST', body: JSON.stringify(body) }),
+
+  updateContact: (contactId: string, body: { name?: string; description?: string; email?: string; phone?: string }) =>
+    request<{ data: any }>(`/contacts/${contactId}`, { method: 'PATCH', body: JSON.stringify(body) }),
+
+  makeContactPrimary: (leadId: string, contactId: string) =>
+    request<{ data: any }>(`/leads/${leadId}/contacts/${contactId}/primary`, { method: 'POST' }),
+
+  deleteContact: (contactId: string) =>
+    request<{ data: any }>(`/contacts/${contactId}`, { method: 'DELETE' }),
 
   deleteLead: (id: string, body?: { reason?: string; actorName?: string }) =>
     request<{ data: any }>(`/leads/${id}`,
