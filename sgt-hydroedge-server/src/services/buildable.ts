@@ -417,6 +417,18 @@ async function defaultCompany(): Promise<string> {
     return companyCache;
 }
 
+// India FY starts April 1.
+// e.g. June 2026 → FY 2026-27 → "202627"  (4-digit start + 2-digit end)
+// This must be set on the PO doc so that Frappe can resolve
+// {custom_short_fiscal_year} when evaluating the naming_series.
+function customShortFiscalYear(date: Date): string {
+    const month = date.getMonth() + 1; // 1-indexed
+    const year = date.getFullYear();
+    const fyStart = month >= 4 ? year : year - 1;
+    const fyEnd = fyStart + 1;
+    return String(fyStart) + String(fyEnd).slice(-2);
+}
+
 export type PoResult = {
     created: { name: string; supplier: string; supplierName: string; itemCount: number; value: number }[];
     errors: { supplier: string; supplierName: string; message: string }[];
@@ -449,7 +461,8 @@ export async function createDraftPurchaseOrders(bomName: string, qty: number): P
                 };
             });
             const doc = await frappePost('Purchase Order', {
-                naming_series: process.env.ERPNEXT_PO_SERIES ?? 'PUR-ORD-.YYYY.-',
+                naming_series: 'PUR-ORD-.{custom_short_fiscal_year}.-.####.',
+                custom_short_fiscal_year: customShortFiscalYear(today),
                 supplier: g.supplier,
                 company,
                 transaction_date: addDays(today, 0),
