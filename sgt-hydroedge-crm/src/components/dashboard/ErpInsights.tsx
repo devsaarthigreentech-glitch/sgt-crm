@@ -9,8 +9,6 @@ const C = {
 const API = import.meta.env.VITE_API_URL ?? '/api/v1';
 const inr = (n: number) => '₹' + Math.round(n).toLocaleString('en-IN');
 
-// Role straight off the JWT in localStorage — used only to gate the PO button.
-// The API enforces the same rule, so this is purely a UI affordance.
 function roleFromToken(): string | null {
   const t = localStorage.getItem('sgt_token');
   if (!t) return null;
@@ -21,28 +19,29 @@ function roleFromToken(): string | null {
   } catch { return null; }
 }
 
-type SubAssembly = {
-  itemCode: string; itemName: string; perUnit: number; available: number; coversUnits: number;
+// ---- types mirroring buildable.ts ----
+type SubAssemblyMapEntry = {
+  itemCode: string; itemName: string; perUnit: number; available: number;
+  leadTimeDays: number; rawCodes: string[];
 };
 type Component = {
   itemCode: string; itemName: string; requiredPerUnit: number;
   available: number; reserved: number; leadTimeDays: number; maxUnits: number;
-  rate: number; // last purchase rate (₹) per unit, for shortage costing
+  rate: number;
 };
 type Product = {
   bom: string; itemCode: string; itemName: string; family: string;
   buildableNow: number; assemblyLeadDays: number; readyDateForBuildable: string;
   bottleneck: { itemName: string; available: number } | null;
   components: Component[];
-  subAssemblies?: SubAssembly[];
+  subAssemblyMap?: SubAssemblyMapEntry[];
 };
 type Pnl = { income: number; expense: number; netProfit: number; margin: number };
-
 type IncomeItemRow = { invoice: string; date: string; party: string; item: string; qty: number; amount: number };
 type ExpenseRow = { account: string; label: string; amount: number; isGroup: boolean };
 type ExpenseLevel = { parent: string | null; parentLabel: string; total: number; rows: ExpenseRow[] };
 
-// ---- PO plan/result shapes (mirror server src/services/buildable.ts) ----
+// ---- PO types ----
 type PoLine = { itemCode: string; itemName: string; qty: number; rate: number; uom: string; lineValue: number };
 type PoGroup = { supplier: string; supplierName: string; items: PoLine[]; subtotal: number };
 type PoPlan = {
@@ -57,59 +56,124 @@ type PoResult = {
   unresolved: { itemCode: string; itemName: string; qty: number }[];
 };
 
-function readyFor(p: Product, target: number) {
-    const shortages: { itemName: string; need: number; available: number; short: number; leadTimeDays: number; rate: number; cost: number }[] = [];
-    let procureDays = 0;
-    let shortageCost = 0;
-    for (const c of p.components) {
-      const need = target * c.requiredPerUnit;
-      const short = need - c.available;
-      if (short > 0) {
-        procureDays = Math.max(procureDays, c.leadTimeDays || 0);
-        const cost = short * (c.rate || 0);
-        shortageCost += cost;
-        shortages.push({ itemName: c.itemName, need, available: c.available, short, leadTimeDays: c.leadTimeDays || 0, rate: c.rate || 0, cost });
-      }
+// ---- shortage tree built client-side ----
+type RawShortageRow = {
+  itemCode: string; itemName: string; need: number; available: number;
+  short: number; rate: number; cost: number; leadTimeDays: number;
+};
+type SubShortageGroup = {
+  kind: 'sub';
+  itemCode: string; itemName: string;
+  subNeed: number; subAvailable: number; subShort: number; leadTimeDays: number;
+  rawShortages: RawShortageRow[];  // raw items that also need purchasing
+};
+type DirectShortageRow = { kind: 'direct' } & RawShortageRow;
+type ShortageNode = SubShortageGroup | DirectShortageRow;
+
+function buildShortageTree(p: Product, target: number): {
+  nodes: ShortageNode[];
+  shortageCost: number;
+  procureDays: number;
+} {
+  const byCode = new Map(p.components.map((c) => [c.itemCode, c]));
+  const subs = p.subAssemblyMap ?? [];
+
+  // Which raw codes are "owned" by a sub-assembly (vs used directly in final BOM)?
+  // A code belongs to a sub if it appears in that sub's rawCodes list.
+  const rawToSub = new Map<string, string>(); // rawItemCode -> subItemCode
+  for (const s of subs) {
+    for (const rc of s.rawCodes) {
+      rawToSub.set(rc, s.itemCode);
     }
-    const days = (shortages.length ? procureDays : 0) + p.assemblyLeadDays;
-    const date = new Date(Date.now() + days * 86400000).toLocaleDateString('en-IN', {
-      day: 'numeric', month: 'short', year: 'numeric',
-    });
-    return { days, date, shortages, shortageCost };
   }
 
-  export default function ErpInsights({ mode = 'full' }: { mode?: 'full' | 'capacity' } = {}) {
+  const nodes: ShortageNode[] = [];
+  let shortageCost = 0;
+  let procureDays = 0;
+
+  const handledRaw = new Set<string>();
+
+  // Step 1: sub-assembly groups
+  for (const s of subs) {
+    const subNeed = target * s.perUnit;
+    const subShort = Math.max(0, subNeed - s.available);
+    if (subShort <= 0) continue; // sub-assembly fully in stock — nothing to show
+
+    // Collect raw shortages under this sub
+    const rawShortages: RawShortageRow[] = [];
+    for (const rc of s.rawCodes) {
+      const c = byCode.get(rc);
+      if (!c) continue;
+      // Raw needed for the SHORT sub-assemblies only (the ones in stock are already netted)
+      const rawNeedForShortSubs = subShort * (c.requiredPerUnit / s.perUnit);
+      // Available raw on hand (not crediting sub stock — that's already in c.available)
+      const rawOnHand = c.available; // this is already netted in server
+      const rawShort = rawNeedForShortSubs - rawOnHand;
+      if (rawShort > 0) {
+        const cost = rawShort * (c.rate || 0);
+        shortageCost += cost;
+        procureDays = Math.max(procureDays, c.leadTimeDays || 0);
+        rawShortages.push({
+          itemCode: c.itemCode, itemName: c.itemName,
+          need: rawNeedForShortSubs, available: rawOnHand,
+          short: rawShort, rate: c.rate || 0, cost, leadTimeDays: c.leadTimeDays || 0,
+        });
+      }
+      handledRaw.add(rc);
+    }
+
+    nodes.push({ kind: 'sub', itemCode: s.itemCode, itemName: s.itemName, subNeed, subAvailable: s.available, subShort, leadTimeDays: s.leadTimeDays, rawShortages });
+  }
+
+  // Step 2: direct raw shortages (items not under any sub-assembly, or sub has no BOM mapping)
+  for (const c of p.components) {
+    if (handledRaw.has(c.itemCode)) continue; // already handled above
+    // Also skip if this item IS a sub-assembly (it appears in subAssemblyMap)
+    if (subs.some((s) => s.itemCode === c.itemCode)) continue;
+    const need = target * c.requiredPerUnit;
+    const short = need - c.available;
+    if (short <= 0) continue;
+    const cost = short * (c.rate || 0);
+    shortageCost += cost;
+    procureDays = Math.max(procureDays, c.leadTimeDays || 0);
+    nodes.push({ kind: 'direct', itemCode: c.itemCode, itemName: c.itemName, need, available: c.available, short, rate: c.rate || 0, cost, leadTimeDays: c.leadTimeDays || 0 });
+  }
+
+  return { nodes, shortageCost, procureDays };
+}
+
+function readyFor(p: Product, target: number) {
+  const { nodes, shortageCost, procureDays } = buildShortageTree(p, target);
+  const hasShortage = nodes.length > 0;
+  const days = (hasShortage ? procureDays : 0) + p.assemblyLeadDays;
+  const date = new Date(Date.now() + days * 86400000).toLocaleDateString('en-IN', {
+    day: 'numeric', month: 'short', year: 'numeric',
+  });
+  return { nodes, hasShortage, days, date, shortageCost };
+}
+
+export default function ErpInsights({ mode = 'full' }: { mode?: 'full' | 'capacity' } = {}) {
     const capacityOnly = mode === 'capacity';
     const [products, setProducts] = useState<Product[] | null>(null);
     const [pnl, setPnl] = useState<Pnl | null>(null);
     const [years, setYears] = useState<{ name: string; from: string; to: string }[]>([]);
-    const [period, setPeriod] = useState<string>(''); // FY name or '__all__'
+    const [period, setPeriod] = useState<string>('');
     const [err, setErr] = useState<string | null>(null);
-
-    // Collapsible Final Assembly / capacity calculator. In capacity-only mode
-    // (supply chain dashboard) it's expanded by default and the financials are hidden.
     const [capacityOpen, setCapacityOpen] = useState(capacityOnly);
-
-    // Income drill-down (invoice line items)
     const [incomeOpen, setIncomeOpen] = useState(false);
     const [incomeItems, setIncomeItems] = useState<{ total: number; rows: IncomeItemRow[] } | null>(null);
     const [incLoading, setIncLoading] = useState(false);
     const [incErr, setIncErr] = useState<string | null>(null);
-
-    // Expense drill-down (one tree level at a time)
     const [expenseOpen, setExpenseOpen] = useState(false);
-    const [expStack, setExpStack] = useState<ExpenseLevel[]>([]); // breadcrumb of levels
+    const [expStack, setExpStack] = useState<ExpenseLevel[]>([]);
     const [expLoading, setExpLoading] = useState(false);
     const [expErr, setExpErr] = useState<string | null>(null);
 
-    // load buildable + fiscal years once
     useEffect(() => {
       let ignore = false;
       fetch(`${API}/erp/buildable`).then((r) => r.json())
         .then((d) => { if (ignore) return; if (d.error) setErr(d.error); else { setProducts(d); setErr(null); } })
         .catch((e) => { if (!ignore) setErr(String(e)); });
-
-      // Financials aren't shown in capacity-only mode — skip the FY fetch.
       if (!capacityOnly) {
         fetch(`${API}/erp/fiscal-years`).then((r) => r.json())
           .then((d) => {
@@ -124,7 +188,6 @@ function readyFor(p: Product, target: number) {
       return () => { ignore = true; };
     }, []);
 
-    // (re)load P&L whenever the selected period changes (not in capacity-only mode)
     useEffect(() => {
       if (capacityOnly || !period) return;
       let url = `${API}/erp/pnl`;
@@ -146,40 +209,27 @@ function readyFor(p: Product, target: number) {
       }
       return null;
     };
-    const rangeQS = () => {
-      const rng = periodRange();
-      return rng ? `?from=${rng.from}&to=${rng.to}` : '';
-    };
+    const rangeQS = () => { const rng = periodRange(); return rng ? `?from=${rng.from}&to=${rng.to}` : ''; };
 
-    // ── Income: open modal, load invoice line items ──
     const openIncome = () => {
-      setIncomeOpen(true);
-      setIncLoading(true); setIncErr(null); setIncomeItems(null);
+      setIncomeOpen(true); setIncLoading(true); setIncErr(null); setIncomeItems(null);
       fetch(`${API}/erp/pnl/income-items${rangeQS()}`).then((r) => r.json())
         .then((d) => { if (d.error) setIncErr(d.error); else setIncomeItems(d); })
         .catch((e) => setIncErr(String(e)))
         .finally(() => setIncLoading(false));
     };
 
-    // ── Expense: load direct children of a node (null = root Expenses) ──
     const loadExpenseLevel = (parent: string | null, replaceStack?: boolean) => {
       setExpLoading(true); setExpErr(null);
       const sep = rangeQS() ? '&' : '?';
       const url = `${API}/erp/pnl/expense-children${rangeQS()}${parent ? `${sep}parent=${encodeURIComponent(parent)}` : ''}`;
       fetch(url).then((r) => r.json())
-        .then((d) => {
-          if (d.error) { setExpErr(d.error); return; }
-          setExpStack((prev) => (replaceStack ? [d] : [...prev, d]));
-        })
+        .then((d) => { if (d.error) { setExpErr(d.error); return; } setExpStack((prev) => (replaceStack ? [d] : [...prev, d])); })
         .catch((e) => setExpErr(String(e)))
         .finally(() => setExpLoading(false));
     };
 
-    const openExpense = () => {
-      setExpenseOpen(true);
-      setExpStack([]);
-      loadExpenseLevel(null, true);
-    };
+    const openExpense = () => { setExpenseOpen(true); setExpStack([]); loadExpenseLevel(null, true); };
 
     const families = useMemo(() => {
       const m: Record<string, Product[]> = {};
@@ -217,41 +267,23 @@ function readyFor(p: Product, target: number) {
 
         {err && <div style={{ color: C.red, fontSize: 13 }}>ERPNext: {err}</div>}
 
-        {/* Collapsible production-capacity calculator (always open in capacity mode) */}
         <div style={capacityOnly ? undefined : { borderTop: '1px solid #ece9df', marginTop: 6, paddingTop: 14 }}>
           {!capacityOnly && (
-            <button
-              onClick={() => setCapacityOpen((o) => !o)}
-              style={{
-                width: '100%', display: 'flex', alignItems: 'center', gap: 8,
-                background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-                textAlign: 'left',
-              }}
-            >
-              <span style={{
-                display: 'inline-flex', transform: capacityOpen ? 'rotate(90deg)' : 'none',
-                transition: 'transform 150ms', color: C.gold, fontSize: 14, fontWeight: 700,
-              }}>▸</span>
-              <span style={{ color: C.forest, fontSize: 14, fontWeight: 700 }}>
-                Final assembly · buildable-unit calculator
-              </span>
+            <button onClick={() => setCapacityOpen((o) => !o)}
+              style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left' }}>
+              <span style={{ display: 'inline-flex', transform: capacityOpen ? 'rotate(90deg)' : 'none', transition: 'transform 150ms', color: C.gold, fontSize: 14, fontWeight: 700 }}>▸</span>
+              <span style={{ color: C.forest, fontSize: 14, fontWeight: 700 }}>Final assembly · buildable-unit calculator</span>
               <span style={{ marginLeft: 'auto', fontSize: 11.5, color: '#999' }}>
                 {products ? `${products.length} product${products.length !== 1 ? 's' : ''}` : ''}
                 {capacityOpen ? '  · hide' : '  · show'}
               </span>
             </button>
           )}
-
-          {capacityOnly && (
-            <h2 style={{ color: C.forest, margin: '0 0 4px', fontSize: 18 }}>Final assembly · buildable-unit calculator</h2>
-          )}
-
+          {capacityOnly && <h2 style={{ color: C.forest, margin: '0 0 4px', fontSize: 18 }}>Final assembly · buildable-unit calculator</h2>}
           {capacityOpen && (
             <div style={{ marginTop: 14 }}>
               {!products && !err && <div style={{ color: C.green2, fontSize: 13 }}>Loading capacity…</div>}
-              {products && products.length === 0 && (
-                <div style={{ color: C.green2, fontSize: 13 }}>No final-assembly BOMs found in ERPNext.</div>
-              )}
+              {products && products.length === 0 && <div style={{ color: C.green2, fontSize: 13 }}>No final-assembly BOMs found in ERPNext.</div>}
               {Object.entries(families).map(([family, items]) => (
                 <div key={family} style={{ marginBottom: 18 }}>
                   <div style={{ color: C.gold, fontSize: 12, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 8 }}>{family}</div>
@@ -264,8 +296,7 @@ function readyFor(p: Product, target: number) {
           )}
         </div>
 
-
-        {/* ── Income modal: party · item · amount per invoice line ── */}
+        {/* Income modal */}
         {incomeOpen && (
           <div onClick={() => setIncomeOpen(false)} style={bdOverlay}>
             <div onClick={(e) => e.stopPropagation()} style={{ ...bdModal, maxWidth: 640 }}>
@@ -277,42 +308,22 @@ function readyFor(p: Product, target: number) {
                 {period === '__all__' ? 'All time' : period}
                 {incomeItems ? ` · ${incomeItems.rows.length} invoice lines · total ${inr(incomeItems.total)}` : ''}
               </div>
-              {incLoading ? (
-                <div style={{ color: C.green2, fontSize: 13 }}>Loading invoice items…</div>
-              ) : incErr ? (
-                <div style={{ color: C.red, fontSize: 13 }}>ERPNext: {incErr}</div>
-              ) : !incomeItems || incomeItems.rows.length === 0 ? (
-                <div style={{ color: '#777', fontSize: 13 }}>No sales invoices in this period.</div>
-              ) : (
+              {incLoading ? <div style={{ color: C.green2, fontSize: 13 }}>Loading invoice items…</div>
+               : incErr ? <div style={{ color: C.red, fontSize: 13 }}>ERPNext: {incErr}</div>
+               : !incomeItems || incomeItems.rows.length === 0 ? <div style={{ color: '#777', fontSize: 13 }}>No sales invoices in this period.</div>
+               : (
                 <div style={{ maxHeight: '60vh', overflowY: 'auto' }}>
-                  {/* header row */}
-                  <div style={{
-                    display: 'grid', gridTemplateColumns: '1.2fr 1.4fr auto',
-                    gap: 10, padding: '6px 8px', position: 'sticky', top: 0, background: '#fff',
-                    fontSize: 10.5, fontWeight: 700, color: '#999', letterSpacing: 0.5,
-                    textTransform: 'uppercase', borderBottom: `1.5px solid ${C.forest}`,
-                  }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.4fr auto', gap: 10, padding: '6px 8px', position: 'sticky', top: 0, background: '#fff', fontSize: 10.5, fontWeight: 700, color: '#999', letterSpacing: 0.5, textTransform: 'uppercase', borderBottom: `1.5px solid ${C.forest}` }}>
                     <span>Party</span><span>Item sold</span><span style={{ textAlign: 'right' }}>Amount</span>
                   </div>
                   {incomeItems.rows.map((r, i) => (
-                    <div key={i} style={{
-                      display: 'grid', gridTemplateColumns: '1.2fr 1.4fr auto',
-                      gap: 10, padding: '8px 8px', borderBottom: '1px solid #f0efe8',
-                      fontSize: 12.5, alignItems: 'start',
-                    }}>
+                    <div key={i} style={{ display: 'grid', gridTemplateColumns: '1.2fr 1.4fr auto', gap: 10, padding: '8px 8px', borderBottom: '1px solid #f0efe8', fontSize: 12.5, alignItems: 'start' }}>
                       <div>
                         <div style={{ color: C.forest, fontWeight: 600 }}>{r.party}</div>
-                        <div style={{ fontSize: 10.5, color: '#aaa', marginTop: 2 }}>
-                          {r.invoice}{r.date ? ` · ${new Date(r.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' })}` : ''}
-                        </div>
+                        <div style={{ fontSize: 10.5, color: '#aaa', marginTop: 2 }}>{r.invoice}{r.date ? ` · ${new Date(r.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' })}` : ''}</div>
                       </div>
-                      <div style={{ color: '#444' }}>
-                        {r.item}
-                        {r.qty ? <span style={{ color: '#999', fontSize: 11 }}> × {Number(r.qty.toFixed(2))}</span> : null}
-                      </div>
-                      <div style={{ textAlign: 'right', fontWeight: 700, whiteSpace: 'nowrap', color: r.amount >= 0 ? C.green2 : C.red }}>
-                        {inr(r.amount)}
-                      </div>
+                      <div style={{ color: '#444' }}>{r.item}{r.qty ? <span style={{ color: '#999', fontSize: 11 }}> × {Number(r.qty.toFixed(2))}</span> : null}</div>
+                      <div style={{ textAlign: 'right', fontWeight: 700, whiteSpace: 'nowrap', color: r.amount >= 0 ? C.green2 : C.red }}>{inr(r.amount)}</div>
                     </div>
                   ))}
                 </div>
@@ -321,63 +332,35 @@ function readyFor(p: Product, target: number) {
           </div>
         )}
 
-        {/* ── Expense modal: one tree level at a time ── */}
+        {/* Expense modal */}
         {expenseOpen && (
           <div onClick={() => setExpenseOpen(false)} style={bdOverlay}>
             <div onClick={(e) => e.stopPropagation()} style={{ ...bdModal, maxWidth: 520 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                  {expStack.length > 1 && (
-                    <button
-                      onClick={() => setExpStack((s) => s.slice(0, -1))}
-                      title="Back"
-                      style={{ border: 'none', background: '#f0efe8', borderRadius: 6, cursor: 'pointer', padding: '4px 9px', fontSize: 13, color: C.forest, fontWeight: 700 }}
-                    >←</button>
-                  )}
-                  <h3 style={{ margin: 0, fontSize: 16, color: C.forest, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {expLevel ? expLevel.parentLabel : 'Expenses'}
-                  </h3>
+                  {expStack.length > 1 && <button onClick={() => setExpStack((s) => s.slice(0, -1))} style={{ border: 'none', background: '#f0efe8', borderRadius: 6, cursor: 'pointer', padding: '4px 9px', fontSize: 13, color: C.forest, fontWeight: 700 }}>←</button>}
+                  <h3 style={{ margin: 0, fontSize: 16, color: C.forest, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{expLevel ? expLevel.parentLabel : 'Expenses'}</h3>
                 </div>
                 <button onClick={() => setExpenseOpen(false)} style={bdClose}>✕</button>
               </div>
               <div style={{ fontSize: 12, color: '#777', margin: '4px 0 14px' }}>
-                {period === '__all__' ? 'All time' : period}
-                {expLevel ? ` · total ${inr(expLevel.total)}` : ''}
-                {expStack.length > 1 && (
-                  <span style={{ color: '#bbb' }}> · {expStack.map((l) => l.parentLabel).join(' › ')}</span>
-                )}
+                {period === '__all__' ? 'All time' : period}{expLevel ? ` · total ${inr(expLevel.total)}` : ''}
+                {expStack.length > 1 && <span style={{ color: '#bbb' }}> · {expStack.map((l) => l.parentLabel).join(' › ')}</span>}
               </div>
-
-              {expLoading ? (
-                <div style={{ color: C.green2, fontSize: 13 }}>Loading…</div>
-              ) : expErr ? (
-                <div style={{ color: C.red, fontSize: 13 }}>ERPNext: {expErr}</div>
-              ) : !expLevel || expLevel.rows.length === 0 ? (
-                <div style={{ color: '#777', fontSize: 13 }}>No expense postings under this head.</div>
-              ) : (
+              {expLoading ? <div style={{ color: C.green2, fontSize: 13 }}>Loading…</div>
+               : expErr ? <div style={{ color: C.red, fontSize: 13 }}>ERPNext: {expErr}</div>
+               : !expLevel || expLevel.rows.length === 0 ? <div style={{ color: '#777', fontSize: 13 }}>No expense postings under this head.</div>
+               : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '55vh', overflowY: 'auto' }}>
                   {expLevel.rows.map((r) => {
                     const pct = expLevel.total ? Math.abs(r.amount) / Math.abs(expLevel.total) : 0;
                     return (
-                      <div
-                        key={r.account}
-                        onClick={() => { if (r.isGroup) loadExpenseLevel(r.account); }}
-                        style={{
-                          cursor: r.isGroup ? 'pointer' : 'default',
-                          padding: '8px 10px', borderRadius: 8,
-                          border: '1px solid #f0efe8',
-                          background: r.isGroup ? '#FCFBF6' : '#fff',
-                        }}
-                        title={r.isGroup ? 'Click to see the heads under this' : undefined}
-                      >
+                      <div key={r.account} onClick={() => { if (r.isGroup) loadExpenseLevel(r.account); }}
+                        style={{ cursor: r.isGroup ? 'pointer' : 'default', padding: '8px 10px', borderRadius: 8, border: '1px solid #f0efe8', background: r.isGroup ? '#FCFBF6' : '#fff' }}
+                        title={r.isGroup ? 'Click to see the heads under this' : undefined}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13, marginBottom: 5 }}>
-                          <span style={{ color: C.forest, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
-                            {r.label}
-                            {r.isGroup && <span style={{ color: C.gold, fontSize: 12 }}>▸</span>}
-                          </span>
-                          <span style={{ whiteSpace: 'nowrap', fontWeight: 700, color: r.amount >= 0 ? C.forest : C.healthy }}>
-                            {inr(r.amount)} <span style={{ color: '#999', fontWeight: 500, fontSize: 11 }}>{(pct * 100).toFixed(1)}%</span>
-                          </span>
+                          <span style={{ color: C.forest, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>{r.label}{r.isGroup && <span style={{ color: C.gold, fontSize: 12 }}>▸</span>}</span>
+                          <span style={{ whiteSpace: 'nowrap', fontWeight: 700, color: r.amount >= 0 ? C.forest : C.healthy }}>{inr(r.amount)} <span style={{ color: '#999', fontWeight: 500, fontSize: 11 }}>{(pct * 100).toFixed(1)}%</span></span>
                         </div>
                         <div style={{ height: 6, background: '#f0efe8', borderRadius: 3, overflow: 'hidden' }}>
                           <div style={{ height: '100%', width: `${Math.max(0, Math.min(100, pct * 100))}%`, background: C.gold, borderRadius: 3 }} />
@@ -403,21 +386,30 @@ function Stat({ label, value, color }: { label: string; value: string; color: st
   );
 }
 
+function RawRow({ s, isLast }: { s: { itemName: string; need: number; available: number; short: number; rate: number; cost: number; leadTimeDays: number }; isLast: boolean }) {
+  const fmt = (n: number) => Number(n.toFixed(2)).toLocaleString('en-IN');
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '4px 0', borderBottom: isLast ? 'none' : '1px solid #f0e6d2', fontSize: 11, color: '#555' }}>
+      <span style={{ color: C.forest, flex: 1, minWidth: 0 }}>{s.itemName}</span>
+      <span style={{ whiteSpace: 'nowrap', textAlign: 'right' }}>
+        need {fmt(s.need)} · have {fmt(s.available)} · <b style={{ color: C.red }}>short {fmt(s.short)}</b>
+        {s.leadTimeDays ? ` · ${s.leadTimeDays}d lead` : ''}
+        <br />
+        <span style={{ color: '#888' }}>
+          {s.rate > 0 ? <>{inr(s.rate)} = <b style={{ color: '#7A4A0E' }}>{inr(s.cost)}</b></> : 'no purchase rate on file'}
+        </span>
+      </span>
+    </div>
+  );
+}
+
 function ProductCard({ p }: { p: Product }) {
-    // Keep the raw string so the user can clear the field and type multi-digit
-    // numbers (e.g. backspace to empty, then type "20"). We only clamp to a valid
-    // number for the calculation and on blur — never on every keystroke.
     const [targetText, setTargetText] = useState<string>(String(p.buildableNow || 1));
     const target = Math.max(1, Number(targetText) || 1);
     const [open, setOpen] = useState(false);
     const r = readyFor(p, target);
-    const hasShortage = r.shortages.length > 0;
     const fmt = (n: number) => Number(n.toFixed(2)).toLocaleString('en-IN');
 
-    // Sub-assemblies on hand worth surfacing (those with stock > 0).
-    const heldSubs = (p.subAssemblies ?? []).filter((s) => s.available > 0);
-
-    // ── Draft-PO flow (supply_chain only) ──
     const role = roleFromToken();
     const canRaisePo = role === 'supply_chain';
     const [poOpen, setPoOpen] = useState(false);
@@ -430,10 +422,7 @@ function ProductCard({ p }: { p: Product }) {
     const openPo = async () => {
       setPoOpen(true); setPoPlan(null); setPoResult(null); setPoErr(null); setPoLoading(true);
       try {
-        const res = await authFetch(`${API}/erp/purchase/plan`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ bom: p.bom, qty: target }),
-        });
+        const res = await authFetch(`${API}/erp/purchase/plan`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bom: p.bom, qty: target }) });
         const d = await res.json();
         if (!res.ok || d.error) setPoErr(d.error || `Error ${res.status}`);
         else setPoPlan(d);
@@ -444,10 +433,7 @@ function ProductCard({ p }: { p: Product }) {
     const confirmPo = async () => {
       setPoBusy(true); setPoErr(null);
       try {
-        const res = await authFetch(`${API}/erp/purchase/orders`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ bom: p.bom, qty: target }),
-        });
+        const res = await authFetch(`${API}/erp/purchase/orders`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bom: p.bom, qty: target }) });
         const d = await res.json();
         if (!res.ok || d.error) setPoErr(d.error || `Error ${res.status}`);
         else setPoResult(d);
@@ -468,25 +454,9 @@ function ProductCard({ p }: { p: Product }) {
           Ready by <b>{p.readyDateForBuildable}</b> ({p.assemblyLeadDays}d assembly)
         </div>
 
-        {/* Sub-assemblies already on the shelf (these are netted into the count above) */}
-        {heldSubs.length > 0 && (
-          <div style={{ marginTop: 8, fontSize: 10.5, color: '#8a8676', lineHeight: 1.5 }}>
-            <span style={{ fontWeight: 700, color: C.gold, letterSpacing: 0.4, textTransform: 'uppercase', fontSize: 9.5 }}>
-              Sub-assemblies on hand
-            </span>
-            {heldSubs.map((s) => (
-              <div key={s.itemCode}>
-                {s.itemName}: <b style={{ color: '#6A675F' }}>{fmt(s.available)}</b> on hand
-                {s.coversUnits > 0 ? ` · covers ${s.coversUnits} unit${s.coversUnits !== 1 ? 's' : ''}` : ''}
-              </div>
-            ))}
-          </div>
-        )}
-
         <div style={{ borderTop: '1px solid #f0f0ea', marginTop: 12, paddingTop: 12 }}>
           <label style={{ fontSize: 11, color: '#777' }}>If I want&nbsp;
-            <input
-              type="number" min={1} value={targetText}
+            <input type="number" min={1} value={targetText}
               onChange={(e) => setTargetText(e.target.value)}
               onBlur={() => setTargetText(String(Math.max(1, Number(targetText) || 1)))}
               onFocus={(e) => e.currentTarget.select()}
@@ -494,12 +464,12 @@ function ProductCard({ p }: { p: Product }) {
           </label>
 
           <div style={{ marginTop: 6, fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
-            {hasShortage ? (
+            {r.hasShortage ? (
               <>
                 <span style={{ color: C.gold }}>
-                  Short on {r.shortages.length} item(s) · ready by <b style={{ color: C.forest }}>{r.date}</b> ({r.days}d)
+                  Short on {r.nodes.length} item{r.nodes.length !== 1 ? 's' : ''} · ready by <b style={{ color: C.forest }}>{r.date}</b> ({r.days}d)
                 </span>
-                <button onClick={() => setOpen((o) => !o)} title="Show shortage items"
+                <button onClick={() => setOpen((o) => !o)} title="Show shortage breakdown"
                   style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: C.red, fontSize: 14, padding: 0, lineHeight: 1 }}>
                   {open ? '▾' : '▸'}
                 </button>
@@ -509,7 +479,7 @@ function ProductCard({ p }: { p: Product }) {
             )}
           </div>
 
-          {hasShortage && (
+          {r.hasShortage && (
             <div style={{ marginTop: 6, fontSize: 12, color: '#555' }}>
               Shortage cost to procure:{' '}
               <b style={{ color: C.red }}>{r.shortageCost > 0 ? inr(r.shortageCost) : '—'}</b>
@@ -517,23 +487,45 @@ function ProductCard({ p }: { p: Product }) {
             </div>
           )}
 
-          {hasShortage && open && (
+          {/* Shortage breakdown tree */}
+          {r.hasShortage && open && (
             <div style={{ marginTop: 8, background: '#FCF6EE', border: '1px solid #efe3cd', borderRadius: 8, padding: 10 }}>
-              {r.shortages.map((s, i) => (
-                <div key={i} style={{ fontSize: 11, color: '#555', display: 'flex', justifyContent: 'space-between', gap: 10, padding: '4px 0', borderBottom: i < r.shortages.length - 1 ? '1px solid #f0e6d2' : 'none' }}>
-                  <span style={{ color: C.forest, flex: 1, minWidth: 0 }}>{s.itemName}</span>
-                  <span style={{ whiteSpace: 'nowrap', textAlign: 'right' }}>
-                    need {fmt(s.need)} · have {fmt(s.available)} · <b style={{ color: C.red }}>short {fmt(s.short)}</b>
-                    {s.leadTimeDays ? ` · ${s.leadTimeDays}d lead` : ''}
-                    <br />
-                    <span style={{ color: '#888' }}>
-                      {s.rate > 0
-                        ? <>@ {inr(s.rate)} = <b style={{ color: '#7A4A0E' }}>{inr(s.cost)}</b></>
-                        : 'no purchase rate on file'}
-                    </span>
-                  </span>
-                </div>
-              ))}
+              {r.nodes.map((node, ni) => {
+                const isLastNode = ni === r.nodes.length - 1;
+                if (node.kind === 'direct') {
+                  return (
+                    <RawRow key={node.itemCode} s={node} isLast={isLastNode} />
+                  );
+                }
+                // Sub-assembly group
+                return (
+                  <div key={node.itemCode} style={{ borderBottom: isLastNode ? 'none' : '1px solid #e8d9be', paddingBottom: isLastNode ? 0 : 8, marginBottom: isLastNode ? 0 : 8 }}>
+                    {/* Sub-assembly header row */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '3px 0', fontSize: 11.5 }}>
+                      <span style={{ color: C.forest, fontWeight: 700, flex: 1, minWidth: 0 }}>
+                        🔩 {node.itemName}
+                      </span>
+                      <span style={{ whiteSpace: 'nowrap', textAlign: 'right', color: '#555' }}>
+                        need {fmt(node.subNeed)} · have {fmt(node.subAvailable)} · <b style={{ color: C.red }}>short {fmt(node.subShort)}</b>
+                        {node.leadTimeDays ? ` · ${node.leadTimeDays}d lead` : ''}
+                      </span>
+                    </div>
+                    {/* Raw material children that need purchasing */}
+                    {node.rawShortages.length > 0 && (
+                      <div style={{ marginLeft: 14, marginTop: 4, borderLeft: `2px solid #e0c99a`, paddingLeft: 8 }}>
+                        {node.rawShortages.map((rs, ri) => (
+                          <RawRow key={rs.itemCode} s={rs} isLast={ri === node.rawShortages.length - 1} />
+                        ))}
+                      </div>
+                    )}
+                    {node.rawShortages.length === 0 && (
+                      <div style={{ marginLeft: 14, marginTop: 2, fontSize: 10.5, color: '#999' }}>
+                        Raw materials in stock · needs assembly only
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, fontWeight: 700, color: C.forest, paddingTop: 7, marginTop: 3, borderTop: '1.5px solid #e3d4b3' }}>
                 <span>Total shortage cost</span>
                 <span style={{ color: C.red }}>{r.shortageCost > 0 ? inr(r.shortageCost) : '—'}</span>
@@ -541,39 +533,27 @@ function ProductCard({ p }: { p: Product }) {
             </div>
           )}
 
-          {/* Supply-chain only: raise draft POs for the missing material */}
-          {hasShortage && canRaisePo && (
-            <button
-              onClick={openPo}
-              style={{
-                marginTop: 12, width: '100%', cursor: 'pointer',
-                background: C.forest, color: '#fff', border: 'none', borderRadius: 8,
-                padding: '9px 12px', fontSize: 12.5, fontWeight: 700,
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-              }}
-            >
-              Raise draft PO{r.shortages.length > 1 ? 's' : ''} for missing material
+          {r.hasShortage && canRaisePo && (
+            <button onClick={openPo}
+              style={{ marginTop: 12, width: '100%', cursor: 'pointer', background: C.forest, color: '#fff', border: 'none', borderRadius: 8, padding: '9px 12px', fontSize: 12.5, fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+              Raise draft PO{r.nodes.length > 1 ? 's' : ''} for missing material
             </button>
           )}
         </div>
 
-        {/* ── PO confirm / result modal ── */}
+        {/* PO modal */}
         {poOpen && (
           <div onClick={() => !poBusy && setPoOpen(false)} style={bdOverlay}>
             <div onClick={(e) => e.stopPropagation()} style={{ ...bdModal, maxWidth: 520 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <h3 style={{ margin: 0, fontSize: 16, color: C.forest }}>
-                  {poResult ? 'Draft POs created' : 'Raise draft purchase orders'}
-                </h3>
+                <h3 style={{ margin: 0, fontSize: 16, color: C.forest }}>{poResult ? 'Draft POs created' : 'Raise draft purchase orders'}</h3>
                 <button onClick={() => !poBusy && setPoOpen(false)} style={bdClose}>✕</button>
               </div>
               <div style={{ fontSize: 12, color: '#777', margin: '4px 0 14px' }}>
                 {p.itemName} · {target} unit{target !== 1 ? 's' : ''}
               </div>
-
               {poErr && <div style={{ color: C.red, fontSize: 13, marginBottom: 10 }}>ERPNext: {poErr}</div>}
 
-              {/* RESULT VIEW */}
               {poResult ? (
                 <div style={{ maxHeight: '60vh', overflowY: 'auto' }}>
                   {poResult.created.length > 0 ? (
@@ -584,52 +564,34 @@ function ProductCard({ p }: { p: Product }) {
                             <b style={{ color: C.forest }}>{c.name}</b>
                             <span style={{ color: C.healthy, fontWeight: 700 }}>draft</span>
                           </div>
-                          <div style={{ color: '#555', marginTop: 3 }}>
-                            {c.supplierName} · {c.itemCount} item{c.itemCount !== 1 ? 's' : ''} · {inr(c.value)}
-                          </div>
+                          <div style={{ color: '#555', marginTop: 3 }}>{c.supplierName} · {c.itemCount} item{c.itemCount !== 1 ? 's' : ''} · {inr(c.value)}</div>
                         </div>
                       ))}
                     </div>
-                  ) : (
-                    <div style={{ color: '#777', fontSize: 13 }}>No purchase orders were created.</div>
-                  )}
-
+                  ) : <div style={{ color: '#777', fontSize: 13 }}>No purchase orders were created.</div>}
                   {poResult.errors.length > 0 && (
                     <div style={{ marginTop: 12 }}>
                       <div style={{ fontSize: 11, fontWeight: 700, color: C.red, marginBottom: 6 }}>Failed</div>
                       {poResult.errors.map((e, i) => (
-                        <div key={i} style={{ fontSize: 11.5, color: '#7a4a0e', background: '#FCF6EE', border: '1px solid #efe3cd', borderRadius: 6, padding: '6px 8px', marginBottom: 6 }}>
-                          <b>{e.supplierName}</b>: {e.message}
-                        </div>
+                        <div key={i} style={{ fontSize: 11.5, color: '#7a4a0e', background: '#FCF6EE', border: '1px solid #efe3cd', borderRadius: 6, padding: '6px 8px', marginBottom: 6 }}><b>{e.supplierName}</b>: {e.message}</div>
                       ))}
                     </div>
                   )}
-
                   {poResult.unresolved.length > 0 && (
                     <div style={{ marginTop: 12, fontSize: 11.5, color: '#777' }}>
                       <b style={{ color: C.gold }}>No supplier on file</b> (add to a PO by hand):{' '}
                       {poResult.unresolved.map((u) => `${u.itemName} ×${u.qty}`).join(', ')}
                     </div>
                   )}
-
-                  <div style={{ marginTop: 14, fontSize: 11, color: '#999' }}>
-                    Open these in ERPNext to review rates and submit when ready — nothing has been submitted.
-                  </div>
-                  <button onClick={() => setPoOpen(false)}
-                    style={{ marginTop: 12, width: '100%', cursor: 'pointer', background: C.forest, color: '#fff', border: 'none', borderRadius: 8, padding: '9px 12px', fontSize: 12.5, fontWeight: 700 }}>
-                    Done
-                  </button>
+                  <div style={{ marginTop: 14, fontSize: 11, color: '#999' }}>Open in ERPNext to review and submit — nothing has been submitted.</div>
+                  <button onClick={() => setPoOpen(false)} style={{ marginTop: 12, width: '100%', cursor: 'pointer', background: C.forest, color: '#fff', border: 'none', borderRadius: 8, padding: '9px 12px', fontSize: 12.5, fontWeight: 700 }}>Done</button>
                 </div>
-
-              /* PLAN / CONFIRM VIEW */
               ) : poLoading ? (
                 <div style={{ color: C.green2, fontSize: 13 }}>Resolving suppliers…</div>
               ) : poPlan ? (
                 <div style={{ maxHeight: '60vh', overflowY: 'auto' }}>
                   {poPlan.groups.length === 0 ? (
-                    <div style={{ color: '#777', fontSize: 13 }}>
-                      Nothing to order — no shortage item could be traced to a supplier.
-                    </div>
+                    <div style={{ color: '#777', fontSize: 13 }}>Nothing to order — no shortage item traced to a supplier.</div>
                   ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                       {poPlan.groups.map((g) => (
@@ -642,7 +604,7 @@ function ProductCard({ p }: { p: Product }) {
                             <div key={it.itemCode} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 11.5, color: '#555', padding: '2px 0' }}>
                               <span style={{ color: C.forest, flex: 1, minWidth: 0 }}>{it.itemName}</span>
                               <span style={{ whiteSpace: 'nowrap' }}>
-                                {fmt(it.qty)} {it.uom} {it.rate > 0 ? <>@ {inr(it.rate)} = <b style={{ color: '#7A4A0E' }}>{inr(it.lineValue)}</b></> : <span style={{ color: '#999' }}>no rate</span>}
+                                {fmt(it.qty)} {it.uom} {it.rate > 0 ? <>{inr(it.rate)} = <b style={{ color: '#7A4A0E' }}>{inr(it.lineValue)}</b></> : <span style={{ color: '#999' }}>no rate</span>}
                               </span>
                             </div>
                           ))}
@@ -650,24 +612,19 @@ function ProductCard({ p }: { p: Product }) {
                       ))}
                     </div>
                   )}
-
                   {poPlan.unresolved.length > 0 && (
                     <div style={{ marginTop: 10, fontSize: 11.5, color: '#777' }}>
                       <b style={{ color: C.gold }}>No supplier on file</b> — left out, add by hand:{' '}
                       {poPlan.unresolved.map((u) => `${u.itemName} ×${u.qty}`).join(', ')}
                     </div>
                   )}
-
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, fontWeight: 700, color: C.forest, marginTop: 12, paddingTop: 8, borderTop: '1.5px solid #e3d4b3' }}>
                     <span>{poPlan.poCount} draft PO{poPlan.poCount !== 1 ? 's' : ''} · qty rounded up</span>
                     <span style={{ color: C.red }}>{inr(poPlan.grandTotal)}</span>
                   </div>
-
                   <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
                     <button onClick={() => setPoOpen(false)} disabled={poBusy}
-                      style={{ flex: 1, cursor: poBusy ? 'default' : 'pointer', background: '#f0efe8', color: '#555', border: 'none', borderRadius: 8, padding: '9px 12px', fontSize: 12.5, fontWeight: 700 }}>
-                      Cancel
-                    </button>
+                      style={{ flex: 1, cursor: poBusy ? 'default' : 'pointer', background: '#f0efe8', color: '#555', border: 'none', borderRadius: 8, padding: '9px 12px', fontSize: 12.5, fontWeight: 700 }}>Cancel</button>
                     <button onClick={confirmPo} disabled={poBusy || poPlan.poCount === 0}
                       style={{ flex: 2, cursor: poBusy || poPlan.poCount === 0 ? 'default' : 'pointer', background: poPlan.poCount === 0 ? '#bbb' : C.forest, color: '#fff', border: 'none', borderRadius: 8, padding: '9px 12px', fontSize: 12.5, fontWeight: 700 }}>
                       {poBusy ? 'Creating…' : `Create ${poPlan.poCount} draft PO${poPlan.poCount !== 1 ? 's' : ''}`}
