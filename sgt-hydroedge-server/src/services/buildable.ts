@@ -418,7 +418,7 @@ async function defaultCompany(): Promise<string> {
 }
 
 export type PoResult = {
-    created: { name: string; supplier: string; supplierName: string; itemCount: number; value: number, series: string }[];
+    created: { name: string; supplier: string; supplierName: string; itemCount: number; value: number }[];
     errors: { supplier: string; supplierName: string; message: string }[];
     unresolved: { itemCode: string; itemName: string; qty: number }[];
 };
@@ -451,12 +451,12 @@ export async function createDraftPurchaseOrders(bomName: string, qty: number): P
             const doc = await frappePost('Purchase Order', {
                 supplier: g.supplier,
                 company,
-                series: 'PUR-ORD-.{custom_short_fiscal_year}.-.####.',
+                naming_series: 'PUR-ORD-.{custom_short_fiscal_year}.-.####.',
                 transaction_date: addDays(today, 0),
                 schedule_date: addDays(today, DEFAULT_ASSEMBLY_DAYS),
                 items,
             });
-            created.push({ name: doc.name, series: 'PUR-ORD-.{custom_short_fiscal_year}.-.####.', supplier: g.supplier, supplierName: g.supplierName, itemCount: g.items.length, value: g.subtotal });
+            created.push({ name: doc.name, supplier: g.supplier, supplierName: g.supplierName, itemCount: g.items.length, value: g.subtotal });
         } catch (e: any) {
             errors.push({ supplier: g.supplier, supplierName: g.supplierName, message: String(e?.message ?? e).slice(0, 300) });
         }
