@@ -451,6 +451,7 @@ export async function createDraftPurchaseOrders(bomName: string, qty: number): P
             const doc = await frappePost('Purchase Order', {
                 supplier: g.supplier,
                 company,
+                series: 'PUR-ORD-.{custom_short_fiscal_year}.-.####.',
                 transaction_date: addDays(today, 0),
                 schedule_date: addDays(today, DEFAULT_ASSEMBLY_DAYS),
                 items,
