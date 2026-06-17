@@ -9,6 +9,9 @@ const SECRET = process.env.ERPNEXT_API_SECRET!;
 const DEFAULT_ASSEMBLY_DAYS = Number(process.env.ERP_DEFAULT_ASSEMBLY_DAYS ?? 7);
 const FINAL_ITEM_GROUPS = (process.env.ERP_FINAL_ITEM_GROUP ?? 'Final Assembly')
     .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+// Tax templates — set in .env to match your ERPNext Purchase Taxes and Charges Template names.
+const TAX_INSTATE = process.env.ERP_TAX_INSTATE ?? 'Input GST In-state - SGT';
+const TAX_IGST    = process.env.ERP_TAX_IGST    ?? 'Input GST Interstate - SGT';
 
 function authHeaders() {
     return { Authorization: `token ${KEY}:${SECRET}`, Accept: 'application/json' };
@@ -429,6 +432,38 @@ function customShortFiscalYear(date: Date): string {
     return String(fyStart) + String(fyEnd).slice(-2);
 }
 
+// Resolve which Purchase Taxes and Charges Template to use for this supplier.
+// Compares GST state codes: same state -> CGST+SGST (in-state), different -> IGST.
+// Falls back to in-state if supplier has no GSTIN (unregistered / composition dealers).
+let companyGstinCache: string | null = null;
+async function companyGstin(companyName: string): Promise<string> {
+    if (companyGstinCache !== null) return companyGstinCache;
+    const rows = await getList('Company', {
+        filters: [['name', '=', companyName]],
+        fields: ['gstin'],
+        limit: 1,
+    });
+    companyGstinCache = rows?.[0]?.gstin ?? '';
+    return companyGstinCache!;
+}
+
+async function supplierTaxTemplate(supplierName: string, companyName: string): Promise<string> {
+    try {
+        const [supplierDoc, coGstin] = await Promise.all([
+            getDoc('Supplier', supplierName),
+            companyGstin(companyName),
+        ]);
+        const supGstin: string = supplierDoc.gstin ?? '';
+        const supState  = supGstin.slice(0, 2);
+        const coState   = coGstin.slice(0, 2);
+        // If either GSTIN is missing, default to in-state (safe for same-state unregistered).
+        if (!supState || !coState || supState === coState) return TAX_INSTATE;
+        return TAX_IGST;
+    } catch {
+        return TAX_INSTATE; // never break PO creation over a tax lookup failure
+    }
+}
+
 export type PoResult = {
     created: { name: string; supplier: string; supplierName: string; itemCount: number; value: number }[];
     errors: { supplier: string; supplierName: string; message: string }[];
@@ -448,26 +483,30 @@ export async function createDraftPurchaseOrders(bomName: string, qty: number): P
 
     for (const g of plan.groups) {
         try {
-            const items = g.items.map((it) => {
-                // Use item's own lead time; fall back to default assembly days
-                const lead = meta[it.itemCode]?.leadTimeDays || DEFAULT_ASSEMBLY_DAYS;
-                return {
-                    item_code: it.itemCode,
-                    qty: it.qty,
-                    rate: it.rate,
-                    uom: it.uom,
-                    conversion_factor: 1,
-                    schedule_date: addDays(today, lead),
-                };
-            });
+            const [taxTemplate, items0] = await Promise.all([
+                supplierTaxTemplate(g.supplier, company),
+                Promise.resolve(g.items.map((it) => {
+                    // Use item's own lead time; fall back to default assembly days
+                    const lead = meta[it.itemCode]?.leadTimeDays || DEFAULT_ASSEMBLY_DAYS;
+                    return {
+                        item_code: it.itemCode,
+                        qty: it.qty,
+                        rate: it.rate,
+                        uom: it.uom,
+                        conversion_factor: 1,
+                        schedule_date: addDays(today, lead),
+                    };
+                })),
+            ]);
             const doc = await frappePost('Purchase Order', {
                 naming_series: 'PUR-ORD-.{custom_short_fiscal_year}.-.####.',
                 custom_short_fiscal_year: customShortFiscalYear(today),
                 supplier: g.supplier,
                 company,
+                taxes_and_charges: taxTemplate,
                 transaction_date: addDays(today, 0),
                 schedule_date: addDays(today, DEFAULT_ASSEMBLY_DAYS),
-                items,
+                items: items0,
             });
             created.push({ name: doc.name, supplier: g.supplier, supplierName: g.supplierName, itemCount: g.items.length, value: g.subtotal });
         } catch (e: any) {

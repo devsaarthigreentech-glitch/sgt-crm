@@ -36,6 +36,25 @@ export default async function erpRoutes(app: FastifyInstance) {
     catch (e: any) { reply.code(502); return { error: e.message }; }
   });
 
+  // Customer list from ERPNext — director and sales only
+  app.get('/erp/customers', { preHandler: requireRole('director', 'sales') }, async (_req, reply) => {
+    try {
+      const BASE = process.env.ERPNEXT_URL;
+      const KEY  = process.env.ERPNEXT_API_KEY;
+      const SEC  = process.env.ERPNEXT_API_SECRET;
+      const headers = { Authorization: `token ${KEY}:${SEC}`, Accept: 'application/json' };
+      const params = new URLSearchParams({
+        fields: JSON.stringify(['name','customer_name','customer_group','territory','customer_type','mobile_no','email_id','tax_id','disabled']),
+        filters: JSON.stringify([['disabled','=',0]]),
+        limit_page_length: '0',
+        order_by: 'customer_name asc',
+      });
+      const res = await fetch(`${BASE}/api/resource/Customer?${params}`, { headers });
+      if (!res.ok) { reply.code(502); return { error: `ERPNext ${res.status}` }; }
+      return (await res.json()).data;
+    } catch (e: any) { reply.code(502); return { error: e.message }; }
+  });
+
   app.get('/erp/fiscal-years', async (_req, reply) => {
     try { return await getFiscalYears(); }
     catch (e: any) { reply.code(502); return { error: e.message }; }
