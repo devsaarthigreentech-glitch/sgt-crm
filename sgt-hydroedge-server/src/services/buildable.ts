@@ -124,11 +124,13 @@ async function itemMeta(codes: string[]) {
 
 // raw-material-per-1-sub-assembly, fully exploded, memoised by the sub's BOM name
 const subRawCache = new Map<string, Record<string, number>>();
+const subCostCache = new Map<string, number>(); // per-1-unit standard cost of a sub-assembly BOM
 async function rawPerSub(bomNo: string): Promise<Record<string, number>> {
     const hit = subRawCache.get(bomNo);
     if (hit) return hit;
     const d = await getDoc('BOM', bomNo);
     const div = Number(d.quantity || 1) || 1;
+    subCostCache.set(bomNo, Number(d.total_cost || 0) / div);
     const out: Record<string, number> = {};
     for (const ex of d.exploded_items ?? []) {
         out[ex.item_code] = (out[ex.item_code] ?? 0) + Number(ex.stock_qty || 0) / div;
@@ -178,6 +180,7 @@ export type BuildComponent = {
 export type BuildProduct = {
     bom: string; itemCode: string; itemName: string; family: string;
     buildableNow: number; assemblyLeadDays: number; readyDateForBuildable: string;
+    bomTotalCost: number;   // per-finished-unit standard cost from the BOM (total_cost / quantity)
     bottleneck: { itemCode: string; itemName: string; available: number } | null;
     components: BuildComponent[];
     // New: structured shortage tree for display. Only populated when qty > buildableNow.
@@ -188,6 +191,7 @@ export type BuildProduct = {
         itemName: string;
         perUnit: number;        // per finished unit
         available: number;      // on-hand pre-built
+        bomCost: number;        // per-unit standard cost of THIS sub-assembly's BOM (it's made, not bought)
         leadTimeDays: number;
         rawCodes: string[];     // which raw item_codes belong to this sub
     }[];
@@ -227,7 +231,7 @@ async function computeProducts(): Promise<BuildProduct[]> {
     perDoc.forEach((pd) => pd.subs.forEach((s: any) => subBomNos.add(s.bomNo)));
     const subRaw: Record<string, Record<string, number>> = {};
     for (const bn of subBomNos) {
-        subRaw[bn] = await rawPerSub(bn);
+        subRaw[bn] = await rawPerSub(bn);   // also populates subCostCache
         for (const code of Object.keys(subRaw[bn])) rawCodes.add(code);
     }
 
@@ -250,6 +254,7 @@ async function computeProducts(): Promise<BuildProduct[]> {
                 itemName: m?.itemName ?? s.itemCode,
                 perUnit: s.perUnit,
                 available: onhand,
+                bomCost: subCostCache.get(s.bomNo) ?? 0,
                 leadTimeDays: m?.leadTimeDays ?? 0,
                 rawCodes: Object.keys(rp),
             };
@@ -289,6 +294,7 @@ async function computeProducts(): Promise<BuildProduct[]> {
             buildableNow,
             assemblyLeadDays,
             readyDateForBuildable: addDays(today, assemblyLeadDays),
+            bomTotalCost: Number(d.total_cost || 0) / divisor,
             bottleneck: bottleneck
                 ? { itemCode: bottleneck.itemCode, itemName: bottleneck.itemName, available: bottleneck.available }
                 : null,
@@ -301,7 +307,7 @@ async function computeProducts(): Promise<BuildProduct[]> {
 }
 
 export async function getBuildable(): Promise<BuildProduct[]> {
-    return cached('buildable_v3', 5 * 60_000, computeProducts);
+    return cached('buildable_v4', 5 * 60_000, computeProducts);
 }
 
 // ---------------------------------------------------------------------------

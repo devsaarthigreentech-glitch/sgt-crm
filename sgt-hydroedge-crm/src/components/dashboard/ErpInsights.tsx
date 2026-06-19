@@ -22,7 +22,7 @@ function roleFromToken(): string | null {
 // ---- types mirroring buildable.ts ----
 type SubAssemblyMapEntry = {
   itemCode: string; itemName: string; perUnit: number; available: number;
-  leadTimeDays: number; rawCodes: string[];
+  bomCost?: number; leadTimeDays: number; rawCodes: string[];
 };
 type Component = {
   itemCode: string; itemName: string; requiredPerUnit: number;
@@ -34,6 +34,7 @@ type Product = {
   buildableNow: number; assemblyLeadDays: number; readyDateForBuildable: string;
   bottleneck: { itemName: string; available: number } | null;
   components: Component[];
+  bomTotalCost?: number;
   subAssemblyMap?: SubAssemblyMapEntry[];
 };
 type Pnl = { income: number; expense: number; netProfit: number; margin: number };
@@ -65,6 +66,7 @@ type SubShortageGroup = {
   kind: 'sub';
   itemCode: string; itemName: string;
   subNeed: number; subAvailable: number; subShort: number; leadTimeDays: number;
+  subUnitCost: number; subBuildCost: number;
   rawShortages: RawShortageRow[];  // raw items that also need purchasing
 };
 type DirectShortageRow = { kind: 'direct' } & RawShortageRow;
@@ -99,19 +101,24 @@ function buildShortageTree(p: Product, target: number): {
     const subShort = Math.max(0, subNeed - s.available);
     if (subShort <= 0) continue; // sub-assembly fully in stock — nothing to show
 
-    // Collect raw shortages under this sub
+    const subUnitCost = s.bomCost || 0;
+    const subBuildCost = subShort * subUnitCost;
+
+    // Raw materials under this sub (shown for transparency; the sub BOM cost
+    // already includes them, so their cost is NOT added again to the total).
     const rawShortages: RawShortageRow[] = [];
+    let rawCost = 0;
     for (const rc of s.rawCodes) {
       const c = byCode.get(rc);
       if (!c) continue;
       // Raw needed for the SHORT sub-assemblies only (the ones in stock are already netted)
       const rawNeedForShortSubs = subShort * (c.requiredPerUnit / s.perUnit);
       // Available raw on hand (not crediting sub stock — that's already in c.available)
-      const rawOnHand = c.available; // this is already netted in server
+      const rawOnHand = c.available;
       const rawShort = rawNeedForShortSubs - rawOnHand;
       if (rawShort > 0) {
         const cost = rawShort * (c.rate || 0);
-        shortageCost += cost;
+        rawCost += cost;
         procureDays = Math.max(procureDays, c.leadTimeDays || 0);
         rawShortages.push({
           itemCode: c.itemCode, itemName: c.itemName,
@@ -122,7 +129,16 @@ function buildShortageTree(p: Product, target: number): {
       handledRaw.add(rc);
     }
 
-    nodes.push({ kind: 'sub', itemCode: s.itemCode, itemName: s.itemName, subNeed, subAvailable: s.available, subShort, leadTimeDays: s.leadTimeDays, rawShortages });
+    // Prefer the sub-assembly's own BOM cost (it's manufactured, not bought).
+    // Fall back to summed raw-material cost only if the sub BOM has no total_cost.
+    shortageCost += subUnitCost > 0 ? subBuildCost : rawCost;
+    procureDays = Math.max(procureDays, s.leadTimeDays || 0);
+
+    nodes.push({
+      kind: 'sub', itemCode: s.itemCode, itemName: s.itemName,
+      subNeed, subAvailable: s.available, subShort, leadTimeDays: s.leadTimeDays,
+      subUnitCost, subBuildCost, rawShortages,
+    });
   }
 
   // Step 2: direct raw shortages (items not under any sub-assembly, or sub has no BOM mapping)
@@ -453,6 +469,11 @@ function ProductCard({ p }: { p: Product }) {
         <div style={{ fontSize: 11, color: '#666', marginTop: 6 }}>
           Ready by <b>{p.readyDateForBuildable}</b> ({p.assemblyLeadDays}d assembly)
         </div>
+        {p.bomTotalCost ? (
+          <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>
+            Unit cost (BOM): <b style={{ color: '#7A4A0E' }}>{inr(p.bomTotalCost)}</b>
+          </div>
+        ) : null}
 
         <div style={{ borderTop: '1px solid #f0f0ea', marginTop: 12, paddingTop: 12 }}>
           <label style={{ fontSize: 11, color: '#777' }}>If I want&nbsp;
@@ -481,9 +502,9 @@ function ProductCard({ p }: { p: Product }) {
 
           {r.hasShortage && (
             <div style={{ marginTop: 6, fontSize: 12, color: '#555' }}>
-              Shortage cost to procure:{' '}
+              Cost to make missing items:{' '}
               <b style={{ color: C.red }}>{r.shortageCost > 0 ? inr(r.shortageCost) : '—'}</b>
-              <span style={{ color: '#999', fontSize: 10.5 }}> · at last purchase rate</span>
+              <span style={{ color: '#999', fontSize: 10.5 }}> · sub-assembly BOM cost + raw at last purchase rate</span>
             </div>
           )}
 
@@ -508,6 +529,9 @@ function ProductCard({ p }: { p: Product }) {
                       <span style={{ whiteSpace: 'nowrap', textAlign: 'right', color: '#555' }}>
                         need {fmt(node.subNeed)} · have {fmt(node.subAvailable)} · <b style={{ color: C.red }}>short {fmt(node.subShort)}</b>
                         {node.leadTimeDays ? ` · ${node.leadTimeDays}d lead` : ''}
+                        {node.subUnitCost > 0 && (
+                          <><br /><span style={{ color: '#888' }}>build {fmt(node.subShort)} × {inr(node.subUnitCost)} = <b style={{ color: '#7A4A0E' }}>{inr(node.subBuildCost)}</b></span></>
+                        )}
                       </span>
                     </div>
                     {/* Raw material children that need purchasing */}
@@ -527,7 +551,7 @@ function ProductCard({ p }: { p: Product }) {
                 );
               })}
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, fontWeight: 700, color: C.forest, paddingTop: 7, marginTop: 3, borderTop: '1.5px solid #e3d4b3' }}>
-                <span>Total shortage cost</span>
+                <span>Total cost to make</span>
                 <span style={{ color: C.red }}>{r.shortageCost > 0 ? inr(r.shortageCost) : '—'}</span>
               </div>
             </div>

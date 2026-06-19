@@ -1,12 +1,17 @@
 // src/components/dashboard/IncomeTarget.tsx
 // Quarter-wise income targets vs ERPNext actuals, with shortfall carry-forward.
 // Editable by directors only (PUT is role-guarded on the server too).
+//
+// Display rule: each quarter shows the director's SET (base) target as the headline.
+// Carry-forward is only surfaced once a quarter has actually started — at which
+// point that quarter shows the breakdown inline as "target + carried = effective".
+// Future quarters stay clean (base target only) so the picture isn't pre-inflated.
 import { useEffect, useState } from 'react'
 import { Target, Pencil, ArrowDownToLine } from 'lucide-react'
 import { authFetch } from '../../lib/auth'
 
 const API = import.meta.env.VITE_API_URL ?? '/api/v1'
-const C = { forest: '#1F4E2E', green2: '#2D7A4F', gold: '#C9A24E', red: '#C84A3A', healthy: '#3B9D6E' }
+const C = { forest: '#1F4E2E', green2: '#2D7A4F', gold: '#C9A24E', red: '#C84A3A', healthy: '#3B9D6E', neutral: '#B7B3A6' }
 
 const inr = (n: number) => '₹' + Math.round(n).toLocaleString('en-IN')
 const inrShort = (n: number) => {
@@ -14,6 +19,13 @@ const inrShort = (n: number) => {
   if (a >= 1e7) return '₹' + (n / 1e7).toFixed(2).replace(/\.00$/, '') + 'Cr'
   if (a >= 1e5) return '₹' + (n / 1e5).toFixed(1).replace(/\.0$/, '') + 'L'
   return inr(n)
+}
+
+// India fiscal year starts in April. Returns 0..3 for the quarter that "today"
+// falls in: Apr-Jun=Q1(0), Jul-Sep=Q2(1), Oct-Dec=Q3(2), Jan-Mar=Q4(3).
+function currentFyQuarterIndex(): number {
+  const m = new Date().getMonth() + 1 // 1..12
+  return m >= 4 ? Math.floor((m - 4) / 3) : Math.floor((m + 8) / 3)
 }
 
 type Quarter = {
@@ -66,6 +78,8 @@ export default function IncomeTarget({ role }: { role: string }) {
     return <Wrap><Head data={null} isDirector={false} onEdit={() => {}} /><div style={{ color: C.green2, fontSize: 13 }}>Loading targets…</div></Wrap>
   }
 
+  const currentQ = currentFyQuarterIndex()
+
   return (
     <Wrap>
       <Head data={data} isDirector={isDirector} onEdit={() => setEditing(true)} />
@@ -95,46 +109,65 @@ export default function IncomeTarget({ role }: { role: string }) {
 
       {/* Quarter grid */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
-        {data.quarters.map(q => (
-          <div key={q.quarter} style={{
-            background: '#fff', border: '1px solid #eee', borderRadius: 10, padding: '12px 13px',
-            borderTop: `3px solid ${q.met ? C.healthy : q.pct >= 0.5 ? C.gold : C.red}`,
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <span style={{ fontSize: 12, fontWeight: 700, color: C.forest }}>{q.quarter}</span>
-              <span style={{
-                fontSize: 10.5, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
-                color: q.met ? '#1f6b3f' : '#7A4A0E',
-                background: q.met ? '#DDE9C9' : '#F3E2BE',
-              }}>
-                {q.met ? 'Met' : `${(q.pct * 100).toFixed(0)}%`}
-              </span>
-            </div>
-            <div style={{ fontSize: 15, fontWeight: 800, color: C.green2, fontFamily: 'monospace' }}>
-              {inrShort(q.actual)}
-            </div>
-            <div style={{ fontSize: 10.5, color: '#999', marginTop: 2 }}>
-              target {inrShort(q.effectiveTarget)}
-            </div>
-            <div style={{ height: 5, background: '#f0efe8', borderRadius: 3, overflow: 'hidden', margin: '7px 0 6px' }}>
-              <div style={{ height: '100%', width: `${Math.max(0, Math.min(100, q.pct * 100))}%`, background: q.met ? C.healthy : C.gold, borderRadius: 3 }} />
-            </div>
-            {q.carriedIn > 0 && (
-              <div style={{ fontSize: 10, color: C.red, display: 'flex', alignItems: 'center', gap: 3 }}>
-                <ArrowDownToLine size={10} strokeWidth={2.25} />
-                +{inrShort(q.carriedIn)} carried in
+        {data.quarters.map((q, i) => {
+          // A quarter is "active" once we've reached it. Only then does carry-forward
+          // from completed prior quarters become meaningful — future quarters stay clean.
+          const started = i <= currentQ
+          const showCarry = started && q.carriedIn > 0
+          const topColor = !started ? C.neutral : q.met ? C.healthy : q.pct >= 0.5 ? C.gold : C.red
+          return (
+            <div key={q.quarter} style={{
+              background: '#fff', border: '1px solid #eee', borderRadius: 10, padding: '12px 13px',
+              borderTop: `3px solid ${topColor}`,
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: C.forest }}>{q.quarter}</span>
+                {!started ? (
+                  <span style={{ fontSize: 10.5, fontWeight: 700, padding: '1px 6px', borderRadius: 4, color: '#8a8678', background: '#EFEDE4' }}>
+                    Upcoming
+                  </span>
+                ) : (
+                  <span style={{
+                    fontSize: 10.5, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
+                    color: q.met ? '#1f6b3f' : '#7A4A0E',
+                    background: q.met ? '#DDE9C9' : '#F3E2BE',
+                  }}>
+                    {q.met ? 'Met' : `${(q.pct * 100).toFixed(0)}%`}
+                  </span>
+                )}
               </div>
-            )}
-            {q.carriedIn === 0 && q.shortfall < 0 && (
-              <div style={{ fontSize: 10, color: C.healthy }}>
-                {inrShort(-q.shortfall)} ahead
+              <div style={{ fontSize: 15, fontWeight: 800, color: C.green2, fontFamily: 'monospace' }}>
+                {inrShort(q.actual)}
               </div>
-            )}
-          </div>
-        ))}
+              <div style={{ fontSize: 10.5, color: '#999', marginTop: 2 }}>
+                {showCarry ? (
+                  <>target {inrShort(q.baseTarget)} <span style={{ color: C.red }}>+ {inrShort(q.carriedIn)}</span> = <b style={{ color: '#555' }}>{inrShort(q.effectiveTarget)}</b></>
+                ) : (
+                  <>target {inrShort(q.baseTarget)}</>
+                )}
+              </div>
+              <div style={{ height: 5, background: '#f0efe8', borderRadius: 3, overflow: 'hidden', margin: '7px 0 6px' }}>
+                <div style={{ height: '100%', width: `${Math.max(0, Math.min(100, q.pct * 100))}%`, background: q.met ? C.healthy : C.gold, borderRadius: 3 }} />
+              </div>
+              {showCarry && (
+                <div style={{ fontSize: 10, color: C.red, display: 'flex', alignItems: 'center', gap: 3 }}>
+                  <ArrowDownToLine size={10} strokeWidth={2.25} />
+                  carried from earlier quarters
+                </div>
+              )}
+              {started && q.carriedIn === 0 && q.shortfall < 0 && (
+                <div style={{ fontSize: 10, color: C.healthy }}>
+                  {inrShort(-q.shortfall)} ahead
+                </div>
+              )}
+            </div>
+          )
+        })}
       </div>
 
-      {data.carryForwardOutstanding > 0 && (
+      {/* Year-end carry banner only matters once we're actually in Q4 — before that
+          it's speculative, so we keep it hidden. */}
+      {currentQ >= 3 && data.carryForwardOutstanding > 0 && (
         <div style={{
           marginTop: 12, padding: '9px 12px', borderRadius: 8,
           background: '#FCF6EE', border: '1px solid #efe3cd',
