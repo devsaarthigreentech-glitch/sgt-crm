@@ -95,7 +95,7 @@ export default function App() {
         {effectivePage === 'home' || effectivePage === 'my-dashboard' ? (
           <HomeDashboard
             leads={leads}
-            view={effectivePage === 'home' ? 'director' : (user.role === 'supply_chain' ? 'supply' : 'sales')}
+            view={effectivePage === 'home' ? 'director' : (user.role === 'supply_chain' ? 'supply' : user.role === 'accounts' ? 'accounts' : 'sales')}
             userName={user.name}
             role={user.role}
             onLeadClick={lead => { setSelectedLead(lead); setPage('pipeline') }}

@@ -1,6 +1,7 @@
 // import { FastifyInstance } from 'fastify'
 // import { z } from 'zod'
 // import { query } from '../db/pool'
+import { ensureErpCustomer } from '../services/erpCustomer.js'
 // import {
 //   normaliseAccountName,
 //   generateDisplayId,
@@ -1105,7 +1106,7 @@ export async function leadsRoutes(fastify: FastifyInstance) {
     const { id } = request.params
 
     const lead = await query(
-      `SELECT id, stage FROM lead_service.leads
+      `SELECT id, stage, account_id FROM lead_service.leads
        WHERE id = $1 AND deleted_at IS NULL`,
       [id]
     )
@@ -1160,6 +1161,14 @@ export async function leadsRoutes(fastify: FastifyInstance) {
         JSON.stringify({ stage: newStage }),
       ]
     )
+
+    // On close-won, ensure an ERPNext Customer exists for this account.
+    // Fire-and-forget: never delay or fail the close over an ERPNext hiccup.
+    if (body.outcome === 'WON' && lead.rows[0].account_id) {
+      ensureErpCustomer(lead.rows[0].account_id)
+        .then((r) => { if (r.status === 'error') request.log.warn({ accountId: lead.rows[0].account_id, reason: r.reason }, 'ensureErpCustomer failed') })
+        .catch((e) => request.log.warn({ err: e }, 'ensureErpCustomer threw'))
+    }
 
     return reply.send({ data: { id, stage: newStage, outcome: body.outcome } })
   })

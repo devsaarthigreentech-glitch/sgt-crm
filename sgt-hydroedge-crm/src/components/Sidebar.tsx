@@ -22,13 +22,13 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { id: 'home',         label: 'Director view', short: 'Director', icon: LayoutDashboard, roles: ['director'] },
-  { id: 'my-dashboard', label: 'My dashboard',  short: 'My view',  icon: User          },
+  { id: 'home', label: 'Director view', short: 'Director', icon: LayoutDashboard, roles: ['director'] },
+  { id: 'my-dashboard', label: 'My dashboard', short: 'My view', icon: User },
   // CRM functions — hidden from supply_chain (they only need the capacity view)
-  { id: 'pipeline',     label: 'Pipeline',      short: 'Pipeline', icon: LayoutGrid, roles: ['director', 'sales'] },
-  { id: 'customers',     label: 'Customers',      short: 'Customers', icon: Building2, roles: ['director', 'sales'] },
-  { id: 'triage',       label: 'Triage queue',  short: 'Triage',   icon: Inbox,      roles: ['director', 'sales'] },
-  { id: 'capture',      label: 'Capture lead',  short: 'Capture',  icon: Plus,       roles: ['director', 'sales'] },
+  { id: 'pipeline', label: 'Pipeline', short: 'Pipeline', icon: LayoutGrid, roles: ['director', 'sales'] },
+  { id: 'customers', label: 'Customers', short: 'Customers', icon: Building2, roles: ['director', 'sales'] },
+  { id: 'triage', label: 'Triage queue', short: 'Triage', icon: Inbox, roles: ['director', 'sales'] },
+  { id: 'capture', label: 'Capture lead', short: 'Capture', icon: Plus, roles: ['director', 'sales'] },
 ]
 
 function initials(name: string): string {
@@ -39,6 +39,8 @@ function roleLabel(role: string): string {
   if (role === 'director') return 'Director'
   if (role === 'sales') return 'Sales'
   if (role === 'supply_chain') return 'Supply Chain'
+  if (role === 'accounts') return 'Accounts'
+  return role.charAt(0).toUpperCase() + role.slice(1)
   return role.charAt(0).toUpperCase() + role.slice(1)
 }
 

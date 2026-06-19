@@ -8,6 +8,7 @@ import {
   getBuildable, getPurchasePlan, createDraftPurchaseOrders,
 } from '../services/buildable.js';
 import { requireRole } from '../auth/guard.js';
+import { getStockValuation } from '../services/erpCustomer.js';
 
 export default async function erpRoutes(app: FastifyInstance) {
   app.get('/erp/buildable', async (_req, reply) => {
@@ -80,6 +81,12 @@ export default async function erpRoutes(app: FastifyInstance) {
 
       return customers.map(c => ({ ...c, billing_total: Math.round(billingMap[c.name] ?? 0) }));
     } catch (e: any) { reply.code(502); return { error: e.message }; }
+  });
+
+  // Total stock valuation + warehouse-wise breakdown (Director view)
+  app.get('/erp/stock-valuation', async (_req, reply) => {
+    try { return await getStockValuation(); }
+    catch (e: any) { reply.code(502); return { error: e.message }; }
   });
 
   app.get('/erp/fiscal-years', async (_req, reply) => {

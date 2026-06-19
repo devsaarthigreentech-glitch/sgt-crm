@@ -10,10 +10,21 @@ import { useIsMobile } from '../../hooks/useIsMobile'
 import ErpInsights from './ErpInsights'
 import IncomeTarget from './IncomeTarget'
 import OutstandingOrders from './OutstandingOrders'
+import AccountsDashboard from './AccountsDashboard'
+
+const API = import.meta.env.VITE_API_URL ?? '/api/v1'
+const inrFull = (n: number) => '₹' + Math.round(n).toLocaleString('en-IN')
+const inrShort = (n: number) => {
+  if (n >= 1e7) return '₹' + (n / 1e7).toFixed(2).replace(/\.00$/, '') + ' Cr'
+  if (n >= 1e5) return '₹' + (n / 1e5).toFixed(2).replace(/\.00$/, '') + ' L'
+  if (n >= 1e3) return '₹' + (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k'
+  return '₹' + Math.round(n)
+}
+type StockVal = { totalValue: number; warehouses: { warehouse: string; value: number; itemCount: number }[] }
 
 interface Props {
   leads: Lead[]
-  view: 'director' | 'sales' | 'supply'
+  view: 'director' | 'sales' | 'supply' | 'accounts'
   userName?: string
   role?: string
   onLeadClick: (lead: Lead) => void
@@ -147,7 +158,7 @@ export default function HomeDashboard({ leads, view, userName, role, onLeadClick
           <span style={{ color: '#0E5550' }}>{name}</span>
         </h1>
         <p style={{ fontSize: 12.5, color: '#6A675F', marginTop: 4 }}>
-          {formatDate()} · {view === 'director' ? "Here's where things stand" : view === 'supply' ? 'Production capacity' : 'Your leads and tasks'}
+          {formatDate()} · {view === 'director' ? "Here's where things stand" : view === 'supply' ? 'Production capacity' : view === 'accounts' ? 'Financials and orders' : 'Your leads and tasks'}
         </p>
       </header>
 
@@ -161,6 +172,8 @@ export default function HomeDashboard({ leads, view, userName, role, onLeadClick
           ? <DirectorDashboard leads={leads} activeLeads={activeLeads} isMobile={isMobile} role={role ?? 'director'} onLeadClick={onLeadClick} navigate={navigate} />
           : view === 'supply'
           ? <SupplyChainDashboard />
+          : view === 'accounts'
+          ? <AccountsDashboard />
           : <SalesRepDashboard leads={leads} activeLeads={activeLeads} isMobile={isMobile} onLeadClick={onLeadClick} navigate={navigate} repName={userName ?? SALES_REP_NAME} />
         }
       </div>
@@ -181,12 +194,17 @@ function DirectorDashboard({ leads, activeLeads, isMobile, role, onLeadClick, na
 
   // Overdue order fulfilment counts as an SLA breach too (from ERPNext).
   const [overdueOrders, setOverdueOrders] = useState(0)
+  const [stock, setStock] = useState<StockVal | null>(null)
+  const [stockOpen, setStockOpen] = useState(false)
   useEffect(() => {
     let ignore = false
-    const API = import.meta.env.VITE_API_URL ?? '/api/v1'
     fetch(`${API}/erp/orders/outstanding`)
       .then(r => r.json())
       .then(d => { if (!ignore && !d.error) setOverdueOrders(d.overdueCount ?? 0) })
+      .catch(() => {})
+    fetch(`${API}/erp/stock-valuation`)
+      .then(r => r.json())
+      .then(d => { if (!ignore && !d.error) setStock(d) })
       .catch(() => {})
     return () => { ignore = true }
   }, [])
@@ -242,11 +260,12 @@ function DirectorDashboard({ leads, activeLeads, isMobile, role, onLeadClick, na
         />
         <StatCard
           label="Stock value"
-          value="—"
-          sub="Connects to inventory · Phase 2"
+          value={stock ? inrShort(stock.totalValue) : '…'}
+          sub={stock ? `${stock.warehouses.length} warehouse${stock.warehouses.length !== 1 ? 's' : ''} · tap for breakdown` : 'Loading from ERPNext…'}
           accent="#5B3B6F"
           icon={<Package size={16} strokeWidth={2} />}
-          muted
+          muted={!stock}
+          onClick={stock && stock.warehouses.length > 0 ? () => setStockOpen(true) : undefined}
         />
       </div>
 
@@ -448,6 +467,43 @@ function DirectorDashboard({ leads, activeLeads, isMobile, role, onLeadClick, na
           ))}
         </div>
       </Section>
+
+      {/* Stock value · warehouse-wise breakdown modal */}
+      {stockOpen && stock && (
+        <div
+          onClick={() => setStockOpen(false)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(20,20,18,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, zIndex: 100 }}
+        >
+          <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, padding: '18px 20px', width: '100%', maxWidth: 460, boxShadow: '0 12px 40px rgba(0,0,0,0.2)', maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <h3 style={{ margin: 0, fontSize: 16, color: '#1F4E2E' }}>Stock value by warehouse</h3>
+              <button onClick={() => setStockOpen(false)} style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 16, color: '#999' }}>✕</button>
+            </div>
+            <div style={{ fontSize: 12, color: '#777', margin: '4px 0 14px' }}>
+              Total {inrFull(stock.totalValue)} · {stock.warehouses.length} warehouse{stock.warehouses.length !== 1 ? 's' : ''}
+            </div>
+            <div style={{ overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {stock.warehouses.map(w => {
+                const pct = stock.totalValue > 0 ? (w.value / stock.totalValue) * 100 : 0
+                return (
+                  <div key={w.warehouse} style={{ border: '1px solid #E8E3D2', borderRadius: 8, padding: '9px 11px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 5 }}>
+                      <span style={{ fontSize: 12.5, fontWeight: 600, color: '#1F4E2E', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.warehouse}</span>
+                      <span style={{ fontSize: 12.5, fontWeight: 700, color: '#2D7A4F', whiteSpace: 'nowrap' }}>
+                        {inrFull(w.value)} <span style={{ color: '#aaa', fontWeight: 500, fontSize: 10.5 }}>{pct.toFixed(1)}%</span>
+                      </span>
+                    </div>
+                    <div style={{ height: 5, background: '#EFECE2', borderRadius: 3, overflow: 'hidden' }}>
+                      <div style={{ height: '100%', width: `${pct}%`, background: '#5B3B6F', borderRadius: 3 }} />
+                    </div>
+                    <div style={{ fontSize: 10.5, color: '#aaa', marginTop: 4 }}>{w.itemCount} item{w.itemCount !== 1 ? 's' : ''} in stock</div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   )
@@ -668,16 +724,18 @@ function SalesRepDashboard({ leads, activeLeads, isMobile, onLeadClick, navigate
 // Shared atoms
 // ─────────────────────────────────────────────
 
-function StatCard({ label, value, sub, accent, icon, muted }: {
+function StatCard({ label, value, sub, accent, icon, muted, onClick }: {
   label: string; value: string; sub: string
   accent: string; icon: React.ReactNode; muted?: boolean
+  onClick?: () => void
 }) {
   return (
-    <div style={{
+    <div onClick={onClick} style={{
       backgroundColor: '#fff', borderRadius: 9,
       border: '1px solid #E8E3D2',
       borderTop: `3px solid ${accent}`,
       padding: '14px 14px 12px',
+      cursor: onClick ? 'pointer' : 'default',
     }}>
       <div style={{
         display: 'flex', alignItems: 'center', gap: 6,
