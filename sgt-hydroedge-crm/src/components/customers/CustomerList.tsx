@@ -1,6 +1,6 @@
 // src/components/customers/CustomerList.tsx
-// Customer management dashboard — pulls customers + lifetime billing from ERPNext.
-// Director and sales roles only.
+// Customer management dashboard — customers + billing + gross-margin profitability
+// from ERPNext, with an All-time / fiscal-year toggle. Director and sales only.
 
 import { useEffect, useMemo, useState } from 'react'
 import { authFetch } from '../../lib/auth'
@@ -17,34 +17,39 @@ const C = {
   red:     '#C84A3A',
   muted:   '#6A675F',
   border:  '#DDD7C6',
-  softgreen:'#EAF3EC',
 }
 
 const API = import.meta.env.VITE_API_URL ?? '/api/v1'
-const inr     = (n: number) => '₹' + Math.round(n).toLocaleString('en-IN')
+const inr      = (n: number) => '₹' + Math.round(n).toLocaleString('en-IN')
 const inrShort = (n: number) => {
-  if (n >= 1e7) return '₹' + (n / 1e7).toFixed(2).replace(/\.00$/, '') + ' Cr'
-  if (n >= 1e5) return '₹' + (n / 1e5).toFixed(2).replace(/\.00$/, '') + ' L'
-  if (n >= 1e3) return '₹' + (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k'
-  return '₹' + Math.round(n)
+  const a = Math.abs(n)
+  const s = n < 0 ? '-' : ''
+  if (a >= 1e7) return s + '₹' + (a / 1e7).toFixed(2).replace(/\.00$/, '') + ' Cr'
+  if (a >= 1e5) return s + '₹' + (a / 1e5).toFixed(2).replace(/\.00$/, '') + ' L'
+  if (a >= 1e3) return s + '₹' + (a / 1e3).toFixed(1).replace(/\.0$/, '') + 'k'
+  return s + '₹' + Math.round(a)
 }
 
-type ErpCustomer = {
-  name:           string
-  customer_name:  string
+type CustomerRow = {
+  name: string
+  customer_name: string
   customer_group: string
-  territory:      string
-  customer_type:  string
-  mobile_no:      string | null
-  email_id:       string | null
-  tax_id:         string | null
-  disabled:       number
-  billing_total:  number
+  territory: string
+  customer_type: string
+  mobile_no: string | null
+  email_id: string | null
+  tax_id: string | null
+  disabled: number
+  billing_total: number
+  cogs: number
+  gross_profit: number
+  margin_pct: number
+  invoice_count: number
 }
 
-type SortKey = 'billing' | 'name' | 'customer_group' | 'territory'
+type FiscalYear = { name: string; from: string; to: string }
+type SortKey = 'billing' | 'profit' | 'margin' | 'name' | 'customer_group'
 
-// Deterministic accent colour per customer group, for the avatar ring + group chip
 const GROUP_PALETTE = ['#1F4E2E', '#2D6E8E', '#B5642A', '#6B4E8E', '#2D7A4F', '#9A7B1F', '#9E3B3B']
 function groupColor(group: string): string {
   if (!group) return C.muted
@@ -52,20 +57,46 @@ function groupColor(group: string): string {
   for (let i = 0; i < group.length; i++) h = (h * 31 + group.charCodeAt(i)) >>> 0
   return GROUP_PALETTE[h % GROUP_PALETTE.length]
 }
+function marginColor(pct: number): string {
+  if (pct >= 30) return '#2D7A4F'
+  if (pct >= 15) return '#9A7B1F'
+  if (pct > 0)   return '#B5642A'
+  return '#C84A3A'
+}
 
 export default function CustomerList() {
-  const [customers, setCustomers] = useState<ErpCustomer[]>([])
+  const [customers, setCustomers] = useState<CustomerRow[]>([])
   const [loading, setLoading]     = useState(true)
   const [error, setError]         = useState<string | null>(null)
   const [search, setSearch]       = useState('')
   const [sort, setSort]           = useState<SortKey>('billing')
   const [groupFilter, setGroupFilter] = useState<string>('__all__')
 
+  // fiscal-year period toggle
+  const [years, setYears]   = useState<FiscalYear[]>([])
+  const [period, setPeriod] = useState<string>('__all__')   // '__all__' or FY name
+
+  // load fiscal years once
+  useEffect(() => {
+    let ignore = false
+    fetch(`${API}/erp/fiscal-years`)
+      .then(r => r.json())
+      .then(d => { if (!ignore && Array.isArray(d)) setYears(d) })
+      .catch(() => {})
+    return () => { ignore = true }
+  }, [])
+
+  // (re)load customers whenever the period changes
   useEffect(() => {
     let ignore = false
     setLoading(true)
     setError(null)
-    authFetch(`${API}/erp/customers`)
+    let url = `${API}/erp/customers`
+    if (period !== '__all__') {
+      const y = years.find(y => y.name === period)
+      if (y) url += `?from=${y.from}&to=${y.to}`
+    }
+    authFetch(url)
       .then(r => r.json())
       .then(d => {
         if (ignore) return
@@ -75,7 +106,7 @@ export default function CustomerList() {
       .catch(e => { if (!ignore) setError(String(e)) })
       .finally(() => { if (!ignore) setLoading(false) })
     return () => { ignore = true }
-  }, [])
+  }, [period, years])
 
   const active = useMemo(() => customers.filter(c => !c.disabled), [customers])
   const groups = useMemo(
@@ -84,10 +115,11 @@ export default function CustomerList() {
   )
 
   // ── summary metrics ──
-  const totalBilling = active.reduce((s, c) => s + (c.billing_total ?? 0), 0)
+  const totalRevenue = active.reduce((s, c) => s + (c.billing_total ?? 0), 0)
+  const totalProfit  = active.reduce((s, c) => s + (c.gross_profit ?? 0), 0)
+  const blendedMargin = totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : 0
   const billingCount = active.filter(c => c.billing_total > 0).length
-  const avgBilling   = billingCount ? totalBilling / billingCount : 0
-  const topCustomer  = active.reduce<ErpCustomer | null>((top, c) => (!top || c.billing_total > top.billing_total ? c : top), null)
+  const topCustomer  = active.reduce<CustomerRow | null>((top, c) => (!top || c.billing_total > top.billing_total ? c : top), null)
   const maxBilling   = topCustomer?.billing_total ?? 0
 
   const visible = useMemo(() => active
@@ -104,38 +136,54 @@ export default function CustomerList() {
       )
     })
     .sort((a, b) => {
-      if (sort === 'billing')        return b.billing_total - a.billing_total
-      if (sort === 'name')           return (a.customer_name ?? '').localeCompare(b.customer_name ?? '', 'en-IN')
-      if (sort === 'customer_group') return (a.customer_group ?? '').localeCompare(b.customer_group ?? '', 'en-IN')
-      return (a.territory ?? '').localeCompare(b.territory ?? '', 'en-IN')
+      if (sort === 'billing') return b.billing_total - a.billing_total
+      if (sort === 'profit')  return b.gross_profit - a.gross_profit
+      if (sort === 'margin')  return b.margin_pct - a.margin_pct
+      if (sort === 'name')    return (a.customer_name ?? '').localeCompare(b.customer_name ?? '', 'en-IN')
+      return (a.customer_group ?? '').localeCompare(b.customer_group ?? '', 'en-IN')
     }), [active, groupFilter, search, sort])
 
   const initials = (name: string) =>
     name.split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('') || '?'
 
+  const periodLabel = period === '__all__' ? 'all time' : period
+
   return (
     <div style={{ height: '100%', overflowY: 'auto', background: C.ground }}>
 
-      {/* ── Hero ── */}
+      {/* Hero */}
       <div style={{ background: `linear-gradient(135deg, ${C.forest} 0%, ${C.forest2} 100%)`, color: '#fff', padding: '22px 28px 20px', position: 'relative' }}>
         <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 3, background: C.gold }} />
-        <h1 style={{ margin: 0, fontSize: 25, fontWeight: 700, letterSpacing: '-0.03em' }}>Customers</h1>
-        <p style={{ margin: '6px 0 0', fontSize: 12.5, color: '#BFE0C9' }}>
-          {loading ? 'Loading from ERPNext…' : error ? 'Error loading' : `${active.length} active accounts · synced from ERPNext`}
-        </p>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+          <div>
+            <h1 style={{ margin: 0, fontSize: 25, fontWeight: 700, letterSpacing: '-0.03em' }}>Customers</h1>
+            <p style={{ margin: '6px 0 0', fontSize: 12.5, color: '#BFE0C9' }}>
+              {loading ? 'Loading from ERPNext…' : error ? 'Error loading' : `${active.length} active accounts · ${periodLabel}`}
+            </p>
+          </div>
+          {/* Period toggle */}
+          <select
+            value={period}
+            onChange={e => setPeriod(e.target.value)}
+            style={{ padding: '7px 12px', borderRadius: 8, fontSize: 13, fontWeight: 600, color: C.forest, background: '#fff', border: 'none', cursor: 'pointer' }}
+          >
+            <option value="__all__">All time</option>
+            {years.map(y => <option key={y.name} value={y.name}>{y.name}</option>)}
+          </select>
+        </div>
       </div>
 
-      {/* ── Stat strip ── */}
+      {/* Stat strip */}
       {!loading && !error && (
         <div style={{ display: 'grid', gap: 10, padding: '16px 28px 0', gridTemplateColumns: 'repeat(4, 1fr)' }}>
-          <Stat label="Total billed" value={inrShort(totalBilling)} sub={`${billingCount} billed accounts`} accent={C.green2} />
-          <Stat label="Avg per account" value={inrShort(avgBilling)} sub="billed accounts only" accent={C.ink} />
+          <Stat label="Revenue" value={inrShort(totalRevenue)} sub={`${billingCount} billed accounts`} accent={C.green2} />
+          <Stat label="Gross profit" value={inrShort(totalProfit)} sub="revenue − cost of goods" accent={marginColor(blendedMargin)} />
+          <Stat label="Blended margin" value={`${blendedMargin.toFixed(1)}%`} sub="across all accounts" accent={marginColor(blendedMargin)} />
           <Stat label="Top account" value={inrShort(maxBilling)} sub={topCustomer?.customer_name ?? '—'} accent={C.gold} truncate />
-          <Stat label="Customer groups" value={String(groups.length - 1)} sub="distinct segments" accent={C.ink} />
         </div>
       )}
 
-      {/* ── Controls ── */}
+      {/* Controls */}
       <div style={{ padding: '16px 28px 0' }}>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 10 }}>
           <div style={{ position: 'relative', flex: 1, minWidth: 220 }}>
@@ -154,50 +202,56 @@ export default function CustomerList() {
           </select>
           <select value={sort} onChange={e => setSort(e.target.value as SortKey)}
             style={{ padding: '8px 10px', border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, background: C.off, color: C.forest, fontWeight: 600 }}>
-            <option value="billing">Billing (high → low)</option>
+            <option value="billing">Revenue (high → low)</option>
+            <option value="profit">Gross profit</option>
+            <option value="margin">Margin %</option>
             <option value="name">Name (A → Z)</option>
             <option value="customer_group">Group</option>
-            <option value="territory">Territory</option>
           </select>
         </div>
       </div>
 
-      {/* ── List ── */}
+      {/* List */}
       <div style={{ padding: '14px 28px 48px' }}>
         {loading && <div style={{ color: C.green2, fontSize: 13, padding: '24px 4px' }}>Loading customers from ERPNext…</div>}
         {error   && <div style={{ color: C.red,    fontSize: 13, padding: '24px 4px' }}>ERPNext: {error}</div>}
 
         {!loading && !error && visible.length === 0 && (
           <div style={{ color: C.muted, fontSize: 13, padding: '24px 4px' }}>
-            {search || groupFilter !== '__all__' ? 'No customers match your filters.' : 'No customers found in ERPNext.'}
+            {search || groupFilter !== '__all__'
+              ? 'No customers match your filters.'
+              : period !== '__all__' ? `No billing activity in ${period}.` : 'No customers found in ERPNext.'}
           </div>
         )}
 
         {!loading && !error && visible.length > 0 && (
           <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, overflow: 'hidden' }}>
             {/* column header */}
-            <div style={{ display: 'grid', gridTemplateColumns: '34px 1fr 150px 170px', gap: 14, alignItems: 'center', padding: '10px 16px', background: '#F3EFE4', borderBottom: `1.5px solid ${C.border}`, fontSize: 10.5, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.06em' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '30px 1fr 130px 130px 150px', gap: 12, alignItems: 'center', padding: '10px 16px', background: '#F3EFE4', borderBottom: `1.5px solid ${C.border}`, fontSize: 10.5, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.06em' }}>
               <span>#</span>
               <span>Customer</span>
-              <span>Group / Territory</span>
-              <span style={{ textAlign: 'right' }}>Lifetime billing</span>
+              <span>Group</span>
+              <span style={{ textAlign: 'right' }}>Gross margin</span>
+              <span style={{ textAlign: 'right' }}>Revenue</span>
             </div>
 
             {visible.map((c, i) => {
               const gc = groupColor(c.customer_group)
               const pct = maxBilling > 0 ? (c.billing_total / maxBilling) * 100 : 0
+              const mc = marginColor(c.margin_pct)
+              const hasRevenue = c.billing_total > 0
               return (
                 <div key={c.name}
-                  style={{ display: 'grid', gridTemplateColumns: '34px 1fr 150px 170px', gap: 14, alignItems: 'center', padding: '11px 16px', borderBottom: i < visible.length - 1 ? `1px solid #F0ECE0` : 'none', transition: 'background 120ms' }}
+                  style={{ display: 'grid', gridTemplateColumns: '30px 1fr 130px 130px 150px', gap: 12, alignItems: 'center', padding: '11px 16px', borderBottom: i < visible.length - 1 ? `1px solid #F0ECE0` : 'none' }}
                   onMouseEnter={e => (e.currentTarget.style.background = '#FBF9F3')}
                   onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
 
                   {/* rank */}
-                  <span style={{ fontSize: 12, fontWeight: 700, color: sort === 'billing' && i < 3 ? C.gold : '#bbb', textAlign: 'center' }}>
-                    {sort === 'billing' ? i + 1 : '·'}
+                  <span style={{ fontSize: 12, fontWeight: 700, color: (sort === 'billing' || sort === 'profit') && i < 3 ? C.gold : '#bbb', textAlign: 'center' }}>
+                    {(sort === 'billing' || sort === 'profit' || sort === 'margin') ? i + 1 : '·'}
                   </span>
 
-                  {/* name + avatar */}
+                  {/* name */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
                     <div style={{ width: 34, height: 34, borderRadius: '50%', flexShrink: 0, background: gc, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11.5, fontWeight: 700 }}>
                       {initials(c.customer_name)}
@@ -207,25 +261,38 @@ export default function CustomerList() {
                         {c.customer_name}
                       </div>
                       <div style={{ fontSize: 11, color: '#aaa', marginTop: 1, display: 'flex', gap: 8 }}>
-                        {c.mobile_no && <span>{c.mobile_no}</span>}
-                        {c.tax_id && <span style={{ fontFamily: 'monospace' }}>{c.tax_id}</span>}
+                        {c.territory && <span>{c.territory}</span>}
+                        {c.invoice_count > 0 && <span>· {c.invoice_count} inv</span>}
                       </div>
                     </div>
                   </div>
 
-                  {/* group / territory */}
+                  {/* group chip */}
                   <div style={{ minWidth: 0 }}>
                     {c.customer_group && (
                       <span style={{ display: 'inline-block', fontSize: 11, fontWeight: 600, color: gc, background: gc + '14', border: `1px solid ${gc}33`, borderRadius: 999, padding: '2px 8px', maxWidth: '100%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                         {c.customer_group}
                       </span>
                     )}
-                    {c.territory && <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>{c.territory}</div>}
                   </div>
 
-                  {/* billing + bar */}
+                  {/* gross margin */}
                   <div style={{ textAlign: 'right' }}>
-                    {c.billing_total > 0 ? (
+                    {hasRevenue ? (
+                      <>
+                        <div style={{ fontSize: 13.5, fontWeight: 700, color: mc }}>
+                          {c.margin_pct.toFixed(1)}%
+                        </div>
+                        <div style={{ fontSize: 10.5, color: '#aaa', marginTop: 1 }}>{inrShort(c.gross_profit)} profit</div>
+                      </>
+                    ) : (
+                      <span style={{ fontSize: 11.5, color: '#ccc' }}>—</span>
+                    )}
+                  </div>
+
+                  {/* revenue + bar */}
+                  <div style={{ textAlign: 'right' }}>
+                    {hasRevenue ? (
                       <>
                         <div style={{ fontSize: 14, fontWeight: 700, color: C.green2 }}>{inr(c.billing_total)}</div>
                         <div style={{ height: 4, background: '#EFECE2', borderRadius: 2, marginTop: 4, overflow: 'hidden' }}>
@@ -244,7 +311,7 @@ export default function CustomerList() {
 
         {!loading && !error && visible.length > 0 && (
           <div style={{ fontSize: 11, color: '#aaa', marginTop: 10, textAlign: 'right' }}>
-            Showing {visible.length} of {active.length} · billing is lifetime submitted Sales Invoices
+            Showing {visible.length} of {active.length} · {periodLabel} · gross margin = revenue − cost of goods sold (not net profit)
           </div>
         )}
       </div>

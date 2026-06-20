@@ -8,7 +8,7 @@ import {
   getBuildable, getPurchasePlan, createDraftPurchaseOrders,
 } from '../services/buildable.js';
 import { requireRole } from '../auth/guard.js';
-import { getStockValuation } from '../services/erpCustomer.js';
+import { getStockValuation, getCustomersWithProfitability } from '../services/erpCustomer.js';
 
 export default async function erpRoutes(app: FastifyInstance) {
   app.get('/erp/buildable', async (_req, reply) => {
@@ -37,50 +37,13 @@ export default async function erpRoutes(app: FastifyInstance) {
     catch (e: any) { reply.code(502); return { error: e.message }; }
   });
 
-  // Customer list from ERPNext with total billing — director and sales only.
-  // Returns Customer[] each enriched with billing_total (sum of submitted Sales Invoice amounts).
-  app.get('/erp/customers', { preHandler: requireRole('director', 'sales') }, async (_req, reply) => {
-    try {
-      const BASE = process.env.ERPNEXT_URL!;
-      const KEY  = process.env.ERPNEXT_API_KEY!;
-      const SEC  = process.env.ERPNEXT_API_SECRET!;
-      const headers = { Authorization: `token ${KEY}:${SEC}`, Accept: 'application/json' };
-
-      // Fetch customers + submitted Sales Invoices in parallel
-      const custParams = new URLSearchParams({
-        fields: JSON.stringify(['name','customer_name','customer_group','territory',
-                                'customer_type','mobile_no','email_id','tax_id','disabled']),
-        filters: JSON.stringify([['disabled','=',0]]),
-        limit_page_length: '0',
-        order_by: 'customer_name asc',
-      });
-      const siParams = new URLSearchParams({
-        fields: JSON.stringify(['customer','base_grand_total']),
-        filters: JSON.stringify([['docstatus','=',1]]),
-        limit_page_length: '0',
-      });
-
-      const [custRes, siRes] = await Promise.all([
-        fetch(`${BASE}/api/resource/Customer?${custParams}`, { headers }),
-        fetch(`${BASE}/api/resource/Sales%20Invoice?${siParams}`, { headers }),
-      ]);
-
-      if (!custRes.ok) { reply.code(502); return { error: `ERPNext customers ${custRes.status}` }; }
-
-      const customers: any[] = (await custRes.json()).data ?? [];
-
-      // Aggregate billing per customer (best-effort; if SI fetch fails, totals are 0)
-      const billingMap: Record<string, number> = {};
-      if (siRes.ok) {
-        const invoices: any[] = (await siRes.json()).data ?? [];
-        for (const inv of invoices) {
-          const key = inv.customer as string;
-          if (key) billingMap[key] = (billingMap[key] ?? 0) + Number(inv.base_grand_total || 0);
-        }
-      }
-
-      return customers.map(c => ({ ...c, billing_total: Math.round(billingMap[c.name] ?? 0) }));
-    } catch (e: any) { reply.code(502); return { error: e.message }; }
+  // Customer list from ERPNext with billing + gross-margin profitability.
+  // Optional ?from=YYYY-MM-DD&to=YYYY-MM-DD limits to a fiscal-year window.
+  // Director and sales only.
+  app.get('/erp/customers', { preHandler: requireRole('director', 'sales') }, async (req, reply) => {
+    const { from, to } = req.query as { from?: string; to?: string };
+    try { return await getCustomersWithProfitability(from, to); }
+    catch (e: any) { reply.code(502); return { error: e.message }; }
   });
 
   // Total stock valuation + warehouse-wise breakdown (Director view)

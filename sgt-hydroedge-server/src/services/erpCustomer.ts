@@ -113,6 +113,126 @@ async function linkErpId(accountId: string, erpnextId: string) {
 }
 
 // ---------------------------------------------------------------------------
+// 3. Customers with billing + gross-margin profitability (FY-filterable)
+// ---------------------------------------------------------------------------
+
+export type CustomerRow = {
+  name: string
+  customer_name: string
+  customer_group: string
+  territory: string
+  customer_type: string
+  mobile_no: string | null
+  email_id: string | null
+  tax_id: string | null
+  disabled: number
+  billing_total: number   // revenue, net of tax (sum of SI base_net_total)
+  cogs: number            // cost of goods sold to this customer
+  gross_profit: number    // billing_total - cogs
+  margin_pct: number      // gross_profit / billing_total * 100  (0 if no revenue)
+  invoice_count: number
+}
+
+/**
+ * Customers enriched with revenue + gross margin, optionally limited to a
+ * fiscal-year date window (posting_date between from..to, inclusive).
+ *
+ * Revenue = sum of submitted Sales Invoice base_net_total (net of tax).
+ * COGS    = per Sales Invoice Item: prefer the SI Item `gross_profit` field
+ *           (amount - cost) when ERPNext has populated it; otherwise fall back
+ *           to qty * valuation_rate. COGS = amount - grossProfit.
+ * Gross profit is revenue - COGS. This is gross margin, NOT net profit
+ * (overheads/freight aren't attributable per-customer in ERPNext).
+ */
+export async function getCustomersWithProfitability(from?: string, to?: string): Promise<CustomerRow[]> {
+  // 1. customers
+  const customers: any[] = await frappeGet('/api/resource/Customer', {
+    fields: ['name', 'customer_name', 'customer_group', 'territory',
+             'customer_type', 'mobile_no', 'email_id', 'tax_id', 'disabled'],
+    filters: [['disabled', '=', 0]],
+    limit_page_length: 0,
+    order_by: 'customer_name asc',
+  })
+
+  // 2. submitted Sales Invoices in window → customer + net revenue, keyed by invoice name
+  const siFilters: unknown[] = [['docstatus', '=', 1]]
+  if (from) siFilters.push(['posting_date', '>=', from])
+  if (to)   siFilters.push(['posting_date', '<=', to])
+
+  const invoices: any[] = await frappeGet('/api/resource/Sales Invoice', {
+    fields: ['name', 'customer', 'base_net_total', 'base_grand_total'],
+    filters: siFilters,
+    limit_page_length: 0,
+  }).catch(() => [])
+
+  const revenueByCust: Record<string, number> = {}
+  const countByCust: Record<string, number> = {}
+  const invToCust: Record<string, string> = {}
+  for (const inv of invoices) {
+    const cust = inv.customer as string
+    if (!cust) continue
+    invToCust[inv.name] = cust
+    // net revenue (excl tax) is the right base for margin; fall back to grand total
+    revenueByCust[cust] = (revenueByCust[cust] ?? 0) + Number(inv.base_net_total || inv.base_grand_total || 0)
+    countByCust[cust] = (countByCust[cust] ?? 0) + 1
+  }
+
+  // 3. COGS per customer from Sales Invoice Item lines of those invoices.
+  // Query the parent Sales Invoice with a child-table filter so we don't need
+  // extra permissions on the child doctype, then read each invoice's items.
+  const cogsByCust: Record<string, number> = {}
+  const invoiceNames = Object.keys(invToCust)
+
+  for (const chunk of chunk20(invoiceNames, 20)) {
+    if (!chunk.length) continue
+    // fetch each invoice doc (items child table carries valuation + gross_profit)
+    const docs = await Promise.all(
+      chunk.map((n) => frappeGet(`/api/resource/Sales Invoice/${encodeURIComponent(n)}`).catch(() => null)),
+    )
+    for (const doc of docs) {
+      if (!doc) continue
+      const cust = invToCust[doc.name]
+      if (!cust) continue
+      for (const it of doc.items ?? []) {
+        const amount = Number(it.base_net_amount || it.base_amount || it.amount || 0)
+        // Prefer the SI Item gross_profit field when populated; else qty*valuation_rate
+        let lineCogs: number
+        const gp = it.gross_profit
+        if (gp !== undefined && gp !== null && Number(gp) !== 0) {
+          lineCogs = amount - Number(gp)
+        } else {
+          const valuation = Number(it.valuation_rate || it.incoming_rate || 0)
+          const qty = Number(it.stock_qty || it.qty || 0)
+          lineCogs = valuation * qty
+        }
+        if (lineCogs < 0) lineCogs = 0
+        cogsByCust[cust] = (cogsByCust[cust] ?? 0) + lineCogs
+      }
+    }
+  }
+
+  // 4. merge
+  return customers.map((c) => {
+    const revenue = Math.round(revenueByCust[c.name] ?? 0)
+    const cogs = Math.round(cogsByCust[c.name] ?? 0)
+    const grossProfit = revenue - cogs
+    const margin = revenue > 0 ? (grossProfit / revenue) * 100 : 0
+    return {
+      ...c,
+      billing_total: revenue,
+      cogs,
+      gross_profit: grossProfit,
+      margin_pct: Math.round(margin * 10) / 10,
+      invoice_count: countByCust[c.name] ?? 0,
+    } as CustomerRow
+  })
+}
+
+function* chunk20<T>(arr: T[], size: number) {
+  for (let i = 0; i < arr.length; i += size) yield arr.slice(i, i + size)
+}
+
+// ---------------------------------------------------------------------------
 // 2. Stock valuation (total + warehouse-wise)
 // ---------------------------------------------------------------------------
 
