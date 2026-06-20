@@ -47,6 +47,10 @@ type CustomerRow = {
   invoice_count: number
 }
 
+type MarginLineItem = { itemCode: string; itemName: string; qty: number; revenue: number; cost: number; margin: number; costMissing: boolean }
+type MarginInvoice = { invoice: string; date: string; revenue: number; cost: number; margin: number; items: MarginLineItem[] }
+type CustomerMargin = { customer: string; customerName: string; revenue: number; cost: number; grossProfit: number; margin: number; missingCostCount: number; invoices: MarginInvoice[] }
+
 type FiscalYear = { name: string; from: string; to: string }
 type SortKey = 'billing' | 'profit' | 'margin' | 'name' | 'customer_group'
 
@@ -71,6 +75,9 @@ export default function CustomerList() {
   const [search, setSearch]       = useState('')
   const [sort, setSort]           = useState<SortKey>('billing')
   const [groupFilter, setGroupFilter] = useState<string>('__all__')
+
+  // margin breakdown slide-over
+  const [openCustomer, setOpenCustomer] = useState<CustomerRow | null>(null)
 
   // fiscal-year period toggle
   const [years, setYears]   = useState<FiscalYear[]>([])
@@ -242,7 +249,8 @@ export default function CustomerList() {
               const hasRevenue = c.billing_total > 0
               return (
                 <div key={c.name}
-                  style={{ display: 'grid', gridTemplateColumns: '30px 1fr 130px 130px 150px', gap: 12, alignItems: 'center', padding: '11px 16px', borderBottom: i < visible.length - 1 ? `1px solid #F0ECE0` : 'none' }}
+                  onClick={() => c.billing_total > 0 && setOpenCustomer(c)}
+                  style={{ display: 'grid', gridTemplateColumns: '30px 1fr 130px 130px 150px', gap: 12, alignItems: 'center', padding: '11px 16px', borderBottom: i < visible.length - 1 ? `1px solid #F0ECE0` : 'none', cursor: c.billing_total > 0 ? 'pointer' : 'default' }}
                   onMouseEnter={e => (e.currentTarget.style.background = '#FBF9F3')}
                   onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
 
@@ -315,6 +323,15 @@ export default function CustomerList() {
           </div>
         )}
       </div>
+
+      {openCustomer && (
+        <MarginPanel
+          customer={openCustomer}
+          period={period}
+          fromTo={period === '__all__' ? null : (() => { const y = years.find(y => y.name === period); return y ? { from: y.from, to: y.to } : null })()}
+          onClose={() => setOpenCustomer(null)}
+        />
+      )}
     </div>
   )
 }
@@ -325,6 +342,148 @@ function Stat({ label, value, sub, accent, truncate }: { label: string; value: s
       <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: '-0.02em', color: accent }}>{value}</div>
       <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginTop: 3 }}>{label}</div>
       <div style={{ fontSize: 11, color: '#aaa', marginTop: 2, whiteSpace: truncate ? 'nowrap' : 'normal', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sub}</div>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────
+// Margin breakdown slide-over — explains how the % was calculated
+// ─────────────────────────────────────────────
+
+function MarginPanel({ customer, period, fromTo, onClose }: {
+  customer: CustomerRow
+  period: string
+  fromTo: { from: string; to: string } | null
+  onClose: () => void
+}) {
+  const [data, setData] = useState<CustomerMargin | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState<string | null>(null)
+
+  useEffect(() => {
+    let ignore = false
+    setLoading(true); setError(null); setData(null)
+    let url = `${API}/erp/customers/margin?customer=${encodeURIComponent(customer.name)}`
+    if (fromTo) url += `&from=${fromTo.from}&to=${fromTo.to}`
+    authFetch(url)
+      .then(r => r.json())
+      .then(d => { if (ignore) return; if (d.error) setError(d.error); else setData(d) })
+      .catch(e => { if (!ignore) setError(String(e)) })
+      .finally(() => { if (!ignore) setLoading(false) })
+    return () => { ignore = true }
+  }, [customer.name, fromTo])
+
+  const mc = marginColor(customer.margin_pct)
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(20,20,18,0.45)', display: 'flex', justifyContent: 'flex-end', zIndex: 200 }}>
+      <div onClick={e => e.stopPropagation()} style={{ width: 'min(480px, 100%)', height: '100%', background: C.ground, boxShadow: '-12px 0 40px rgba(0,0,0,0.2)', display: 'flex', flexDirection: 'column' }}>
+
+        {/* header */}
+        <div style={{ background: `linear-gradient(135deg, ${C.forest} 0%, ${C.forest2} 100%)`, color: '#fff', padding: '18px 22px 16px', position: 'relative', flexShrink: 0 }}>
+          <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 3, background: C.gold }} />
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.02em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {customer.customer_name}
+              </div>
+              <div style={{ fontSize: 11.5, color: '#BFE0C9', marginTop: 3 }}>
+                {period === '__all__' ? 'All time' : period} · how the margin is calculated
+              </div>
+            </div>
+            <button onClick={onClose} style={{ border: 'none', background: 'rgba(255,255,255,0.15)', color: '#fff', cursor: 'pointer', fontSize: 15, borderRadius: 7, width: 28, height: 28, flexShrink: 0 }}>✕</button>
+          </div>
+        </div>
+
+        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 22px 40px' }}>
+          {loading && <div style={{ color: C.green2, fontSize: 13 }}>Loading breakdown…</div>}
+          {error   && <div style={{ color: C.red, fontSize: 13 }}>ERPNext: {error}</div>}
+
+          {data && (
+            <>
+              {/* summary equation */}
+              <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: '14px 16px' }}>
+                <Line label="Revenue (net of tax)" value={inr(data.revenue)} color={C.ink} />
+                <Line label="− Cost of goods sold" value={inr(data.cost)} color={C.muted} />
+                <div style={{ height: 1, background: C.border, margin: '8px 0' }} />
+                <Line label="Gross profit" value={inr(data.grossProfit)} color={C.green2} bold />
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 10 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em' }}>Gross margin</span>
+                  <span style={{ fontSize: 26, fontWeight: 800, color: mc, letterSpacing: '-0.02em' }}>{data.margin.toFixed(1)}%</span>
+                </div>
+              </div>
+
+              {/* missing-cost warning — explains the 100% rows */}
+              {data.missingCostCount > 0 && (
+                <div style={{ marginTop: 12, background: '#FCF6EE', border: '1px solid #efe3cd', borderRadius: 10, padding: '10px 12px', fontSize: 11.5, color: '#7A4A0E', lineHeight: 1.5 }}>
+                  <b>{data.missingCostCount} item{data.missingCostCount !== 1 ? 's have' : ' has'} no cost recorded</b> in ERPNext (valuation rate is zero — likely never received into stock). Those lines count as 100% margin, which inflates the figure above. Set a valuation/standard rate on those items for a true margin.
+                </div>
+              )}
+
+              {/* per-invoice */}
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.06em', margin: '18px 0 8px' }}>
+                {data.invoices.length} invoice{data.invoices.length !== 1 ? 's' : ''}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {data.invoices.map(inv => {
+                  const open = expanded === inv.invoice
+                  const imc = marginColor(inv.margin)
+                  return (
+                    <div key={inv.invoice} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, overflow: 'hidden' }}>
+                      <div onClick={() => setExpanded(open ? null : inv.invoice)} style={{ padding: '10px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <span style={{ color: imc, fontSize: 12, width: 12 }}>{open ? '▾' : '▸'}</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 12.5, fontWeight: 600, color: C.forest }}>{inv.invoice}</div>
+                          <div style={{ fontSize: 10.5, color: '#aaa', marginTop: 1 }}>
+                            {inv.date ? new Date(inv.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' }) : ''}
+                            {' · '}rev {inrShort(inv.revenue)} · cost {inrShort(inv.cost)}
+                          </div>
+                        </div>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: imc }}>{inv.margin.toFixed(0)}%</span>
+                      </div>
+
+                      {open && (
+                        <div style={{ borderTop: `1px solid ${C.border}`, padding: '4px 12px 8px' }}>
+                          {inv.items.map((it, k) => {
+                            const lmc = marginColor(it.margin)
+                            return (
+                              <div key={k} style={{ padding: '7px 0', borderBottom: k < inv.items.length - 1 ? '1px solid #F2EFE5' : 'none' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11.5 }}>
+                                  <span style={{ color: C.ink, fontWeight: 500, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.itemName}</span>
+                                  <span style={{ color: lmc, fontWeight: 700, flexShrink: 0 }}>
+                                    {it.costMissing ? <span style={{ color: '#B5642A' }}>no cost</span> : `${it.margin.toFixed(0)}%`}
+                                  </span>
+                                </div>
+                                <div style={{ fontSize: 10.5, color: '#999', marginTop: 2 }}>
+                                  qty {Number(it.qty.toFixed(2))} · sold {inr(it.revenue)} · cost {it.costMissing ? '—' : inr(it.cost)}
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+
+              <div style={{ fontSize: 10.5, color: '#aaa', marginTop: 16, lineHeight: 1.5 }}>
+                Cost = ERPNext item valuation (or the invoice's stored gross profit where set). This is gross margin on goods — it excludes freight, overheads and sales effort.
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function Line({ label, value, color, bold }: { label: string; value: string; color: string; bold?: boolean }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '3px 0' }}>
+      <span style={{ fontSize: 12.5, color: C.muted }}>{label}</span>
+      <span style={{ fontSize: bold ? 15 : 13.5, fontWeight: bold ? 700 : 600, color }}>{value}</span>
     </div>
   )
 }

@@ -233,6 +233,124 @@ function* chunk20<T>(arr: T[], size: number) {
 }
 
 // ---------------------------------------------------------------------------
+// 4. Per-customer margin breakdown (on-demand, when a row is clicked)
+// ---------------------------------------------------------------------------
+
+export type MarginLineItem = {
+  itemCode: string
+  itemName: string
+  qty: number
+  revenue: number       // base_net_amount
+  cost: number          // valuation-based or gross_profit-derived
+  margin: number        // %
+  costMissing: boolean  // true when ERPNext had no valuation for this line
+}
+export type MarginInvoice = {
+  invoice: string
+  date: string
+  revenue: number
+  cost: number
+  margin: number
+  items: MarginLineItem[]
+}
+export type CustomerMargin = {
+  customer: string
+  customerName: string
+  revenue: number
+  cost: number
+  grossProfit: number
+  margin: number
+  missingCostCount: number  // # of line items with no cost data (these inflate margin)
+  invoices: MarginInvoice[]
+}
+
+export async function getCustomerMargin(customer: string, from?: string, to?: string): Promise<CustomerMargin> {
+  const siFilters: unknown[] = [['docstatus', '=', 1], ['customer', '=', customer]]
+  if (from) siFilters.push(['posting_date', '>=', from])
+  if (to)   siFilters.push(['posting_date', '<=', to])
+
+  const heads: any[] = await frappeGet('/api/resource/Sales Invoice', {
+    fields: ['name', 'customer_name', 'posting_date'],
+    filters: siFilters,
+    limit_page_length: 0,
+    order_by: 'posting_date desc',
+  })
+
+  let customerName = customer
+  const invoices: MarginInvoice[] = []
+  let totalRevenue = 0
+  let totalCost = 0
+  let missingCostCount = 0
+
+  const names = heads.map((h) => h.name)
+  const dateByName: Record<string, string> = {}
+  for (const h of heads) { dateByName[h.name] = h.posting_date || ''; if (h.customer_name) customerName = h.customer_name }
+
+  for (const grp of chunk20(names, 20)) {
+    const docs = await Promise.all(
+      grp.map((n) => frappeGet(`/api/resource/Sales Invoice/${encodeURIComponent(n)}`).catch(() => null)),
+    )
+    for (const doc of docs) {
+      if (!doc) continue
+      const items: MarginLineItem[] = []
+      let invRevenue = 0
+      let invCost = 0
+      for (const it of doc.items ?? []) {
+        const revenue = Number(it.base_net_amount || it.base_amount || it.amount || 0)
+        const qty = Number(it.stock_qty || it.qty || 0)
+        const gp = it.gross_profit
+        let cost: number
+        let costMissing = false
+        if (gp !== undefined && gp !== null && Number(gp) !== 0) {
+          cost = revenue - Number(gp)
+        } else {
+          const valuation = Number(it.valuation_rate || it.incoming_rate || 0)
+          cost = valuation * qty
+          if (valuation === 0) { costMissing = true; missingCostCount++ }
+        }
+        if (cost < 0) cost = 0
+        const margin = revenue > 0 ? ((revenue - cost) / revenue) * 100 : 0
+        items.push({
+          itemCode: it.item_code,
+          itemName: it.item_name || it.item_code,
+          qty,
+          revenue: Math.round(revenue),
+          cost: Math.round(cost),
+          margin: Math.round(margin * 10) / 10,
+          costMissing,
+        })
+        invRevenue += revenue
+        invCost += cost
+      }
+      const invMargin = invRevenue > 0 ? ((invRevenue - invCost) / invRevenue) * 100 : 0
+      invoices.push({
+        invoice: doc.name,
+        date: dateByName[doc.name] || doc.posting_date || '',
+        revenue: Math.round(invRevenue),
+        cost: Math.round(invCost),
+        margin: Math.round(invMargin * 10) / 10,
+        items,
+      })
+      totalRevenue += invRevenue
+      totalCost += invCost
+    }
+  }
+
+  const grossProfit = Math.round(totalRevenue - totalCost)
+  const margin = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0
+  return {
+    customer,
+    customerName,
+    revenue: Math.round(totalRevenue),
+    cost: Math.round(totalCost),
+    grossProfit,
+    margin: Math.round(margin * 10) / 10,
+    missingCostCount,
+    invoices,
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 2. Stock valuation (total + warehouse-wise)
 // ---------------------------------------------------------------------------
 

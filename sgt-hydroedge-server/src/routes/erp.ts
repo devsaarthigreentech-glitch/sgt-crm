@@ -8,7 +8,7 @@ import {
   getBuildable, getPurchasePlan, createDraftPurchaseOrders,
 } from '../services/buildable.js';
 import { requireRole } from '../auth/guard.js';
-import { getStockValuation, getCustomersWithProfitability } from '../services/erpCustomer.js';
+import { getStockValuation, getCustomersWithProfitability, getCustomerMargin } from '../services/erpCustomer.js';
 
 export default async function erpRoutes(app: FastifyInstance) {
   app.get('/erp/buildable', async (_req, reply) => {
@@ -43,6 +43,15 @@ export default async function erpRoutes(app: FastifyInstance) {
   app.get('/erp/customers', { preHandler: requireRole('director', 'sales') }, async (req, reply) => {
     const { from, to } = req.query as { from?: string; to?: string };
     try { return await getCustomersWithProfitability(from, to); }
+    catch (e: any) { reply.code(502); return { error: e.message }; }
+  });
+
+  // Margin breakdown for one customer (per-invoice, per-line). On-demand on click.
+  // ?customer=<id>&from=&to=  (customer passed as a query param — names have spaces)
+  app.get('/erp/customers/margin', { preHandler: requireRole('director', 'sales') }, async (req, reply) => {
+    const { customer, from, to } = req.query as { customer?: string; from?: string; to?: string };
+    if (!customer) { reply.code(400); return { error: 'customer is required' }; }
+    try { return await getCustomerMargin(customer, from, to); }
     catch (e: any) { reply.code(502); return { error: e.message }; }
   });
 
