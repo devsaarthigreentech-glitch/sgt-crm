@@ -47,9 +47,9 @@ type CustomerRow = {
   invoice_count: number
 }
 
-type MarginLineItem = { itemCode: string; itemName: string; qty: number; revenue: number; cost: number; margin: number; costMissing: boolean }
+type MarginLineItem = { itemCode: string; itemName: string; qty: number; revenue: number; cost: number; margin: number; costMissing: boolean; costSource: 'gross_profit' | 'valuation' | 'bom' | 'service' | 'missing' }
 type MarginInvoice = { invoice: string; date: string; revenue: number; cost: number; margin: number; items: MarginLineItem[] }
-type CustomerMargin = { customer: string; customerName: string; revenue: number; cost: number; grossProfit: number; margin: number; missingCostCount: number; invoices: MarginInvoice[] }
+type CustomerMargin = { customer: string; customerName: string; revenue: number; cost: number; grossProfit: number; margin: number; missingCostCount: number; serviceCount: number; invoices: MarginInvoice[] }
 
 type FiscalYear = { name: string; from: string; to: string }
 type SortKey = 'billing' | 'profit' | 'margin' | 'name' | 'customer_group'
@@ -414,10 +414,15 @@ function MarginPanel({ customer, period, fromTo, onClose }: {
                 </div>
               </div>
 
-              {/* missing-cost warning — explains the 100% rows */}
+              {/* warnings: only STOCK items missing cost are a problem; services are fine */}
               {data.missingCostCount > 0 && (
                 <div style={{ marginTop: 12, background: '#FCF6EE', border: '1px solid #efe3cd', borderRadius: 10, padding: '10px 12px', fontSize: 11.5, color: '#7A4A0E', lineHeight: 1.5 }}>
-                  <b>{data.missingCostCount} item{data.missingCostCount !== 1 ? 's have' : ' has'} no cost recorded</b> in ERPNext (valuation rate is zero — likely never received into stock). Those lines count as 100% margin, which inflates the figure above. Set a valuation/standard rate on those items for a true margin.
+                  <b>{data.missingCostCount} stock item{data.missingCostCount !== 1 ? 's have' : ' has'} no cost</b> — no valuation rate and no default BOM in ERPNext. Those lines count as 100% margin and inflate the figure. Add a valuation rate or a default BOM to fix.
+                </div>
+              )}
+              {data.serviceCount > 0 && (
+                <div style={{ marginTop: 10, background: '#EEF4F8', border: '1px solid #d6e3ec', borderRadius: 10, padding: '9px 12px', fontSize: 11.5, color: '#2D5A72', lineHeight: 1.5 }}>
+                  {data.serviceCount} service line{data.serviceCount !== 1 ? 's' : ''} (non-stock) — these carry no cost of goods by nature, so 100% margin on them is expected.
                 </div>
               )}
 
@@ -447,16 +452,19 @@ function MarginPanel({ customer, period, fromTo, onClose }: {
                         <div style={{ borderTop: `1px solid ${C.border}`, padding: '4px 12px 8px' }}>
                           {inv.items.map((it, k) => {
                             const lmc = marginColor(it.margin)
+                            const isService = it.costSource === 'service'
+                            const isMissing = it.costSource === 'missing'
                             return (
                               <div key={k} style={{ padding: '7px 0', borderBottom: k < inv.items.length - 1 ? '1px solid #F2EFE5' : 'none' }}>
                                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11.5 }}>
                                   <span style={{ color: C.ink, fontWeight: 500, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.itemName}</span>
-                                  <span style={{ color: lmc, fontWeight: 700, flexShrink: 0 }}>
-                                    {it.costMissing ? <span style={{ color: '#B5642A' }}>no cost</span> : `${it.margin.toFixed(0)}%`}
+                                  <span style={{ fontWeight: 700, flexShrink: 0, color: isMissing ? '#B5642A' : isService ? '#2D5A72' : lmc }}>
+                                    {isMissing ? 'no cost' : isService ? 'service' : `${it.margin.toFixed(0)}%`}
                                   </span>
                                 </div>
-                                <div style={{ fontSize: 10.5, color: '#999', marginTop: 2 }}>
-                                  qty {Number(it.qty.toFixed(2))} · sold {inr(it.revenue)} · cost {it.costMissing ? '—' : inr(it.cost)}
+                                <div style={{ fontSize: 10.5, color: '#999', marginTop: 2, display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                                  <span>qty {Number(it.qty.toFixed(2))} · sold {inr(it.revenue)} · cost {isMissing || isService ? '—' : inr(it.cost)}</span>
+                                  {it.costSource === 'bom' && <span style={{ color: '#9A7B1F', fontWeight: 600, flexShrink: 0 }}>BOM cost</span>}
                                 </div>
                               </div>
                             )
@@ -469,7 +477,7 @@ function MarginPanel({ customer, period, fromTo, onClose }: {
               </div>
 
               <div style={{ fontSize: 10.5, color: '#aaa', marginTop: 16, lineHeight: 1.5 }}>
-                Cost = ERPNext item valuation (or the invoice's stored gross profit where set). This is gross margin on goods — it excludes freight, overheads and sales effort.
+                Cost source per line: stored gross profit, then stock valuation, then the item's default BOM build cost. Non-stock services carry no goods cost. This is gross margin on goods — excludes freight, overheads and sales effort.
               </div>
             </>
           )}

@@ -116,6 +116,82 @@ async function linkErpId(accountId: string, erpnextId: string) {
 // 3. Customers with billing + gross-margin profitability (FY-filterable)
 // ---------------------------------------------------------------------------
 
+// Per-item-code: default-BOM cost per unit, and whether it's a stock item.
+// Cached together so the margin maths can resolve cost without re-fetching.
+type ItemCostMeta = { isStockItem: boolean; itemGroup: string; bomCostPerUnit: number }
+const itemCostCache = new Map<string, { exp: number; val: ItemCostMeta }>()
+
+async function itemCostMeta(codes: string[]): Promise<Record<string, ItemCostMeta>> {
+  const out: Record<string, ItemCostMeta> = {}
+  const need: string[] = []
+  for (const code of codes) {
+    const hit = itemCostCache.get(code)
+    if (hit && hit.exp > Date.now()) out[code] = hit.val
+    else need.push(code)
+  }
+  if (!need.length) return out
+
+  // 1. item flags (is_stock_item, item_group) in bulk
+  const flags: Record<string, { isStockItem: boolean; itemGroup: string }> = {}
+  for (const grp of chunk20(need, 50)) {
+    const items: any[] = await frappeGet('/api/resource/Item', {
+      fields: ['item_code', 'is_stock_item', 'item_group'],
+      filters: [['item_code', 'in', grp]],
+      limit_page_length: 0,
+    }).catch(() => [])
+    for (const it of items) {
+      flags[it.item_code] = { isStockItem: Number(it.is_stock_item) === 1, itemGroup: it.item_group || '' }
+    }
+  }
+
+  // 2. default-BOM cost per unit, only worth fetching for stock items
+  const bomCost: Record<string, number> = {}
+  const stockCodes = need.filter((c) => flags[c]?.isStockItem)
+  for (const grp of chunk20(stockCodes, 40)) {
+    const boms: any[] = await frappeGet('/api/resource/BOM', {
+      fields: ['item', 'total_cost', 'quantity'],
+      filters: [['item', 'in', grp], ['is_default', '=', 1], ['is_active', '=', 1]],
+      limit_page_length: 0,
+    }).catch(() => [])
+    for (const b of boms) {
+      const q = Number(b.quantity || 1) || 1
+      bomCost[b.item] = Number(b.total_cost || 0) / q
+    }
+  }
+
+  for (const code of need) {
+    const f = flags[code] ?? { isStockItem: false, itemGroup: '' }
+    const val: ItemCostMeta = { isStockItem: f.isStockItem, itemGroup: f.itemGroup, bomCostPerUnit: bomCost[code] ?? 0 }
+    itemCostCache.set(code, { exp: Date.now() + 5 * 60_000, val })
+    out[code] = val
+  }
+  return out
+}
+
+// Resolve the cost of one Sales Invoice line, in priority order:
+//   1. SI Item gross_profit (if ERPNext set it)
+//   2. valuation_rate / incoming_rate (live stock cost)
+//   3. default-BOM total_cost per unit  (manufactured items w/o valuation)
+//   4. service / non-stock item -> no cost is correct (not "missing")
+//   5. otherwise genuinely missing
+type LineCost = { cost: number; source: 'gross_profit' | 'valuation' | 'bom' | 'service' | 'missing' }
+function resolveLineCost(it: any, qty: number, revenue: number, meta?: ItemCostMeta): LineCost {
+  const gp = it.gross_profit
+  if (gp !== undefined && gp !== null && Number(gp) !== 0) {
+    return { cost: Math.max(0, revenue - Number(gp)), source: 'gross_profit' }
+  }
+  const valuation = Number(it.valuation_rate || it.incoming_rate || 0)
+  if (valuation > 0) return { cost: valuation * qty, source: 'valuation' }
+
+  if (meta && meta.bomCostPerUnit > 0) return { cost: meta.bomCostPerUnit * qty, source: 'bom' }
+
+  // No valuation and no BOM cost. If it's a non-stock item (service/labour),
+  // having no cost of goods is correct — don't flag it.
+  if (meta && !meta.isStockItem) return { cost: 0, source: 'service' }
+
+  return { cost: 0, source: 'missing' }
+}
+
 export type CustomerRow = {
   name: string
   customer_name: string
@@ -178,36 +254,38 @@ export async function getCustomersWithProfitability(from?: string, to?: string):
   }
 
   // 3. COGS per customer from Sales Invoice Item lines of those invoices.
-  // Query the parent Sales Invoice with a child-table filter so we don't need
-  // extra permissions on the child doctype, then read each invoice's items.
   const cogsByCust: Record<string, number> = {}
   const invoiceNames = Object.keys(invToCust)
 
+  // First pass: collect all docs + the item codes we'll need cost meta for.
+  const allDocs: any[] = []
+  const codesNeedingCost = new Set<string>()
   for (const chunk of chunk20(invoiceNames, 20)) {
     if (!chunk.length) continue
-    // fetch each invoice doc (items child table carries valuation + gross_profit)
     const docs = await Promise.all(
       chunk.map((n) => frappeGet(`/api/resource/Sales Invoice/${encodeURIComponent(n)}`).catch(() => null)),
     )
     for (const doc of docs) {
       if (!doc) continue
-      const cust = invToCust[doc.name]
-      if (!cust) continue
+      allDocs.push(doc)
       for (const it of doc.items ?? []) {
-        const amount = Number(it.base_net_amount || it.base_amount || it.amount || 0)
-        // Prefer the SI Item gross_profit field when populated; else qty*valuation_rate
-        let lineCogs: number
+        const valuation = Number(it.valuation_rate || it.incoming_rate || 0)
         const gp = it.gross_profit
-        if (gp !== undefined && gp !== null && Number(gp) !== 0) {
-          lineCogs = amount - Number(gp)
-        } else {
-          const valuation = Number(it.valuation_rate || it.incoming_rate || 0)
-          const qty = Number(it.stock_qty || it.qty || 0)
-          lineCogs = valuation * qty
-        }
-        if (lineCogs < 0) lineCogs = 0
-        cogsByCust[cust] = (cogsByCust[cust] ?? 0) + lineCogs
+        const hasGp = gp !== undefined && gp !== null && Number(gp) !== 0
+        if (!hasGp && valuation === 0 && it.item_code) codesNeedingCost.add(it.item_code)
       }
+    }
+  }
+  const costMeta = await itemCostMeta([...codesNeedingCost])
+
+  for (const doc of allDocs) {
+    const cust = invToCust[doc.name]
+    if (!cust) continue
+    for (const it of doc.items ?? []) {
+      const amount = Number(it.base_net_amount || it.base_amount || it.amount || 0)
+      const qty = Number(it.stock_qty || it.qty || 0)
+      const { cost } = resolveLineCost(it, qty, amount, costMeta[it.item_code])
+      cogsByCust[cust] = (cogsByCust[cust] ?? 0) + cost
     }
   }
 
@@ -241,9 +319,10 @@ export type MarginLineItem = {
   itemName: string
   qty: number
   revenue: number       // base_net_amount
-  cost: number          // valuation-based or gross_profit-derived
+  cost: number          // resolved cost (valuation / BOM / gross_profit)
   margin: number        // %
-  costMissing: boolean  // true when ERPNext had no valuation for this line
+  costMissing: boolean  // true only when a STOCK item has no cost anywhere
+  costSource: 'gross_profit' | 'valuation' | 'bom' | 'service' | 'missing'
 }
 export type MarginInvoice = {
   invoice: string
@@ -260,7 +339,8 @@ export type CustomerMargin = {
   cost: number
   grossProfit: number
   margin: number
-  missingCostCount: number  // # of line items with no cost data (these inflate margin)
+  missingCostCount: number  // STOCK items with no cost (real misconfig)
+  serviceCount: number      // non-stock/service lines (legitimately no cost)
   invoices: MarginInvoice[]
 }
 
@@ -281,59 +361,66 @@ export async function getCustomerMargin(customer: string, from?: string, to?: st
   let totalRevenue = 0
   let totalCost = 0
   let missingCostCount = 0
+  let serviceCount = 0
 
   const names = heads.map((h) => h.name)
   const dateByName: Record<string, string> = {}
   for (const h of heads) { dateByName[h.name] = h.posting_date || ''; if (h.customer_name) customerName = h.customer_name }
 
+  // gather docs first, then resolve cost meta for items that need it
+  const docs: any[] = []
   for (const grp of chunk20(names, 20)) {
-    const docs = await Promise.all(
+    const batch = await Promise.all(
       grp.map((n) => frappeGet(`/api/resource/Sales Invoice/${encodeURIComponent(n)}`).catch(() => null)),
     )
-    for (const doc of docs) {
-      if (!doc) continue
-      const items: MarginLineItem[] = []
-      let invRevenue = 0
-      let invCost = 0
-      for (const it of doc.items ?? []) {
-        const revenue = Number(it.base_net_amount || it.base_amount || it.amount || 0)
-        const qty = Number(it.stock_qty || it.qty || 0)
-        const gp = it.gross_profit
-        let cost: number
-        let costMissing = false
-        if (gp !== undefined && gp !== null && Number(gp) !== 0) {
-          cost = revenue - Number(gp)
-        } else {
-          const valuation = Number(it.valuation_rate || it.incoming_rate || 0)
-          cost = valuation * qty
-          if (valuation === 0) { costMissing = true; missingCostCount++ }
-        }
-        if (cost < 0) cost = 0
-        const margin = revenue > 0 ? ((revenue - cost) / revenue) * 100 : 0
-        items.push({
-          itemCode: it.item_code,
-          itemName: it.item_name || it.item_code,
-          qty,
-          revenue: Math.round(revenue),
-          cost: Math.round(cost),
-          margin: Math.round(margin * 10) / 10,
-          costMissing,
-        })
-        invRevenue += revenue
-        invCost += cost
-      }
-      const invMargin = invRevenue > 0 ? ((invRevenue - invCost) / invRevenue) * 100 : 0
-      invoices.push({
-        invoice: doc.name,
-        date: dateByName[doc.name] || doc.posting_date || '',
-        revenue: Math.round(invRevenue),
-        cost: Math.round(invCost),
-        margin: Math.round(invMargin * 10) / 10,
-        items,
-      })
-      totalRevenue += invRevenue
-      totalCost += invCost
+    for (const d of batch) if (d) docs.push(d)
+  }
+  const codesNeedingCost = new Set<string>()
+  for (const doc of docs) {
+    for (const it of doc.items ?? []) {
+      const valuation = Number(it.valuation_rate || it.incoming_rate || 0)
+      const gp = it.gross_profit
+      const hasGp = gp !== undefined && gp !== null && Number(gp) !== 0
+      if (!hasGp && valuation === 0 && it.item_code) codesNeedingCost.add(it.item_code)
     }
+  }
+  const costMeta = await itemCostMeta([...codesNeedingCost])
+
+  for (const doc of docs) {
+    const items: MarginLineItem[] = []
+    let invRevenue = 0
+    let invCost = 0
+    for (const it of doc.items ?? []) {
+      const revenue = Number(it.base_net_amount || it.base_amount || it.amount || 0)
+      const qty = Number(it.stock_qty || it.qty || 0)
+      const { cost, source } = resolveLineCost(it, qty, revenue, costMeta[it.item_code])
+      if (source === 'missing') missingCostCount++
+      if (source === 'service') serviceCount++
+      const margin = revenue > 0 ? ((revenue - cost) / revenue) * 100 : 0
+      items.push({
+        itemCode: it.item_code,
+        itemName: it.item_name || it.item_code,
+        qty,
+        revenue: Math.round(revenue),
+        cost: Math.round(cost),
+        margin: Math.round(margin * 10) / 10,
+        costMissing: source === 'missing',
+        costSource: source,
+      })
+      invRevenue += revenue
+      invCost += cost
+    }
+    const invMargin = invRevenue > 0 ? ((invRevenue - invCost) / invRevenue) * 100 : 0
+    invoices.push({
+      invoice: doc.name,
+      date: dateByName[doc.name] || doc.posting_date || '',
+      revenue: Math.round(invRevenue),
+      cost: Math.round(invCost),
+      margin: Math.round(invMargin * 10) / 10,
+      items,
+    })
+    totalRevenue += invRevenue
+    totalCost += invCost
   }
 
   const grossProfit = Math.round(totalRevenue - totalCost)
@@ -346,6 +433,7 @@ export async function getCustomerMargin(customer: string, from?: string, to?: st
     grossProfit,
     margin: Math.round(margin * 10) / 10,
     missingCostCount,
+    serviceCount,
     invoices,
   }
 }
