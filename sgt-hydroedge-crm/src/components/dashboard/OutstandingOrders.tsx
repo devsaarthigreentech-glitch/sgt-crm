@@ -1,9 +1,10 @@
 // src/components/dashboard/OutstandingOrders.tsx
 // Single unified Orders view: open Sales Orders from ERPNext, each as one
 // expandable row (placed date, expected delivery, value, currency, progress).
-// Replaces the separate "Upcoming orders" block — no more seeing one order 3x.
+// DaaS rentals are folded server-side into data.rentals and shown as engagement
+// rows (upfront + recurring as ONE card) — they no longer appear as overdue orders.
 import { useEffect, useState } from 'react'
-import { PackageOpen, Timer, Hourglass, Clock, Truck, AlertTriangle, ChevronRight } from 'lucide-react'
+import { PackageOpen, Timer, Hourglass, Clock, Truck, AlertTriangle, ChevronRight, Repeat } from 'lucide-react'
 
 const API = import.meta.env.VITE_API_URL ?? '/api/v1'
 const C = { forest: '#1F4E2E', green2: '#2D7A4F', gold: '#C9A24E', red: '#C84A3A', healthy: '#3B9D6E', navy: '#1E3A6B' }
@@ -27,10 +28,21 @@ type Order = {
   currency?: string; isForeign?: boolean; origTotal?: number | null; conversionRate?: number | null
   overdue?: boolean; overdueDays?: number | null; daysToDelivery?: number | null
 }
+
+// DaaS rental engagement (built server-side from rentalModel.detectDaaSEngagements).
+type Rental = {
+  key: string; customer: string; machines: number | null
+  monthlyGross: number | null; upfrontGross: number; tcvNet: number
+  bookedMonths: number | null; tenureMonths?: number | null
+  upfrontStatus: 'billed' | 'partial' | 'unbilled'
+  nextInvoiceDate?: string | null
+}
+
 type Data = {
   count: number; outstandingValue: number; orders: Order[]
   avgFulfilmentDays: number | null; fulfilmentSamples: number
   overdueCount?: number; lastOrder?: Order | null; nextDelivery?: Order | null
+  rentals?: Rental[]; awaitingInstallationValue?: number
 }
 
 function deliveryLabel(o: Order): { text: string; color: string } {
@@ -61,6 +73,9 @@ export default function OutstandingOrders() {
       .catch(e => { if (!ignore) { setErr(String(e)); setLoading(false) } })
     return () => { ignore = true }
   }, [])
+
+  const rentals = data?.rentals ?? []
+  const totalMRR = rentals.reduce((s, r) => s + (r.monthlyGross ?? 0), 0)
 
   return (
     <div>
@@ -115,11 +130,28 @@ export default function OutstandingOrders() {
               label="Open orders" value={String(data.count)}
               sub={(data.overdueCount ?? 0) > 0 ? `${data.overdueCount} overdue` : 'all on schedule'} />
             <Tile icon={<Hourglass size={15} strokeWidth={2} />} accent={C.green2}
-              label="Outstanding value" value={inrShort(data.outstandingValue)} sub="across open orders" />
+              label="Outstanding value" value={inrShort(data.outstandingValue)}
+              sub={data.awaitingInstallationValue ? `+${inrShort(data.awaitingInstallationValue)} awaiting install` : 'across open orders'} />
             <Tile icon={<Timer size={15} strokeWidth={2} />} accent={C.forest}
               label="Avg fulfilment" value={data.avgFulfilmentDays != null ? `${data.avgFulfilmentDays}d` : '—'}
               sub={data.fulfilmentSamples ? `from ${data.fulfilmentSamples} delivered` : 'no delivered orders'} />
           </div>
+
+          {rentals.length > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 10.5, fontWeight: 700, color: '#161614', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+                  <Repeat size={12} strokeWidth={2.2} style={{ color: C.gold }} /> Rentals · DaaS
+                </span>
+                <span style={{ fontSize: 11, color: '#6A675F' }}>
+                  MRR <b style={{ fontFamily: 'monospace', color: '#161614' }}>{inr(totalMRR)}</b>/mo · {rentals.length} active
+                </span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                {rentals.map(r => <RentalRow key={r.key} r={r} />)}
+              </div>
+            </div>
+          )}
 
           {data.orders.length === 0 ? (
             <Box>No outstanding orders — everything submitted has been delivered.</Box>
@@ -189,6 +221,43 @@ export default function OutstandingOrders() {
           )}
         </>
       )}
+    </div>
+  )
+}
+
+function RentalRow({ r }: { r: Rental }) {
+  const progress = r.tenureMonths && r.bookedMonths != null
+    ? `Month ${Math.min(r.bookedMonths, r.tenureMonths)} of ${r.tenureMonths}`
+    : r.bookedMonths != null ? `${r.bookedMonths} mo booked` : '—'
+  const chip = r.upfrontStatus === 'billed'
+    ? { bg: '#E7F1EA', fg: C.forest, t: 'Upfront billed' }
+    : r.upfrontStatus === 'partial'
+      ? { bg: '#FBF3E0', fg: '#8a6d1f', t: 'Upfront partial' }
+      : { bg: '#F6E7E4', fg: C.red, t: 'Upfront unbilled' }
+  return (
+    <div style={{
+      backgroundColor: '#fff', borderRadius: 8, border: '1px solid #E8E3D2',
+      borderLeft: `3px solid ${C.gold}`, padding: '11px 14px',
+      display: 'flex', alignItems: 'center', gap: 12,
+    }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: '#161614' }}>{r.customer}</span>
+          <span style={{ fontSize: 10, fontWeight: 700, color: C.forest, background: '#E7F1EA', padding: '1px 7px', borderRadius: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>DaaS</span>
+          <span style={{ fontSize: 10, fontWeight: 700, color: chip.fg, background: chip.bg, padding: '1px 7px', borderRadius: 4 }}>{chip.t}</span>
+        </div>
+        <div style={{ fontSize: 11.5, color: '#6A675F', marginTop: 1 }}>
+          {r.machines != null ? `${r.machines} machine${r.machines === 1 ? '' : 's'}` : 'Fleet'} · {progress}
+          {r.nextInvoiceDate ? ` · next ${fmtDate(r.nextInvoiceDate)}` : ''}
+        </div>
+      </div>
+      <div style={{ textAlign: 'right', flexShrink: 0 }}>
+        <div style={{ fontFamily: 'monospace', fontSize: 13, fontWeight: 600, color: '#161614' }}>
+          {r.monthlyGross != null ? inr(r.monthlyGross) : '—'}
+          <span style={{ fontSize: 10.5, color: '#6A675F', fontFamily: 'inherit' }}>/mo</span>
+        </div>
+        <div style={{ fontSize: 10.5, color: '#A39F94', marginTop: 2 }}>TCV {inrShort(r.tcvNet)}</div>
+      </div>
     </div>
   )
 }
