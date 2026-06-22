@@ -1,7 +1,7 @@
 // src/services/erpnext.ts
 // Server-side ERPNext read-through. Credentials never leave the backend.
 
-import { detectDaaSEngagements, DAAS_ITEM_CODES } from '../domain/rental';
+import { detectDaaSEngagements, DAAS_ITEM_CODES } from '../domain/rental.js';
 
 const BASE = process.env.ERPNEXT_URL!;
 const KEY = process.env.ERPNEXT_API_KEY!;
@@ -9,13 +9,6 @@ const SECRET = process.env.ERPNEXT_API_SECRET!;
 const DEFAULT_ASSEMBLY_DAYS = Number(process.env.ERP_DEFAULT_ASSEMBLY_DAYS ?? 7);
 const FINAL_ITEM_GROUPS = (process.env.ERP_FINAL_ITEM_GROUP ?? 'Final Assembly')
     .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
-
-// DaaS contract tenure (months) — not stored on the SO; keyed by quotation ref.
-// TODO: replace with a custom field (custom_rental_tenure_months) on Sales Order
-// so finance can set tenure per deal instead of editing this map.
-const CONTRACT_TENURE_BY_REF: Record<string, number> = {
-    'SAL-QTN-2026-00021': 36,
-};
 
 function authHeaders() {
     return { Authorization: `token ${KEY}:${SECRET}`, Accept: 'application/json' };
@@ -548,7 +541,7 @@ export async function getIncomeBreakdown(from?: string, to?: string) {
         items: itemsByParent[p.name] ?? [],
       }));
 
-      const engagements = detectDaaSEngagements(sos as any, { contractTenureByKey: CONTRACT_TENURE_BY_REF });
+      const engagements = detectDaaSEngagements(sos as any);
       return { engagements, soNames: new Set<string>(soNames) };
     });
   }
@@ -625,13 +618,15 @@ export async function getIncomeBreakdown(from?: string, to?: string) {
         key: e.key,
         customer: e.customerName,
         machines: e.machines,
-        monthlyGross: e.monthlyGross,
+        monthlyNet: e.monthlyNet,         // ₹8,268 — the monthly rent (net)
+        monthlyGross: e.monthlyGross,     // incl. GST
+        periods: e.periods,               // 24 — number of monthly invoices
+        recurringNet: e.recurringNet,     // monthlyNet * periods
         upfrontGross: e.upfrontGross,
         tcvNet: e.tcvNet,
-        bookedMonths: e.bookedMonths,
-        tenureMonths: e.contractTenureMonths ?? null,
         upfrontStatus: e.upfrontStatus,
-        nextInvoiceDate: null as string | null, // fill once /erp/subscriptions exists
+        nextInvoiceDate: null as string | null, // filled once /erp/subscriptions exists
+        invoicesPaid: null as number | null,     // months actually paid (from Subscription SIs)
       }));
 
       // Machines billed but not yet installed — shown separately, not as outstanding AR.

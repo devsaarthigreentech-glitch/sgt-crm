@@ -30,12 +30,14 @@ type Order = {
 }
 
 // DaaS rental engagement (built server-side from rentalModel.detectDaaSEngagements).
+// Rent read literally: monthlyNet = rate (₹8,268), periods = qty (24 monthly invoices).
 type Rental = {
   key: string; customer: string; machines: number | null
-  monthlyGross: number | null; upfrontGross: number; tcvNet: number
-  bookedMonths: number | null; tenureMonths?: number | null
+  monthlyNet: number | null; monthlyGross: number | null
+  periods: number | null; recurringNet: number
+  upfrontGross: number; tcvNet: number
   upfrontStatus: 'billed' | 'partial' | 'unbilled'
-  nextInvoiceDate?: string | null
+  nextInvoiceDate?: string | null; invoicesPaid?: number | null
 }
 
 type Data = {
@@ -75,7 +77,7 @@ export default function OutstandingOrders() {
   }, [])
 
   const rentals = data?.rentals ?? []
-  const totalMRR = rentals.reduce((s, r) => s + (r.monthlyGross ?? 0), 0)
+  const totalMRR = rentals.reduce((s, r) => s + (r.monthlyNet ?? 0), 0)
 
   return (
     <div>
@@ -226,9 +228,11 @@ export default function OutstandingOrders() {
 }
 
 function RentalRow({ r }: { r: Rental }) {
-  const progress = r.tenureMonths && r.bookedMonths != null
-    ? `Month ${Math.min(r.bookedMonths, r.tenureMonths)} of ${r.tenureMonths}`
-    : r.bookedMonths != null ? `${r.bookedMonths} mo booked` : '—'
+  const periods = r.periods ?? 0
+  const paid = r.invoicesPaid ?? null
+  const schedule = paid != null
+    ? `${paid}/${periods} paid`
+    : `${periods} monthly invoice${periods === 1 ? '' : 's'}`
   const chip = r.upfrontStatus === 'billed'
     ? { bg: '#E7F1EA', fg: C.forest, t: 'Upfront billed' }
     : r.upfrontStatus === 'partial'
@@ -247,14 +251,14 @@ function RentalRow({ r }: { r: Rental }) {
           <span style={{ fontSize: 10, fontWeight: 700, color: chip.fg, background: chip.bg, padding: '1px 7px', borderRadius: 4 }}>{chip.t}</span>
         </div>
         <div style={{ fontSize: 11.5, color: '#6A675F', marginTop: 1 }}>
-          {r.machines != null ? `${r.machines} machine${r.machines === 1 ? '' : 's'}` : 'Fleet'} · {progress}
+          {r.machines != null ? `${r.machines} machine${r.machines === 1 ? '' : 's'} · ` : ''}{schedule}
           {r.nextInvoiceDate ? ` · next ${fmtDate(r.nextInvoiceDate)}` : ''}
         </div>
       </div>
       <div style={{ textAlign: 'right', flexShrink: 0 }}>
         <div style={{ fontFamily: 'monospace', fontSize: 13, fontWeight: 600, color: '#161614' }}>
-          {r.monthlyGross != null ? inr(r.monthlyGross) : '—'}
-          <span style={{ fontSize: 10.5, color: '#6A675F', fontFamily: 'inherit' }}>/mo</span>
+          {r.monthlyNet != null ? inr(r.monthlyNet) : '—'}
+          <span style={{ fontSize: 10.5, color: '#6A675F', fontFamily: 'inherit' }}>/mo +GST</span>
         </div>
         <div style={{ fontSize: 10.5, color: '#A39F94', marginTop: 2 }}>TCV {inrShort(r.tcvNet)}</div>
       </div>

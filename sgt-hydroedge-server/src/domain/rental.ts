@@ -1,12 +1,9 @@
 // rentalModel.ts  (frontend: src/lib/rentalModel.ts  ·  backend: src/domain/rental.ts)
-// SGT HydroEdge CRM — DaaS rental engagement model + corrected outstanding/overdue logic.
-// Pure, dependency-free. Matches the ERPNext Sales Order shape your /erp/orders route returns.
+// SGT HydroEdge CRM — DaaS rental engagement model + outstanding/overdue helpers.
+// Pure, dependency-free. Matches the ERPNext Sales Order shape your /erp routes return.
 //
-// Two jobs:
-//   1) detectDaaSEngagements(orders)  -> collapses the upfront SO + rental SO that share a
-//      quotation (custom_reference_no) into ONE engagement, with MRR / TCV / tenure.
-//   2) classifyOrder(order)           -> stops rental SOs and billed-but-undelivered SOs
-//      from being counted as "overdue" receivables.
+// Rental lines are read LITERALLY: rate = monthly rent, qty = number of monthly
+// invoices. e.g. SO-004 = rate 8268 x qty 24 -> ₹8,268/mo for 24 months.
 
 // ---------------------------------------------------------------------------
 // Types
@@ -55,8 +52,8 @@ export interface SalesOrderItem {
   const UPFRONT_ITEM_CODES = new Set<string>(['Upfront Payment']);
   const RENTAL_ITEM_CODES = new Set<string>(['Rent on DaaS Model']);
   
-  // Exported for backend services that query ERPNext by these codes (keep the
-  // single source of truth here rather than re-declaring item codes in routes).
+  // Exported for backend services that query ERPNext by these codes (single source
+  // of truth — don't re-declare item codes in routes).
   export const UPFRONT_CODES: string[] = [...UPFRONT_ITEM_CODES];
   export const RENTAL_CODES: string[] = [...RENTAL_ITEM_CODES];
   export const DAAS_ITEM_CODES: string[] = [...UPFRONT_CODES, ...RENTAL_CODES];
@@ -77,34 +74,26 @@ export interface SalesOrderItem {
   // Engagement model
   // ---------------------------------------------------------------------------
   export interface DaaSEngagement {
-    key: string;                    // custom_reference_no (falls back to customer name)
+    key: string;                 // custom_reference_no (falls back to customer name)
     customerName: string;
-    machines: number | null;        // from upfront line qty
+    machines: number | null;     // upfront line qty — informational only
     upfrontOrders: SalesOrder[];
     rentalOrders: SalesOrder[];
     upfrontNet: number;
     upfrontGross: number;
-    monthlyNet: number | null;      // whole fleet, per month (per-machine rate * machines)
-    monthlyGross: number | null;
+    monthlyNet: number | null;   // rental line rate = monthly rent (net)
+    monthlyGross: number | null; // monthlyNet * (1 + GST)
     gstPct: number;
-    bookedMonths: number | null;    // rental qty / machines  (SO-004 = 24/2 = 12)
-    contractTenureMonths?: number;  // pass 36 if known — tenure isn't in SO structured data
-    tcvNet: number;
+    periods: number | null;      // rental line qty = number of monthly invoices
+    recurringNet: number;        // monthlyNet * periods  (rental line amount)
+    tcvNet: number;              // upfrontNet + recurringNet
     upfrontStatus: 'billed' | 'partial' | 'unbilled';
-  }
-  
-  export interface EngagementOptions {
-    // Known contract tenure per engagement key (e.g. 36 from the signed DaaS agreement).
-    contractTenureByKey?: Record<string, number>;
   }
   
   const engagementKey = (o: SalesOrder) =>
     (o.custom_reference_no && o.custom_reference_no.trim()) || `cust:${o.customer_name}`;
   
-  export function detectDaaSEngagements(
-    orders: SalesOrder[],
-    opts: EngagementOptions = {},
-  ): DaaSEngagement[] {
+  export function detectDaaSEngagements(orders: SalesOrder[]): DaaSEngagement[] {
     const groups = new Map<string, SalesOrder[]>();
     for (const o of orders) {
       if (!isDaaSOrder(o)) continue;
@@ -135,19 +124,13 @@ export interface SalesOrderItem {
         ? lineGstPct(upfrontLines[0])
         : 18;
   
-      // Per-machine monthly rate (assumes one rental rate across lines).
-      const perMachineMonthly = rentalLines.length ? rentalLines[0].rate : null;
-      const monthlyNet =
-        machines != null && perMachineMonthly != null ? perMachineMonthly * machines : null;
+      // Literal read of the rental line: rate = monthly rent, qty = months.
+      const monthlyNet = rentalLines.length ? rentalLines[0].rate : null;
       const monthlyGross = monthlyNet != null ? monthlyNet * (1 + gstPct / 100) : null;
+      const periods = rentalLines.length ? sum(rentalLines.map((l) => l.qty)) : null;
+      const recurringNet = sum(rentalLines.map((l) => l.amount));
   
-      const rentalQty = sum(rentalLines.map((l) => l.qty));
-      const bookedMonths =
-        machines != null && machines > 0 ? Math.round(rentalQty / machines) : null;
-  
-      const contractTenureMonths = opts.contractTenureByKey?.[key];
-      const tenureForTcv = contractTenureMonths ?? bookedMonths ?? 0;
-      const tcvNet = upfrontNet + (monthlyNet ?? 0) * tenureForTcv;
+      const tcvNet = upfrontNet + recurringNet;
   
       const billedPct = upfrontOrders.length
         ? Math.min(...upfrontOrders.map((o) => o.per_billed ?? 0))
@@ -166,8 +149,8 @@ export interface SalesOrderItem {
         monthlyNet,
         monthlyGross,
         gstPct,
-        bookedMonths,
-        contractTenureMonths,
+        periods,
+        recurringNet,
         tcvNet,
         upfrontStatus,
       });
@@ -179,8 +162,8 @@ export interface SalesOrderItem {
   // Outstanding / overdue classification  (available for AR-style views)
   // ---------------------------------------------------------------------------
   export type OutstandingClass =
-    | { kind: 'recurring_rental' } // rental billed monthly by Subscription — never overdue here
-    | { kind: 'awaiting_installation'; amount: number } // fully billed, delivery pending
+    | { kind: 'recurring_rental' }
+    | { kind: 'awaiting_installation'; amount: number }
     | { kind: 'overdue'; daysOverdue: number; amount: number }
     | { kind: 'due'; amount: number; dueDate: string }
     | { kind: 'normal'; amount: number };
