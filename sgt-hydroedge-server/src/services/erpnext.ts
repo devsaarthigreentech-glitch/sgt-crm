@@ -2,6 +2,7 @@
 // Server-side ERPNext read-through. Credentials never leave the backend.
 
 import { detectDaaSEngagements, DAAS_ITEM_CODES } from '../domain/rental.js';
+import { erpFetch } from './erpLimit.js'
 
 const BASE = process.env.ERPNEXT_URL!;
 const KEY = process.env.ERPNEXT_API_KEY!;
@@ -30,7 +31,7 @@ async function frappeGet(path: string, params: Record<string, unknown> = {}) {
     }
     let res: Response | undefined;
     for (let attempt = 1; ; attempt++) {
-        try { res = await fetch(url.toString(), { headers: authHeaders() }); break; }
+        try { res = await erpFetch(url.toString(), { headers: authHeaders() }); break; }
         catch (e) {
             if (attempt >= 3) throw e;                       // only retries network throws
             await new Promise((r) => setTimeout(r, 300 * attempt));

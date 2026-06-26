@@ -12,6 +12,7 @@
 // ---------------------------------------------------------------------------
 
 import { query } from '../db/pool.js'
+import { erpFetch, erpMap } from './erpLimit'
 
 const BASE = process.env.ERPNEXT_URL!
 const KEY = process.env.ERPNEXT_API_KEY!
@@ -28,13 +29,13 @@ async function frappeGet(path: string, params: Record<string, unknown> = {}) {
   for (const [k, v] of Object.entries(params)) {
     url.searchParams.set(k, typeof v === 'string' ? v : JSON.stringify(v))
   }
-  const res = await fetch(url.toString(), { headers: authHeaders() })
+  const res = await erpFetch(url.toString(), { headers: authHeaders() })
   if (!res.ok) throw new Error(`ERPNext ${res.status} ${path}: ${(await res.text()).slice(0, 200)}`)
   return (await res.json()).data
 }
 
 async function frappePost(doctype: string, doc: Record<string, unknown>) {
-  const res = await fetch(`${BASE}/api/resource/${encodeURIComponent(doctype)}`, {
+  const res = await erpFetch(`${BASE}/api/resource/${encodeURIComponent(doctype)}`, {
     method: 'POST',
     headers: { ...authHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify(doc),
@@ -258,22 +259,20 @@ export async function getCustomersWithProfitability(from?: string, to?: string):
   const invoiceNames = Object.keys(invToCust)
 
   // First pass: collect all docs + the item codes we'll need cost meta for.
+  // erpMap caps concurrency globally, so this can't burst the ERPNext pool.
   const allDocs: any[] = []
   const codesNeedingCost = new Set<string>()
-  for (const chunk of chunk20(invoiceNames, 20)) {
-    if (!chunk.length) continue
-    const docs = await Promise.all(
-      chunk.map((n) => frappeGet(`/api/resource/Sales Invoice/${encodeURIComponent(n)}`).catch(() => null)),
-    )
-    for (const doc of docs) {
-      if (!doc) continue
-      allDocs.push(doc)
-      for (const it of doc.items ?? []) {
-        const valuation = Number(it.valuation_rate || it.incoming_rate || 0)
-        const gp = it.gross_profit
-        const hasGp = gp !== undefined && gp !== null && Number(gp) !== 0
-        if (!hasGp && valuation === 0 && it.item_code) codesNeedingCost.add(it.item_code)
-      }
+  const fetchedDocs = await erpMap(invoiceNames, (n) =>
+    frappeGet(`/api/resource/Sales Invoice/${encodeURIComponent(n)}`).catch(() => null),
+  )
+  for (const doc of fetchedDocs) {
+    if (!doc) continue
+    allDocs.push(doc)
+    for (const it of doc.items ?? []) {
+      const valuation = Number(it.valuation_rate || it.incoming_rate || 0)
+      const gp = it.gross_profit
+      const hasGp = gp !== undefined && gp !== null && Number(gp) !== 0
+      if (!hasGp && valuation === 0 && it.item_code) codesNeedingCost.add(it.item_code)
     }
   }
   const costMeta = await itemCostMeta([...codesNeedingCost])
@@ -367,14 +366,12 @@ export async function getCustomerMargin(customer: string, from?: string, to?: st
   const dateByName: Record<string, string> = {}
   for (const h of heads) { dateByName[h.name] = h.posting_date || ''; if (h.customer_name) customerName = h.customer_name }
 
-  // gather docs first, then resolve cost meta for items that need it
-  const docs: any[] = []
-  for (const grp of chunk20(names, 20)) {
-    const batch = await Promise.all(
-      grp.map((n) => frappeGet(`/api/resource/Sales Invoice/${encodeURIComponent(n)}`).catch(() => null)),
-    )
-    for (const d of batch) if (d) docs.push(d)
-  }
+  // gather docs first, then resolve cost meta for items that need it.
+  // erpMap caps concurrency globally so this can't burst the ERPNext pool.
+  const fetched = await erpMap(names, (n) =>
+    frappeGet(`/api/resource/Sales Invoice/${encodeURIComponent(n)}`).catch(() => null),
+  )
+  const docs: any[] = fetched.filter((d) => d)
   const codesNeedingCost = new Set<string>()
   for (const doc of docs) {
     for (const it of doc.items ?? []) {
