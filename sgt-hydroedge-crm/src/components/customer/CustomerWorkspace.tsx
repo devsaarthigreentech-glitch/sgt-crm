@@ -7,10 +7,19 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   ArrowLeft, Search, Phone, Mail, Calendar, MapPin, FileText, Clock,
   Download, Shield, TrendingUp, Building, Briefcase, Zap, ChevronRight,
+  Upload, Plus, X, Trash2, Loader,
 } from 'lucide-react'
 import { t } from '../../lib/tokens'
+
+// One-time spin keyframes for loader icons (kept local; no global CSS edits).
+if (typeof document !== 'undefined' && !document.getElementById('vault-spin-kf')) {
+  const _s = document.createElement('style')
+  _s.id = 'vault-spin-kf'
+  _s.textContent = '@keyframes vaultspin{to{transform:rotate(360deg)}} .spin{animation:vaultspin .8s linear infinite}'
+  document.head.appendChild(_s)
+}
 import { useIsMobile } from '../../hooks/useIsMobile'
-import { vaultApi, type Workspace, type Contact, type Poc, type DocItem, type TimelineEvent } from '../../lib/vaultApi'
+import { vaultApi, type Workspace, type Contact, type Poc, type DocItem, type TimelineEvent, type VaultDoc, type DocMeta } from '../../lib/vaultApi'
 
 // ---------- label / colour maps ---------------------------------------------
 const ROLE_META: Record<string, { label: string; bg: string; fg: string }> = {
@@ -257,7 +266,7 @@ export default function CustomerWorkspace({ accountId, workspace, onBack }: Prop
           {tab === 'contacts' && <Contacts contacts={ws.contacts} />}
           {tab === 'team' && <Team team={ws.team} />}
           {tab === 'pocs' && <Pocs pocs={ws.pocs} />}
-          {tab === 'documents' && <Documents docs={ws.documents} q={docQuery} setQ={setDocQuery} />}
+          {tab === 'documents' && <Documents accountId={ws.account.id} initialDocs={ws.documents} q={docQuery} setQ={setDocQuery} />}
           {tab === 'sites' && <Sites sites={ws.sites} />}
         </div>
       </div>
@@ -495,7 +504,27 @@ function KeyVal({ k, v, icon }: { k: string; v: string; icon?: React.ReactNode }
   )
 }
 
-function Documents({ docs, q, setQ }: { docs: DocItem[]; q: string; setQ: (s: string) => void }) {
+function Documents({ accountId, initialDocs, q, setQ }: {
+  accountId: string
+  initialDocs: DocItem[]
+  q: string
+  setQ: (s: string) => void
+}) {
+  // Manage our own list so it refreshes after an upload. Seed from the workspace.
+  const [docs, setDocs] = useState<VaultDoc[]>(() =>
+    initialDocs.map((d) => ({
+      id: d.id, displayId: '', category: d.category, title: d.title,
+      description: null, confidentiality: d.confidentiality, tags: [],
+      currentVersion: d.currentVersion, fileName: d.fileName, mimeType: null,
+      sizeBytes: d.sizeBytes, uploadedByName: d.uploadedByName ?? null,
+      createdAt: d.createdAt, ready: d.currentVersion >= 1,
+    })),
+  )
+  const [showAdd, setShowAdd] = useState(false)
+  const [downloading, setDownloading] = useState<string | null>(null)
+
+  const refresh = () => { vaultApi.listDocuments(accountId).then(setDocs).catch(() => {}) }
+
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase()
     if (!needle) return docs
@@ -505,19 +534,47 @@ function Documents({ docs, q, setQ }: { docs: DocItem[]; q: string; setQ: (s: st
       (DOC_CATEGORY[d.category] ?? d.category).toLowerCase().includes(needle))
   }, [docs, q])
 
+  async function download(id: string) {
+    setDownloading(id)
+    try {
+      const { url } = await vaultApi.getDownloadUrl(id)
+      window.open(url, '_blank')
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Download failed')
+    } finally { setDownloading(null) }
+  }
+
+  async function remove(id: string, title: string) {
+    if (!confirm(`Delete "${title}"? This can\u2019t be undone from here.`)) return
+    try { await vaultApi.deleteDocument(id); setDocs((ds) => ds.filter((d) => d.id !== id)) }
+    catch (e) { alert(e instanceof Error ? e.message : 'Delete failed') }
+  }
+
   return (
     <div>
-      <div style={{ position: 'relative', marginBottom: 14, maxWidth: 380 }}>
-        <Search size={15} color={t.muted} style={{ position: 'absolute', left: 11, top: 10 }} />
-        <input
-          value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search documents by file name…"
+      <div style={{ display: 'flex', gap: 10, marginBottom: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ position: 'relative', flex: 1, minWidth: 220, maxWidth: 380 }}>
+          <Search size={15} color={t.muted} style={{ position: 'absolute', left: 11, top: 10 }} />
+          <input
+            value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search documents by file name\u2026"
+            style={{
+              width: '100%', boxSizing: 'border-box', padding: '9px 12px 9px 34px',
+              border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 13, background: t.surface, color: t.ink,
+            }} />
+        </div>
+        <button
+          onClick={() => setShowAdd(true)}
           style={{
-            width: '100%', boxSizing: 'border-box', padding: '9px 12px 9px 34px',
-            border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 13, background: t.surface, color: t.ink,
-          }} />
+            display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 14px',
+            border: 'none', borderRadius: 8, background: t.green, color: '#fff',
+            fontSize: 13, fontWeight: 600, cursor: 'pointer',
+          }}>
+          <Plus size={15} /> Add document
+        </button>
       </div>
-      {docs.length === 0 ? <Empty text="No documents yet. Uploads from the field and WhatsApp will collect here automatically." />
-        : filtered.length === 0 ? <Empty text={`No documents match “${q}”.`} />
+
+      {docs.length === 0 ? <Empty text="No documents yet. Add the first one with the button above." />
+        : filtered.length === 0 ? <Empty text={`No documents match \u201c${q}\u201d.`} />
         : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {filtered.map((d) => (
@@ -531,24 +588,40 @@ function Documents({ docs, q, setQ }: { docs: DocItem[]; q: string; setQ: (s: st
                     <div style={{ fontSize: 13, fontWeight: 600, color: t.ink, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.title}</div>
                     <div style={{ fontSize: 11.5, color: t.muted, display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 2 }}>
                       <span>{DOC_CATEGORY[d.category] ?? d.category}</span>
-                      {d.fileName && <span>· {d.fileName}</span>}
-                      {d.sizeBytes ? <span>· {fmtSize(d.sizeBytes)}</span> : null}
-                      <span>· v{d.currentVersion}</span>
+                      {d.fileName && <span>\u00b7 {d.fileName}</span>}
+                      {d.sizeBytes ? <span>\u00b7 {fmtSize(d.sizeBytes)}</span> : null}
                     </div>
                   </div>
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600, color: CONF_FG[d.confidentiality] ?? t.muted }}>
                     <Shield size={12} /> {titleCase(d.confidentiality)}
                   </span>
-                  <span title="Download arrives with file storage" style={{ color: t.border, display: 'inline-flex', cursor: 'not-allowed' }}><Download size={16} /></span>
+                  <button
+                    onClick={() => download(d.id)} disabled={!d.ready || downloading === d.id}
+                    title={d.ready ? 'Download' : 'Upload still finishing'}
+                    style={{ border: 'none', background: 'transparent', cursor: d.ready ? 'pointer' : 'not-allowed', color: d.ready ? t.green : t.border, display: 'inline-flex' }}>
+                    {downloading === d.id ? <Loader size={16} className="spin" /> : <Download size={16} />}
+                  </button>
+                  <button
+                    onClick={() => remove(d.id, d.title)} title="Delete"
+                    style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: t.muted, display: 'inline-flex' }}>
+                    <Trash2 size={15} />
+                  </button>
                 </div>
               </Card>
             ))}
           </div>
         )}
+
+      {showAdd && (
+        <AddDocumentModal
+          accountId={accountId}
+          onClose={() => setShowAdd(false)}
+          onDone={() => { setShowAdd(false); refresh() }}
+        />
+      )}
     </div>
   )
 }
-
 function Sites({ sites }: { sites: Workspace['sites'] }) {
   if (sites.length === 0) return <Empty text="No sites yet. Add the plants and locations where assets live." />
   return (
@@ -576,6 +649,134 @@ function Sites({ sites }: { sites: Workspace['sites'] }) {
 //   <CustomerWorkspace workspace={DEMO_WORKSPACE} />
 // Mirrors what seed_vault_demo.ts inserts, so the preview matches real data.
 // =============================================================================
+// ---- Add Document modal -----------------------------------------------------
+
+function AddDocumentModal({ accountId, onClose, onDone }: {
+  accountId: string
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [meta, setMeta] = useState<DocMeta | null>(null)
+  const [file, setFile] = useState<File | null>(null)
+  const [title, setTitle] = useState('')
+  const [category, setCategory] = useState('other')
+  const [confidentiality, setConfidentiality] = useState('internal')
+  const [description, setDescription] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [dragOver, setDragOver] = useState(false)
+
+  useEffect(() => { vaultApi.getDocMeta().then(setMeta).catch(() => {}) }, [])
+
+  function pick(f: File | null) {
+    if (!f) return
+    setFile(f)
+    if (!title.trim()) setTitle(f.name.replace(/\.[^.]+$/, ''))
+  }
+
+  async function submit() {
+    if (!file) { setError('Choose a file first.'); return }
+    if (!title.trim()) { setError('Give the document a title.'); return }
+    setBusy(true); setError(null)
+    try {
+      await vaultApi.uploadDocument(
+        { accountId, category, title: title.trim(), description: description.trim() || undefined, confidentiality },
+        file,
+      )
+      onDone()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Upload failed')
+      setBusy(false)
+    }
+  }
+
+  const cats = meta?.categories ?? ['other']
+  const confs = meta?.confidentiality ?? ['internal']
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(20,20,18,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, zIndex: 300 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, width: 'min(520px, 100%)', maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 16px 50px rgba(0,0,0,0.25)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', borderBottom: `1px solid ${t.border}` }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: t.green }}>Add document</div>
+          <button onClick={onClose} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: t.muted, display: 'inline-flex' }}><X size={18} /></button>
+        </div>
+
+        <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* drop zone */}
+          <label
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => { e.preventDefault(); setDragOver(false); pick(e.dataTransfer.files?.[0] ?? null) }}
+            style={{
+              border: `2px dashed ${dragOver ? t.green : t.border}`, borderRadius: 12, padding: '22px 16px',
+              textAlign: 'center', cursor: 'pointer', background: dragOver ? '#F2F8F4' : t.surface, display: 'block',
+            }}>
+            <input type="file" style={{ display: 'none' }} onChange={(e) => pick(e.target.files?.[0] ?? null)} />
+            <Upload size={22} color={t.green} />
+            <div style={{ fontSize: 13, color: t.ink, marginTop: 8, fontWeight: 600 }}>
+              {file ? file.name : 'Drop a file here or click to choose'}
+            </div>
+            <div style={{ fontSize: 11.5, color: t.muted, marginTop: 3 }}>
+              {file ? fmtSize(file.size) : 'PDF, images, reports \u2014 up to a few MB'}
+            </div>
+          </label>
+
+          <Field label="Title">
+            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Signed NDA \u2013 March 2026"
+              style={inputStyle} />
+          </Field>
+
+          <div style={{ display: 'flex', gap: 12 }}>
+            <Field label="Category" grow>
+              <select value={category} onChange={(e) => setCategory(e.target.value)} style={inputStyle}>
+                {cats.map((c) => <option key={c} value={c}>{DOC_CATEGORY[c] ?? c}</option>)}
+              </select>
+            </Field>
+            <Field label="Confidentiality" grow>
+              <select value={confidentiality} onChange={(e) => setConfidentiality(e.target.value)} style={inputStyle}>
+                {confs.map((c) => <option key={c} value={c}>{titleCase(c)}</option>)}
+              </select>
+            </Field>
+          </div>
+
+          <Field label="Description (optional)">
+            <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2}
+              placeholder="Any notes about this document\u2026"
+              style={{ ...inputStyle, resize: 'vertical' }} />
+          </Field>
+
+          {error && <div style={{ fontSize: 12.5, color: '#C84A3A' }}>{error}</div>}
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, padding: '14px 20px', borderTop: `1px solid ${t.border}` }}>
+          <button onClick={onClose} disabled={busy}
+            style={{ padding: '9px 16px', border: `1px solid ${t.border}`, borderRadius: 8, background: '#fff', color: t.muted, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+            Cancel
+          </button>
+          <button onClick={submit} disabled={busy}
+            style={{ padding: '9px 18px', border: 'none', borderRadius: 8, background: t.green, color: '#fff', fontSize: 13, fontWeight: 600, cursor: busy ? 'wait' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+            {busy ? <><Loader size={14} className="spin" /> Uploading\u2026</> : <>Upload</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const inputStyle: React.CSSProperties = {
+  width: '100%', boxSizing: 'border-box', padding: '9px 11px',
+  border: '1px solid #DDD7C6', borderRadius: 8, fontSize: 13, background: '#fff', color: '#161614',
+}
+
+function Field({ label, children, grow }: { label: string; children: React.ReactNode; grow?: boolean }) {
+  return (
+    <div style={{ flex: grow ? 1 : undefined, minWidth: 0 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: '#6A675F', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 }}>{label}</div>
+      {children}
+    </div>
+  )
+}
+
 export const DEMO_WORKSPACE: Workspace = {
   account: { id: 'demo', name: "Dr Reddy's Laboratories", industry: 'Pharmaceuticals', customerStatus: 'active', location: 'Hyderabad, Telangana', website: 'https://www.drreddys.com', erpnextId: 'CUST-0042', gstin: '36AAACR1234F1Z5' },
   stats: { pocs: 1, activePocs: 1, documents: 5, openIssues: 0, contacts: 4, sites: 1, lastActivityAt: '2025-12-10' },

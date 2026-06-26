@@ -82,9 +82,78 @@ async function getRaw<T>(path: string): Promise<T> {
   return body as T
 }
 
+async function post<T>(path: string, payload: unknown): Promise<T> {
+  const r = await authFetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  const body = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(body?.error?.message ?? `HTTP ${r.status}`)
+  return body.data as T
+}
+
+async function del<T>(path: string): Promise<T> {
+  const r = await authFetch(`${BASE}${path}`, { method: 'DELETE' })
+  const body = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(body?.error?.message ?? `HTTP ${r.status}`)
+  return body.data as T
+}
+
+// ---- Document write/upload types --------------------------------------------
+export interface VaultDoc {
+  id: string; displayId: string; category: string; title: string
+  description: string | null; confidentiality: string; tags: string[]
+  currentVersion: number; fileName: string | null; mimeType: string | null
+  sizeBytes: number | null; uploadedByName: string | null; createdAt: string; ready: boolean
+}
+export interface UploadTarget {
+  uploadUrl: string; method: 'PUT'; headers: Record<string, string>; bucket: string; key: string
+}
+export interface InitiateResult { documentId: string; displayId: string; versionId: string; upload: UploadTarget }
+export interface DocMeta { categories: string[]; confidentiality: string[] }
+
+export interface InitiateInput {
+  accountId: string; category: string; title: string; description?: string
+  confidentiality?: string; tags?: string[]
+  fileName: string; mimeType: string; sizeBytes?: number
+}
+// For the uploadDocument helper — fileName/mimeType/sizeBytes come from the File.
+export type UploadDocInput = Omit<InitiateInput, 'fileName' | 'mimeType' | 'sizeBytes'>
+
 export const vaultApi = {
   getCustomers: () => get<CustomerListItem[]>('/vault/customers'),
   getWorkspace: (id: string) => get<Workspace>(`/vault/customers/${id}/workspace`),
   getWorkspaceByErp: (erpId: string, name?: string) =>
     getRaw<ByErpResult>(`/vault/by-erp/workspace?erpId=${encodeURIComponent(erpId)}${name ? `&name=${encodeURIComponent(name)}` : ''}`),
+
+  // ---- documents ----
+  getDocMeta: () => get<DocMeta>('/vault/documents/meta'),
+  listDocuments: (accountId: string) => get<VaultDoc[]>(`/vault/accounts/${accountId}/documents`),
+  initiateUpload: (input: InitiateInput) => post<InitiateResult>('/vault/documents/initiate', input),
+  completeUpload: (id: string, body: { sizeBytes?: number; checksum?: string }) =>
+    post<{ ok: true }>(`/vault/documents/${id}/complete`, body),
+  getDownloadUrl: (id: string) => get<{ url: string; fileName: string }>(`/vault/documents/${id}/download`),
+  deleteDocument: (id: string) => del<{ ok: true }>(`/vault/documents/${id}`),
+
+  // Full upload helper: initiate -> PUT bytes -> complete. Returns the documentId.
+  // The server returns a fully-formed uploadUrl (local: our /api/v1/vault/blob/...;
+  // MinIO later: an absolute presigned URL). authFetch handles our own URLs; an
+  // absolute URL (starts with http) is sent with a plain fetch (no auth header).
+  async uploadDocument(input: UploadDocInput, file: File): Promise<string> {
+    const init = await this.initiateUpload({
+      ...input,
+      fileName: file.name,
+      mimeType: file.type || 'application/octet-stream',
+      sizeBytes: file.size,
+    })
+    const { uploadUrl, headers } = init.upload
+    const isAbsolute = /^https?:\/\//i.test(uploadUrl)
+    const put = isAbsolute
+      ? await fetch(uploadUrl, { method: 'PUT', headers, body: file })
+      : await authFetch(uploadUrl, { method: 'PUT', headers, body: file })
+    if (!put.ok) throw new Error(`Upload failed: HTTP ${put.status}`)
+    await this.completeUpload(init.documentId, { sizeBytes: file.size })
+    return init.documentId
+  },
 }
