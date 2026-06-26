@@ -9,6 +9,7 @@ import jwt from '@fastify/jwt'
 import authRoutes from './routes/auth.js'
 import { usersRoutes } from './routes/users.js'
 import targetRoutes from './routes/targets.js'
+import { vaultRoutes } from './routes/vault.js'
 
 dotenv.config()
 
@@ -43,10 +44,11 @@ async function start() {
   // Routes
   await app.register(leadsRoutes, { prefix: '/api/v1' })
   await app.register(partnerRoutes, { prefix: '/api/v1/partners/me' })
-  await app.register(erpRoutes, { prefix: '/api/v1' });
+  app.register(erpRoutes, { prefix: '/api/v1' });
   await app.register(authRoutes,   { prefix: '/api/v1' })
   await app.register(usersRoutes, { prefix: '/api/v1' })
   await app.register(targetRoutes, {prefix: '/api/v1'})
+  await app.register(vaultRoutes, { prefix: '/api/v1/vault' })
 
   // Global error handler
   app.setErrorHandler((error: any, request, reply) => {

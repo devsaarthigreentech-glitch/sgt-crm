@@ -4,6 +4,8 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { authFetch } from '../../lib/auth'
+import CustomerWorkspace from './CustomerWorkspace'
+import { vaultApi, type Workspace } from '../../lib/vaultApi'
 
 const C = {
   ink:     '#161614',
@@ -78,6 +80,9 @@ export default function CustomerList() {
 
   // margin breakdown slide-over
   const [openCustomer, setOpenCustomer] = useState<CustomerRow | null>(null)
+
+  // full 360 workspace view (switches out the list)
+  const [workspaceFor, setWorkspaceFor] = useState<CustomerRow | null>(null)
 
   // fiscal-year period toggle
   const [years, setYears]   = useState<FiscalYear[]>([])
@@ -154,6 +159,17 @@ export default function CustomerList() {
     name.split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('') || '?'
 
   const periodLabel = period === '__all__' ? 'all time' : period
+
+  // Full 360 workspace takes over the whole view when a customer is "opened"
+  if (workspaceFor) {
+    return (
+      <ErpWorkspace
+        erpId={workspaceFor.name}
+        erpName={workspaceFor.customer_name}
+        onBack={() => setWorkspaceFor(null)}
+      />
+    )
+  }
 
   return (
     <div style={{ height: '100%', overflowY: 'auto', background: C.ground }}>
@@ -264,7 +280,7 @@ export default function CustomerList() {
                     <div style={{ width: 34, height: 34, borderRadius: '50%', flexShrink: 0, background: gc, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11.5, fontWeight: 700 }}>
                       {initials(c.customer_name)}
                     </div>
-                    <div style={{ minWidth: 0 }}>
+                    <div style={{ minWidth: 0, flex: 1 }}>
                       <div style={{ fontSize: 13.5, fontWeight: 600, color: C.ink, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                         {c.customer_name}
                       </div>
@@ -273,6 +289,13 @@ export default function CustomerList() {
                         {c.invoice_count > 0 && <span>· {c.invoice_count} inv</span>}
                       </div>
                     </div>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setWorkspaceFor(c) }}
+                      title="Open customer workspace"
+                      style={{ flexShrink: 0, border: `1px solid ${C.border}`, background: '#fff', color: C.forest, cursor: 'pointer', borderRadius: 7, padding: '4px 10px', fontSize: 11.5, fontWeight: 600 }}
+                    >
+                      Open
+                    </button>
                   </div>
 
                   {/* group chip */}
@@ -492,6 +515,65 @@ function Line({ label, value, color, bold }: { label: string; value: string; col
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '3px 0' }}>
       <span style={{ fontSize: 12.5, color: C.muted }}>{label}</span>
       <span style={{ fontSize: bold ? 15 : 13.5, fontWeight: bold ? 700 : 600, color }}>{value}</span>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────
+// ErpWorkspace — resolves an ERPNext customer to its vault workspace.
+// Shows the 360 view when linked, or a friendly empty state when this customer
+// has no vault account yet (e.g. never went through close-won).
+// ─────────────────────────────────────────────
+
+function ErpWorkspace({ erpId, erpName, onBack }: { erpId: string; erpName: string; onBack: () => void }) {
+  const [state, setState] = useState<{ loading: boolean; ws: Workspace | null; linked: boolean; error: string | null }>({
+    loading: true, ws: null, linked: false, error: null,
+  })
+
+  useEffect(() => {
+    let ignore = false
+    setState({ loading: true, ws: null, linked: false, error: null })
+    vaultApi.getWorkspaceByErp(erpId, erpName)
+      .then(res => { if (!ignore) setState({ loading: false, ws: res.data, linked: res.linked, error: null }) })
+      .catch(e => { if (!ignore) setState({ loading: false, ws: null, linked: false, error: e instanceof Error ? e.message : 'Failed to load' }) })
+    return () => { ignore = true }
+  }, [erpId, erpName])
+
+  if (state.loading) {
+    return (
+      <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: C.ground, color: C.green2, fontSize: 14 }}>
+        Loading workspace…
+      </div>
+    )
+  }
+
+  // Linked → show the real 360 workspace
+  if (state.linked && state.ws) {
+    return <CustomerWorkspace workspace={state.ws} onBack={onBack} />
+  }
+
+  // Not linked yet (or error) → empty state with a back button
+  return (
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: C.ground }}>
+      <div style={{ background: `linear-gradient(135deg, ${C.forest} 0%, ${C.forest2} 100%)`, color: '#fff', padding: '18px 24px', position: 'relative', display: 'flex', alignItems: 'center', gap: 14 }}>
+        <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 3, background: C.gold }} />
+        <button onClick={onBack} style={{ border: 'none', background: 'rgba(255,255,255,0.15)', color: '#fff', cursor: 'pointer', fontSize: 13, borderRadius: 7, padding: '6px 12px', fontWeight: 600 }}>← Back</button>
+        <div>
+          <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: '-0.02em' }}>{erpName}</div>
+          <div style={{ fontSize: 11.5, color: '#BFE0C9', marginTop: 2 }}>Customer workspace</div>
+        </div>
+      </div>
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+        <div style={{ maxWidth: 420, textAlign: 'center' }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>🗂️</div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: C.forest, marginBottom: 8 }}>No vault record yet</div>
+          <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>
+            {state.error
+              ? `Couldn't load the workspace: ${state.error}`
+              : 'This ERPNext customer isn\u2019t linked to a vault account yet, so there are no POCs, documents or site records to show. A vault account is created automatically when a lead is closed-won, or it can be linked manually. File and POC uploads are coming in the next update.'}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

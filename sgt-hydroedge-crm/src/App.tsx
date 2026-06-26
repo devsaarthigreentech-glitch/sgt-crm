@@ -11,7 +11,7 @@ import TriageQueue from './components/triage/TriageQueue'
 import HomeDashboard from './components/dashboard/HomeDashboard'
 import { me, clearToken, type User } from './lib/auth'
 import Login from './components/auth/Login'
-import CustomerList from './components/customers/CustomerList'
+import CustomerList from './components/customer/CustomerList'
 
 type Page = 'home' | 'my-dashboard' | 'pipeline' | 'customers' | 'triage' | 'capture'
 
