@@ -6,6 +6,7 @@
 // =============================================================================
 import { query } from '../db/pool.js'
 import { erpFetch } from './erpLimit.js'
+import { normaliseAccountName } from '../domain/leads.js'
 
 // ---- Shapes returned to the frontend (camelCase) ----------------------------
 export interface CustomerListItem {
@@ -225,15 +226,17 @@ export async function resolveAccountByErp(erpId: string, erpName?: string): Prom
   )
   if (byId.rowCount && byId.rows[0]) return byId.rows[0].id
 
-  // fall back to exact-ish name match (ERPNext customer name == account name)
+  // fall back to a normalized-name match (catches accounts created via the
+  // pipeline, which store name_normalized). Falls back to a raw lower() match too.
   const nameToMatch = (erpName ?? erpId).trim()
   if (!nameToMatch) return null
+  const norm = normaliseAccountName(nameToMatch)
   const byName = await query(
     `SELECT id FROM lead_service.accounts
-      WHERE lower(name) = lower($1) AND deleted_at IS NULL
+      WHERE (name_normalized = $1 OR lower(name) = lower($2)) AND deleted_at IS NULL
       ORDER BY (erpnext_id IS NOT NULL) DESC
       LIMIT 1`,
-    [nameToMatch]
+    [norm, nameToMatch]
   )
   if (byName.rowCount && byName.rows[0]) return byName.rows[0].id
   return null
@@ -276,10 +279,10 @@ export async function createAccountFromErp(erpId: string, erpName?: string): Pro
   } catch { /* best-effort enrichment; fall back to name only */ }
 
   const ins = await query(
-    `INSERT INTO lead_service.accounts (name, gstin, location, erpnext_id, customer_status)
-     VALUES ($1, $2, $3, $4, 'active')
+    `INSERT INTO lead_service.accounts (name, name_normalized, gstin, location, erpnext_id, customer_status)
+     VALUES ($1, $2, $3, $4, $5, 'active')
      RETURNING id`,
-    [name, gstin, location, erpId],
+    [name, normaliseAccountName(name), gstin, location, erpId],
   )
   return { accountId: ins.rows[0].id, created: true }
 }
