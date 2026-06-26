@@ -59,13 +59,15 @@ class LocalDiskProvider implements StorageProvider {
     return path.join(this.root, key)
   }
 
-  async presignUpload(key: string, mimeType: string): Promise<UploadTarget> {
+  async presignUpload(key: string, _mimeType: string): Promise<UploadTarget> {
     // ensure the directory exists ahead of the client's PUT
     await fs.mkdir(path.dirname(this.filePath(key)), { recursive: true })
     return {
       uploadUrl: `${this.apiBase}/vault/blob/${encodeURIComponent(key)}`,
       method: 'PUT',
-      headers: { 'Content-Type': mimeType || 'application/octet-stream' },
+      // Always octet-stream: the bytes are raw and the blob route reads them as a
+      // Buffer regardless. (The real mime type is stored on the version row.)
+      headers: { 'Content-Type': 'application/octet-stream' },
       bucket: this.bucket,
       key,
     }

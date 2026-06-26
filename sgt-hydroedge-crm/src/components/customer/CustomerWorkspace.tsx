@@ -545,7 +545,7 @@ function Documents({ accountId, initialDocs, q, setQ }: {
   }
 
   async function remove(id: string, title: string) {
-    if (!confirm(`Delete "${title}"? This can\u2019t be undone from here.`)) return
+    if (!confirm(`Delete "${title}"? This can’t be undone from here.`)) return
     try { await vaultApi.deleteDocument(id); setDocs((ds) => ds.filter((d) => d.id !== id)) }
     catch (e) { alert(e instanceof Error ? e.message : 'Delete failed') }
   }
@@ -556,7 +556,7 @@ function Documents({ accountId, initialDocs, q, setQ }: {
         <div style={{ position: 'relative', flex: 1, minWidth: 220, maxWidth: 380 }}>
           <Search size={15} color={t.muted} style={{ position: 'absolute', left: 11, top: 10 }} />
           <input
-            value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search documents by file name\u2026"
+            value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search documents by file name…"
             style={{
               width: '100%', boxSizing: 'border-box', padding: '9px 12px 9px 34px',
               border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 13, background: t.surface, color: t.ink,
@@ -574,7 +574,7 @@ function Documents({ accountId, initialDocs, q, setQ }: {
       </div>
 
       {docs.length === 0 ? <Empty text="No documents yet. Add the first one with the button above." />
-        : filtered.length === 0 ? <Empty text={`No documents match \u201c${q}\u201d.`} />
+        : filtered.length === 0 ? <Empty text={`No documents match “${q}”.`} />
         : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {filtered.map((d) => (
@@ -741,7 +741,7 @@ function AddDocumentModal({ accountId, onClose, onDone }: {
 
           <Field label="Description (optional)">
             <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2}
-              placeholder="Any notes about this document\u2026"
+              placeholder="Any notes about this document…"
               style={{ ...inputStyle, resize: 'vertical' }} />
           </Field>
 
@@ -755,7 +755,7 @@ function AddDocumentModal({ accountId, onClose, onDone }: {
           </button>
           <button onClick={submit} disabled={busy}
             style={{ padding: '9px 18px', border: 'none', borderRadius: 8, background: t.green, color: '#fff', fontSize: 13, fontWeight: 600, cursor: busy ? 'wait' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 7 }}>
-            {busy ? <><Loader size={14} className="spin" /> Uploading\u2026</> : <>Upload</>}
+            {busy ? <><Loader size={14} className="spin" /> Uploading…</> : <>Upload</>}
           </button>
         </div>
       </div>

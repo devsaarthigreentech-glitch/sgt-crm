@@ -87,19 +87,34 @@ export default function CustomerList() {
   // fiscal-year period toggle
   const [years, setYears]   = useState<FiscalYear[]>([])
   const [period, setPeriod] = useState<string>('__all__')   // '__all__' or FY name
+  const [periodInit, setPeriodInit] = useState(false)        // FY default applied once
 
-  // load fiscal years once
+  // load fiscal years once; default the period to the CURRENT financial year.
+  // periodInit is always set (even on empty/error) so the list can load with
+  // the all-time fallback rather than hanging.
   useEffect(() => {
     let ignore = false
     fetch(`${API}/erp/fiscal-years`)
       .then(r => r.json())
-      .then(d => { if (!ignore && Array.isArray(d)) setYears(d) })
+      .then(d => {
+        if (ignore) return
+        if (Array.isArray(d)) {
+          setYears(d)
+          const today = new Date().toISOString().slice(0, 10)
+          const current = d.find((y: FiscalYear) => y.from <= today && today <= y.to)
+          if (current) setPeriod(current.name)
+        }
+      })
       .catch(() => {})
+      .finally(() => { if (!ignore) setPeriodInit(true) })
     return () => { ignore = true }
   }, [])
 
-  // (re)load customers whenever the period changes
+  // (re)load customers whenever the period changes. Wait until the FY default
+  // has been resolved (periodInit) so we don't fire a throwaway all-time fetch
+  // before the current financial year is selected.
   useEffect(() => {
+    if (!periodInit) return
     let ignore = false
     setLoading(true)
     setError(null)
@@ -118,7 +133,7 @@ export default function CustomerList() {
       .catch(e => { if (!ignore) setError(String(e)) })
       .finally(() => { if (!ignore) setLoading(false) })
     return () => { ignore = true }
-  }, [period, years])
+  }, [period, years, periodInit])
 
   const active = useMemo(() => customers.filter(c => !c.disabled), [customers])
   const groups = useMemo(
@@ -291,10 +306,10 @@ export default function CustomerList() {
                     </div>
                     <button
                       onClick={(e) => { e.stopPropagation(); setWorkspaceFor(c) }}
-                      title="Open customer workspace"
+                      title="Open customer vault"
                       style={{ flexShrink: 0, border: `1px solid ${C.border}`, background: '#fff', color: C.forest, cursor: 'pointer', borderRadius: 7, padding: '4px 10px', fontSize: 11.5, fontWeight: 600 }}
                     >
-                      Open
+                      Open Vault
                     </button>
                   </div>
 

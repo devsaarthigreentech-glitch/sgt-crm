@@ -32,10 +32,13 @@ import {
 import { localStorage } from '../services/storage.js'
 
 export async function vaultRoutes(fastify: FastifyInstance) {
-  // Raw-body parser for octet-stream so the local blob PUT can collect bytes
-  // without any multipart dependency. Only matters for VAULT_STORAGE=local.
+  // Raw-body parser so the local blob PUT can collect bytes for ANY content-type
+  // the browser sends (application/pdf, image/png, octet-stream, …) without a
+  // multipart dependency. A catch-all matcher reads anything not already handled
+  // (JSON stays handled by Fastify's built-in parser) as a Buffer.
+  // Only relevant for VAULT_STORAGE=local.
   fastify.addContentTypeParser(
-    'application/octet-stream',
+    /^(?!application\/json).*/,
     { parseAs: 'buffer' },
     (_req, body, done) => done(null, body),
   )
