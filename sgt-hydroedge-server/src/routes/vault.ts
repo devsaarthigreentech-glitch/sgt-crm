@@ -23,6 +23,7 @@ import { FastifyInstance } from 'fastify'
 import { requireAuth } from '../auth/guard.js'
 import {
   getCustomerList, getCustomerWorkspace, getWorkspaceByErp, resolveAccountByErp,
+  createAccountFromErp,
 } from '../services/vault.js'
 import {
   initiateUpload, completeUpload, listDocuments, getDownloadUrl, deleteDocument,
@@ -64,6 +65,24 @@ export async function vaultRoutes(fastify: FastifyInstance) {
       if (!accountId) return reply.send({ data: null, linked: false })
       const ws = await getWorkspaceByErp(erpId, name)
       return reply.send({ data: ws, linked: true })
+    },
+  )
+
+  // Create a vault account FROM an ERPNext customer (the "Create vault record"
+  // button on the empty state). Idempotent. Returns the freshly-loaded workspace.
+  fastify.post<{ Body: { erpId?: string; name?: string } }>(
+    '/by-erp/create',
+    { preHandler: requireAuth },
+    async (req, reply) => {
+      const { erpId, name } = req.body ?? {}
+      if (!erpId) return reply.code(400).send({ error: { code: 'bad_request', message: 'erpId is required' } })
+      try {
+        const { accountId, created } = await createAccountFromErp(erpId, name)
+        const ws = await getCustomerWorkspace(accountId)
+        return reply.send({ data: ws, created })
+      } catch (e: any) {
+        return reply.code(400).send({ error: { code: 'create_failed', message: e.message } })
+      }
     },
   )
 

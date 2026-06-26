@@ -126,6 +126,8 @@ export const vaultApi = {
   getWorkspace: (id: string) => get<Workspace>(`/vault/customers/${id}/workspace`),
   getWorkspaceByErp: (erpId: string, name?: string) =>
     getRaw<ByErpResult>(`/vault/by-erp/workspace?erpId=${encodeURIComponent(erpId)}${name ? `&name=${encodeURIComponent(name)}` : ''}`),
+  createVaultFromErp: (erpId: string, name?: string) =>
+    post<Workspace>('/vault/by-erp/create', { erpId, name }),
 
   // ---- documents ----
   getDocMeta: () => get<DocMeta>('/vault/documents/meta'),

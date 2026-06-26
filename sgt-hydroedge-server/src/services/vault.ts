@@ -5,6 +5,7 @@
 // Read-only for now; write endpoints come in the next round.
 // =============================================================================
 import { query } from '../db/pool.js'
+import { erpFetch } from './erpLimit.js'
 
 // ---- Shapes returned to the frontend (camelCase) ----------------------------
 export interface CustomerListItem {
@@ -242,4 +243,43 @@ export async function getWorkspaceByErp(erpId: string, erpName?: string): Promis
   const accountId = await resolveAccountByErp(erpId, erpName)
   if (!accountId) return null
   return getCustomerWorkspace(accountId)
+}
+
+// ---- Create a vault account FROM an ERPNext customer (reverse of close-won) ----
+// Most ERPNext customers were created directly in ERPNext / imported and never
+// passed through the CRM pipeline, so they have no lead_service.accounts row.
+// This makes one on demand (the "Create vault record" button), pulling name +
+// GSTIN + territory from the ERPNext Customer, and links erpnext_id so the vault
+// resolver finds it next time. Idempotent: if a link already exists, returns it.
+export async function createAccountFromErp(erpId: string, erpName?: string): Promise<{ accountId: string; created: boolean }> {
+  // already linked?
+  const existing = await resolveAccountByErp(erpId, erpName)
+  if (existing) return { accountId: existing, created: false }
+
+  // pull customer detail from ERPNext for a richer account
+  const BASE = process.env.ERPNEXT_URL!
+  const KEY = process.env.ERPNEXT_API_KEY!
+  const SECRET = process.env.ERPNEXT_API_SECRET!
+  let name = (erpName ?? erpId).trim()
+  let gstin: string | null = null
+  let location: string | null = null
+  try {
+    const res = await erpFetch(`${BASE}/api/resource/Customer/${encodeURIComponent(erpId)}`, {
+      headers: { Authorization: `token ${KEY}:${SECRET}`, Accept: 'application/json' },
+    })
+    if (res.ok) {
+      const doc = (await res.json()).data
+      name = (doc.customer_name || name).trim()
+      gstin = doc.gstin || doc.tax_id || null
+      location = doc.territory || null
+    }
+  } catch { /* best-effort enrichment; fall back to name only */ }
+
+  const ins = await query(
+    `INSERT INTO lead_service.accounts (name, gstin, location, erpnext_id, customer_status)
+     VALUES ($1, $2, $3, $4, 'active')
+     RETURNING id`,
+    [name, gstin, location, erpId],
+  )
+  return { accountId: ins.rows[0].id, created: true }
 }

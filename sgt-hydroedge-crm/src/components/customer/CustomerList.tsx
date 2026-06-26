@@ -1,4 +1,4 @@
-// src/components/customers/CustomerList.tsx
+// src/components/customer/CustomerList.tsx
 // Customer management dashboard — customers + billing + gross-margin profitability
 // from ERPNext, with an All-time / fiscal-year toggle. Director and sales only.
 
@@ -529,6 +529,7 @@ function ErpWorkspace({ erpId, erpName, onBack }: { erpId: string; erpName: stri
   const [state, setState] = useState<{ loading: boolean; ws: Workspace | null; linked: boolean; error: string | null }>({
     loading: true, ws: null, linked: false, error: null,
   })
+  const [creating, setCreating] = useState(false)
 
   useEffect(() => {
     let ignore = false
@@ -538,6 +539,18 @@ function ErpWorkspace({ erpId, erpName, onBack }: { erpId: string; erpName: stri
       .catch(e => { if (!ignore) setState({ loading: false, ws: null, linked: false, error: e instanceof Error ? e.message : 'Failed to load' }) })
     return () => { ignore = true }
   }, [erpId, erpName])
+
+  async function createVault() {
+    setCreating(true)
+    try {
+      const ws = await vaultApi.createVaultFromErp(erpId, erpName)
+      setState({ loading: false, ws, linked: true, error: null })
+    } catch (e) {
+      setState(s => ({ ...s, error: e instanceof Error ? e.message : 'Could not create vault record' }))
+    } finally {
+      setCreating(false)
+    }
+  }
 
   if (state.loading) {
     return (
@@ -552,7 +565,7 @@ function ErpWorkspace({ erpId, erpName, onBack }: { erpId: string; erpName: stri
     return <CustomerWorkspace workspace={state.ws} onBack={onBack} />
   }
 
-  // Not linked yet (or error) → empty state with a back button
+  // Not linked yet (or error) → empty state with a "Create vault record" action
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: C.ground }}>
       <div style={{ background: `linear-gradient(135deg, ${C.forest} 0%, ${C.forest2} 100%)`, color: '#fff', padding: '18px 24px', position: 'relative', display: 'flex', alignItems: 'center', gap: 14 }}>
@@ -564,14 +577,23 @@ function ErpWorkspace({ erpId, erpName, onBack }: { erpId: string; erpName: stri
         </div>
       </div>
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-        <div style={{ maxWidth: 420, textAlign: 'center' }}>
+        <div style={{ maxWidth: 440, textAlign: 'center' }}>
           <div style={{ fontSize: 40, marginBottom: 12 }}>🗂️</div>
           <div style={{ fontSize: 16, fontWeight: 600, color: C.forest, marginBottom: 8 }}>No vault record yet</div>
-          <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>
-            {state.error
-              ? `Couldn't load the workspace: ${state.error}`
-              : 'This ERPNext customer isn\u2019t linked to a vault account yet, so there are no POCs, documents or site records to show. A vault account is created automatically when a lead is closed-won, or it can be linked manually. File and POC uploads are coming in the next update.'}
+          <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 18 }}>
+            This ERPNext customer isn{'\u2019'}t linked to a vault account yet. Create one to start
+            adding documents, POCs, contacts and site records for {erpName}.
           </div>
+          <button
+            onClick={createVault}
+            disabled={creating}
+            style={{ border: 'none', borderRadius: 9, background: C.forest, color: '#fff', fontSize: 13.5, fontWeight: 600, padding: '11px 22px', cursor: creating ? 'wait' : 'pointer' }}
+          >
+            {creating ? 'Creating…' : 'Create vault record'}
+          </button>
+          {state.error && (
+            <div style={{ fontSize: 12, color: C.red, marginTop: 14 }}>{state.error}</div>
+          )}
         </div>
       </div>
     </div>
