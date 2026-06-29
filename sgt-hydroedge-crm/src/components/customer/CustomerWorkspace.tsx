@@ -536,10 +536,10 @@ function Documents({ accountId, initialDocs, q, setQ }: {
   }, [docs, q])
 
   // Download: fetch bytes WITH auth, then save via a temporary object URL.
-  async function download(id: string) {
+  async function download(id: string, mimeType?: string | null) {
     setDownloading(id)
     try {
-      const { blob, fileName } = await vaultApi.fetchDocBlob(id)
+      const { blob, fileName } = await vaultApi.fetchDocBlob(id, { mimeType })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
@@ -553,12 +553,11 @@ function Documents({ accountId, initialDocs, q, setQ }: {
     } finally { setDownloading(null) }
   }
 
-  // Preview: fetch bytes WITH auth, open inline in a new tab (PDF/image render
-  // in the browser; other types fall back to the browser's default handling).
-  async function preview(id: string) {
+  // Preview: fetch bytes WITH auth (typed correctly), open inline in a new tab.
+  async function preview(id: string, mimeType?: string | null) {
     setPreviewing(id)
     try {
-      const { blob } = await vaultApi.fetchDocBlob(id)
+      const { blob } = await vaultApi.fetchDocBlob(id, { inline: true, mimeType })
       const url = URL.createObjectURL(blob)
       const w = window.open(url, '_blank')
       if (!w) { // popup blocked — fall back to same-tab
@@ -622,13 +621,13 @@ function Documents({ accountId, initialDocs, q, setQ }: {
                     <Shield size={12} /> {titleCase(d.confidentiality)}
                   </span>
                   <button
-                    onClick={() => preview(d.id)} disabled={!d.ready || previewing === d.id}
+                    onClick={() => preview(d.id, d.mimeType)} disabled={!d.ready || previewing === d.id}
                     title={d.ready ? 'Preview' : 'Upload still finishing'}
                     style={{ border: 'none', background: 'transparent', cursor: d.ready ? 'pointer' : 'not-allowed', color: d.ready ? t.muted : t.border, display: 'inline-flex' }}>
                     {previewing === d.id ? <Loader size={16} className="spin" /> : <Eye size={16} />}
                   </button>
                   <button
-                    onClick={() => download(d.id)} disabled={!d.ready || downloading === d.id}
+                    onClick={() => download(d.id, d.mimeType)} disabled={!d.ready || downloading === d.id}
                     title={d.ready ? 'Download' : 'Upload still finishing'}
                     style={{ border: 'none', background: 'transparent', cursor: d.ready ? 'pointer' : 'not-allowed', color: d.ready ? t.green : t.border, display: 'inline-flex' }}>
                     {downloading === d.id ? <Loader size={16} className="spin" /> : <Download size={16} />}

@@ -21,6 +21,7 @@
 // =============================================================================
 import { FastifyInstance } from 'fastify'
 import { requireAuth } from '../auth/guard.js'
+import { query } from '../db/pool.js'
 import {
   getCustomerList, getCustomerWorkspace, getWorkspaceByErp, resolveAccountByErp,
   createAccountFromErp,
@@ -192,7 +193,7 @@ export async function vaultRoutes(fastify: FastifyInstance) {
     },
   )
 
-  fastify.get<{ Params: { key: string }; Querystring: { name?: string } }>(
+  fastify.get<{ Params: { key: string }; Querystring: { name?: string; disposition?: string } }>(
     '/blob/:key',
     { preHandler: requireAuth },
     async (req, reply) => {
@@ -201,8 +202,22 @@ export async function vaultRoutes(fastify: FastifyInstance) {
       const key = decodeURIComponent(req.params.key)
       const stat = await local.stat(key)
       if (!stat) return reply.code(404).send({ error: { code: 'not_found', message: 'File not found' } })
-      const name = req.query.name ?? key.split('/').pop() ?? 'download'
-      reply.header('Content-Disposition', `attachment; filename="${name.replace(/"/g, '')}"`)
+
+      // Look up the real mime type + file name for this object so the browser
+      // renders it correctly (without this it falls back to text and shows
+      // raw bytes when previewed).
+      const meta = await query(
+        `SELECT mime_type, file_name FROM document_service.document_version
+          WHERE storage_key = $1 ORDER BY version_no DESC LIMIT 1`,
+        [key],
+      )
+      const mime = meta.rows[0]?.mime_type || 'application/octet-stream'
+      const name = req.query.name ?? meta.rows[0]?.file_name ?? key.split('/').pop() ?? 'download'
+      // inline (preview) vs attachment (download)
+      const disp = req.query.disposition === 'inline' ? 'inline' : 'attachment'
+
+      reply.header('Content-Type', mime)
+      reply.header('Content-Disposition', `${disp}; filename="${String(name).replace(/"/g, '')}"`)
       reply.header('Content-Length', String(stat.size))
       return reply.send(local.readStream(key))
     },

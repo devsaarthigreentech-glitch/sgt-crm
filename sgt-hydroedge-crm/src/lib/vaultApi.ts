@@ -140,14 +140,25 @@ export const vaultApi = {
   // Fetch the actual bytes WITH the auth header (a raw browser navigation to the
   // blob URL has no header -> 401). Returns a Blob + the file name, which the UI
   // turns into an object URL for download or inline preview.
-  async fetchDocBlob(id: string): Promise<{ blob: Blob; fileName: string }> {
+  async fetchDocBlob(id: string, opts: { inline?: boolean; mimeType?: string | null } = {}): Promise<{ blob: Blob; fileName: string }> {
     const meta = await this.getDownloadUrl(id)         // { url, fileName }
-    const isAbsolute = /^https?:\/\//i.test(meta.url)
+    let url = meta.url
+    // ask the local blob route to serve inline (for preview) vs attachment
+    if (opts.inline && !/^https?:\/\//i.test(url)) {
+      url += (url.includes('?') ? '&' : '?') + 'disposition=inline'
+    }
+    const isAbsolute = /^https?:\/\//i.test(url)
     const res = isAbsolute
-      ? await fetch(meta.url)                            // MinIO presigned (already authed)
-      : await authFetch(meta.url)                        // local blob route (needs Bearer)
+      ? await fetch(url)                                // MinIO presigned (already authed)
+      : await authFetch(url)                            // local blob route (needs Bearer)
     if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`)
-    const blob = await res.blob()
+    let blob = await res.blob()
+    // Defensive: if the server didn't set a usable type but we know it, re-type
+    // the blob so the browser renders a preview correctly instead of showing
+    // raw bytes as text.
+    if ((!blob.type || blob.type === 'application/octet-stream') && opts.mimeType) {
+      blob = new Blob([await blob.arrayBuffer()], { type: opts.mimeType })
+    }
     return { blob, fileName: meta.fileName }
   },
   deleteDocument: (id: string) => del<{ ok: true }>(`/vault/documents/${id}`),
