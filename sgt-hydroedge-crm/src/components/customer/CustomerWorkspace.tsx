@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   ArrowLeft, Search, Phone, Mail, Calendar, MapPin, FileText, Clock,
   Download, Shield, TrendingUp, Building, Briefcase, Zap, ChevronRight,
-  Upload, Plus, X, Trash2, Loader,
+  Upload, Plus, X, Trash2, Loader, Eye,
 } from 'lucide-react'
 import { t } from '../../lib/tokens'
 
@@ -522,6 +522,7 @@ function Documents({ accountId, initialDocs, q, setQ }: {
   )
   const [showAdd, setShowAdd] = useState(false)
   const [downloading, setDownloading] = useState<string | null>(null)
+  const [previewing, setPreviewing] = useState<string | null>(null)
 
   const refresh = () => { vaultApi.listDocuments(accountId).then(setDocs).catch(() => {}) }
 
@@ -534,14 +535,39 @@ function Documents({ accountId, initialDocs, q, setQ }: {
       (DOC_CATEGORY[d.category] ?? d.category).toLowerCase().includes(needle))
   }, [docs, q])
 
+  // Download: fetch bytes WITH auth, then save via a temporary object URL.
   async function download(id: string) {
     setDownloading(id)
     try {
-      const { url } = await vaultApi.getDownloadUrl(id)
-      window.open(url, '_blank')
+      const { blob, fileName } = await vaultApi.fetchDocBlob(id)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = fileName || 'document'
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 10_000)
     } catch (e) {
       alert(e instanceof Error ? e.message : 'Download failed')
     } finally { setDownloading(null) }
+  }
+
+  // Preview: fetch bytes WITH auth, open inline in a new tab (PDF/image render
+  // in the browser; other types fall back to the browser's default handling).
+  async function preview(id: string) {
+    setPreviewing(id)
+    try {
+      const { blob } = await vaultApi.fetchDocBlob(id)
+      const url = URL.createObjectURL(blob)
+      const w = window.open(url, '_blank')
+      if (!w) { // popup blocked — fall back to same-tab
+        window.location.href = url
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Preview failed')
+    } finally { setPreviewing(null) }
   }
 
   async function remove(id: string, title: string) {
@@ -588,13 +614,19 @@ function Documents({ accountId, initialDocs, q, setQ }: {
                     <div style={{ fontSize: 13, fontWeight: 600, color: t.ink, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.title}</div>
                     <div style={{ fontSize: 11.5, color: t.muted, display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 2 }}>
                       <span>{DOC_CATEGORY[d.category] ?? d.category}</span>
-                      {d.fileName && <span>\u00b7 {d.fileName}</span>}
-                      {d.sizeBytes ? <span>\u00b7 {fmtSize(d.sizeBytes)}</span> : null}
+                      {d.fileName && <span>· {d.fileName}</span>}
+                      {d.sizeBytes ? <span>· {fmtSize(d.sizeBytes)}</span> : null}
                     </div>
                   </div>
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600, color: CONF_FG[d.confidentiality] ?? t.muted }}>
                     <Shield size={12} /> {titleCase(d.confidentiality)}
                   </span>
+                  <button
+                    onClick={() => preview(d.id)} disabled={!d.ready || previewing === d.id}
+                    title={d.ready ? 'Preview' : 'Upload still finishing'}
+                    style={{ border: 'none', background: 'transparent', cursor: d.ready ? 'pointer' : 'not-allowed', color: d.ready ? t.muted : t.border, display: 'inline-flex' }}>
+                    {previewing === d.id ? <Loader size={16} className="spin" /> : <Eye size={16} />}
+                  </button>
                   <button
                     onClick={() => download(d.id)} disabled={!d.ready || downloading === d.id}
                     title={d.ready ? 'Download' : 'Upload still finishing'}
@@ -717,12 +749,12 @@ function AddDocumentModal({ accountId, onClose, onDone }: {
               {file ? file.name : 'Drop a file here or click to choose'}
             </div>
             <div style={{ fontSize: 11.5, color: t.muted, marginTop: 3 }}>
-              {file ? fmtSize(file.size) : 'PDF, images, reports \u2014 up to a few MB'}
+              {file ? fmtSize(file.size) : 'PDF, images, reports — up to a few MB'}
             </div>
           </label>
 
           <Field label="Title">
-            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Signed NDA \u2013 March 2026"
+            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Signed NDA – March 2026"
               style={inputStyle} />
           </Field>
 

@@ -136,6 +136,20 @@ export const vaultApi = {
   completeUpload: (id: string, body: { sizeBytes?: number; checksum?: string }) =>
     post<{ ok: true }>(`/vault/documents/${id}/complete`, body),
   getDownloadUrl: (id: string) => get<{ url: string; fileName: string }>(`/vault/documents/${id}/download`),
+
+  // Fetch the actual bytes WITH the auth header (a raw browser navigation to the
+  // blob URL has no header -> 401). Returns a Blob + the file name, which the UI
+  // turns into an object URL for download or inline preview.
+  async fetchDocBlob(id: string): Promise<{ blob: Blob; fileName: string }> {
+    const meta = await this.getDownloadUrl(id)         // { url, fileName }
+    const isAbsolute = /^https?:\/\//i.test(meta.url)
+    const res = isAbsolute
+      ? await fetch(meta.url)                            // MinIO presigned (already authed)
+      : await authFetch(meta.url)                        // local blob route (needs Bearer)
+    if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`)
+    const blob = await res.blob()
+    return { blob, fileName: meta.fileName }
+  },
   deleteDocument: (id: string) => del<{ ok: true }>(`/vault/documents/${id}`),
 
   // Full upload helper: initiate -> PUT bytes -> complete. Returns the documentId.
