@@ -213,10 +213,6 @@ export async function getCustomerWorkspace(accountId: string): Promise<Workspace
 
 
 // ---- Resolve an ERPNext customer to its vault account, then load workspace ----
-// The customer LIST comes from ERPNext (Customer doctype), but the vault is keyed
-// on lead_service.accounts. They're linked by accounts.erpnext_id. We match on
-// that first, then fall back to a case-insensitive name match. Returns null when
-// no vault account exists yet (customer never went through close-won / no account).
 export async function resolveAccountByErp(erpId: string, erpName?: string): Promise<string | null> {
   const byId = await query(
     `SELECT id FROM lead_service.accounts
@@ -226,8 +222,6 @@ export async function resolveAccountByErp(erpId: string, erpName?: string): Prom
   )
   if (byId.rowCount && byId.rows[0]) return byId.rows[0].id
 
-  // fall back to a normalized-name match (catches accounts created via the
-  // pipeline, which store name_normalized). Falls back to a raw lower() match too.
   const nameToMatch = (erpName ?? erpId).trim()
   if (!nameToMatch) return null
   const norm = normaliseAccountName(nameToMatch)
@@ -249,17 +243,10 @@ export async function getWorkspaceByErp(erpId: string, erpName?: string): Promis
 }
 
 // ---- Create a vault account FROM an ERPNext customer (reverse of close-won) ----
-// Most ERPNext customers were created directly in ERPNext / imported and never
-// passed through the CRM pipeline, so they have no lead_service.accounts row.
-// This makes one on demand (the "Create vault record" button), pulling name +
-// GSTIN + territory from the ERPNext Customer, and links erpnext_id so the vault
-// resolver finds it next time. Idempotent: if a link already exists, returns it.
 export async function createAccountFromErp(erpId: string, erpName?: string): Promise<{ accountId: string; created: boolean }> {
-  // already linked?
   const existing = await resolveAccountByErp(erpId, erpName)
   if (existing) return { accountId: existing, created: false }
 
-  // pull customer detail from ERPNext for a richer account
   const BASE = process.env.ERPNEXT_URL!
   const KEY = process.env.ERPNEXT_API_KEY!
   const SECRET = process.env.ERPNEXT_API_SECRET!
@@ -285,4 +272,202 @@ export async function createAccountFromErp(erpId: string, erpName?: string): Pro
     [name, normaliseAccountName(name), gstin, location, erpId],
   )
   return { accountId: ins.rows[0].id, created: true }
+}
+
+
+// =============================================================================
+// POC write/read — poc_service.poc CRUD (create + list-by-account + get-one).
+// -----------------------------------------------------------------------------
+// Schema note (verified against migrate_vault_02_poc.ts): the ONLY NOT-NULL
+// columns without a DB default are account_id and product. display_id
+// ('POC-'||nextval) and status ('planned') both default in-schema, so we never
+// send display_id and only send status when we have one. Everything else is
+// nullable. Cross-module links (site_id, lead_id) are loose UUIDs, app-enforced.
+//
+// Sub-tables (poc_reading / poc_observation / poc_issue) are intentionally left
+// for the next round — VaultPoc carries the parent record only. When they land,
+// they hang off poc_id and slot into getPocById()'s detail payload without
+// touching create/list here.
+// =============================================================================
+
+// Full column projection reused by list + get + create RETURNING, so the row
+// shape mapPoc() consumes is identical across all three paths.
+const POC_COLS = `
+  id, display_id, account_id, site_id, lead_id, product, application,
+  equipment_make, equipment_model, rating_value, rating_unit, fuel_type, spec,
+  baseline_from, baseline_to, trial_from, trial_to, start_date, end_date,
+  status, savings_pct, final_result, recommended_next_step,
+  sgt_comments, customer_comments, owner_id, owner_name, created_by_name,
+  created_at, updated_at
+`
+
+export interface VaultPoc {
+  id: string
+  displayId: string
+  accountId: string
+  siteId: string | null
+  leadId: string | null
+  product: string
+  application: string | null
+  equipmentMake: string | null
+  equipmentModel: string | null
+  ratingValue: number | null
+  ratingUnit: string | null
+  fuelType: string | null
+  spec: Record<string, unknown>
+  baselineFrom: string | null
+  baselineTo: string | null
+  trialFrom: string | null
+  trialTo: string | null
+  startDate: string | null
+  endDate: string | null
+  status: string
+  savingsPct: number | null
+  finalResult: string | null
+  recommendedNextStep: string | null
+  sgtComments: string | null
+  customerComments: string | null
+  ownerId: string | null
+  ownerName: string | null
+  createdByName: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CreatePocInput {
+  accountId: string
+  product: string
+  siteId?: string | null
+  leadId?: string | null
+  application?: string | null
+  equipmentMake?: string | null
+  equipmentModel?: string | null
+  ratingValue?: number | null
+  ratingUnit?: string | null
+  fuelType?: string | null
+  spec?: Record<string, unknown>
+  baselineFrom?: string | null
+  baselineTo?: string | null
+  trialFrom?: string | null
+  trialTo?: string | null
+  startDate?: string | null
+  endDate?: string | null
+  status?: string
+  savingsPct?: number | null
+  finalResult?: string | null
+  recommendedNextStep?: string | null
+  sgtComments?: string | null
+  customerComments?: string | null
+  ownerId?: string | null
+  ownerName?: string | null
+}
+
+export interface PocActor { id?: string | null; name?: string | null }
+
+function mapPoc(r: any): VaultPoc {
+  return {
+    id: r.id,
+    displayId: r.display_id,
+    accountId: r.account_id,
+    siteId: r.site_id,
+    leadId: r.lead_id,
+    product: r.product,
+    application: r.application,
+    equipmentMake: r.equipment_make,
+    equipmentModel: r.equipment_model,
+    ratingValue: r.rating_value != null ? Number(r.rating_value) : null,
+    ratingUnit: r.rating_unit,
+    fuelType: r.fuel_type,
+    spec: r.spec ?? {},
+    baselineFrom: r.baseline_from,
+    baselineTo: r.baseline_to,
+    trialFrom: r.trial_from,
+    trialTo: r.trial_to,
+    startDate: r.start_date,
+    endDate: r.end_date,
+    status: r.status,
+    savingsPct: r.savings_pct != null ? Number(r.savings_pct) : null,
+    finalResult: r.final_result,
+    recommendedNextStep: r.recommended_next_step,
+    sgtComments: r.sgt_comments,
+    customerComments: r.customer_comments,
+    ownerId: r.owner_id,
+    ownerName: r.owner_name,
+    createdByName: r.created_by_name,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  }
+}
+
+export async function listPocsByAccount(accountId: string): Promise<VaultPoc[]> {
+  const { rows } = await query(
+    `SELECT ${POC_COLS}
+       FROM poc_service.poc
+      WHERE account_id = $1 AND deleted_at IS NULL
+      ORDER BY created_at DESC`,
+    [accountId],
+  )
+  return rows.map(mapPoc)
+}
+
+export async function getPocById(id: string): Promise<VaultPoc | null> {
+  const { rows } = await query(
+    `SELECT ${POC_COLS}
+       FROM poc_service.poc
+      WHERE id = $1 AND deleted_at IS NULL
+      LIMIT 1`,
+    [id],
+  )
+  return rows[0] ? mapPoc(rows[0]) : null
+}
+
+export async function createPoc(input: CreatePocInput, actor: PocActor = {}): Promise<VaultPoc> {
+  const { rows } = await query(
+    `INSERT INTO poc_service.poc (
+        account_id, site_id, lead_id, product, application,
+        equipment_make, equipment_model, rating_value, rating_unit, fuel_type, spec,
+        baseline_from, baseline_to, trial_from, trial_to, start_date, end_date,
+        status, savings_pct, final_result, recommended_next_step,
+        sgt_comments, customer_comments, owner_id, owner_name,
+        created_by, created_by_name
+     ) VALUES (
+        $1,$2,$3,$4,$5,
+        $6,$7,$8,$9,$10,$11,
+        $12,$13,$14,$15,$16,$17,
+        $18,$19,$20,$21,
+        $22,$23,$24,$25,
+        $26,$27
+     )
+     RETURNING ${POC_COLS}`,
+    [
+      input.accountId,
+      input.siteId ?? null,
+      input.leadId ?? null,
+      input.product,
+      input.application ?? null,
+      input.equipmentMake ?? null,
+      input.equipmentModel ?? null,
+      input.ratingValue ?? null,
+      input.ratingUnit ?? null,
+      input.fuelType ?? null,
+      JSON.stringify(input.spec ?? {}),
+      input.baselineFrom ?? null,
+      input.baselineTo ?? null,
+      input.trialFrom ?? null,
+      input.trialTo ?? null,
+      input.startDate ?? null,
+      input.endDate ?? null,
+      input.status ?? 'planned',
+      input.savingsPct ?? null,
+      input.finalResult ?? null,
+      input.recommendedNextStep ?? null,
+      input.sgtComments ?? null,
+      input.customerComments ?? null,
+      input.ownerId ?? null,
+      input.ownerName ?? null,
+      actor.id ?? null,
+      actor.name ?? null,
+    ],
+  )
+  return mapPoc(rows[0])
 }

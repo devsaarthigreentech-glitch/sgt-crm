@@ -10,6 +10,7 @@ import authRoutes from './routes/auth.js'
 import { usersRoutes } from './routes/users.js'
 import targetRoutes from './routes/targets.js'
 import { vaultRoutes } from './routes/vault.js'
+import vaultPocRoutes from './routes/vaultPoc.routes.js'
 
 dotenv.config()
 
@@ -49,6 +50,7 @@ async function start() {
   await app.register(usersRoutes, { prefix: '/api/v1' })
   await app.register(targetRoutes, {prefix: '/api/v1'})
   await app.register(vaultRoutes, { prefix: '/api/v1/vault' })
+  await app.register(vaultPocRoutes, { prefix: '/api/v1/vault' })
 
   // Global error handler
   app.setErrorHandler((error: any, request, reply) => {

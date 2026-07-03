@@ -54,6 +54,8 @@ export interface TeamMember {
   id: string; memberName: string; teamRole: string; active: boolean
   periodFrom: string | null; periodTo: string | null; notes: string | null
 }
+// Thin POC shape carried inside the Workspace payload (from getCustomerWorkspace).
+// The POCs tab hydrates to the fuller VaultPoc below via listPocs().
 export interface Poc {
   id: string; displayId: string; product: string; application: string | null
   equipmentMake: string | null; equipmentModel: string | null
@@ -71,6 +73,40 @@ export interface DocItem {
 export interface TimelineEvent {
   id: string; eventType: string; title: string; body: string | null
   occurredAt: string; source: string | null; actorName: string | null
+}
+
+// ---- POC full record (mirrors services/vault.ts VaultPoc) -------------------
+// Superset of Poc — every Poc field is present, so a VaultPoc is assignable
+// wherever a Poc is expected (e.g. <PocCard p={...} />).
+export interface VaultPoc {
+  id: string; displayId: string; accountId: string
+  siteId: string | null; leadId: string | null
+  product: string; application: string | null
+  equipmentMake: string | null; equipmentModel: string | null
+  ratingValue: number | null; ratingUnit: string | null; fuelType: string | null
+  spec: Record<string, unknown>
+  baselineFrom: string | null; baselineTo: string | null
+  trialFrom: string | null; trialTo: string | null
+  startDate: string | null; endDate: string | null
+  status: string; savingsPct: number | null
+  finalResult: string | null; recommendedNextStep: string | null
+  sgtComments: string | null; customerComments: string | null
+  ownerId: string | null; ownerName: string | null
+  createdByName: string | null; createdAt: string; updatedAt: string
+}
+export interface CreatePocInput {
+  accountId: string; product: string
+  siteId?: string | null; leadId?: string | null
+  application?: string | null; equipmentMake?: string | null; equipmentModel?: string | null
+  ratingValue?: number | null; ratingUnit?: string | null; fuelType?: string | null
+  spec?: Record<string, unknown>
+  baselineFrom?: string | null; baselineTo?: string | null
+  trialFrom?: string | null; trialTo?: string | null
+  startDate?: string | null; endDate?: string | null
+  status?: string; savingsPct?: number | null
+  finalResult?: string | null; recommendedNextStep?: string | null
+  sgtComments?: string | null; customerComments?: string | null
+  ownerId?: string | null; ownerName?: string | null
 }
 
 // by-erp returns either a workspace (linked) or null (no vault account yet)
@@ -129,6 +165,11 @@ export const vaultApi = {
   createVaultFromErp: (erpId: string, name?: string) =>
     post<Workspace>('/vault/by-erp/create', { erpId, name }),
 
+  // ---- POCs ----
+  listPocs: (accountId: string) => get<VaultPoc[]>(`/vault/accounts/${accountId}/pocs`),
+  getPoc: (id: string) => get<VaultPoc>(`/vault/pocs/${id}`),
+  createPoc: (input: CreatePocInput) => post<VaultPoc>('/vault/pocs', input),
+
   // ---- documents ----
   getDocMeta: () => get<DocMeta>('/vault/documents/meta'),
   listDocuments: (accountId: string) => get<VaultDoc[]>(`/vault/accounts/${accountId}/documents`),
@@ -137,25 +178,18 @@ export const vaultApi = {
     post<{ ok: true }>(`/vault/documents/${id}/complete`, body),
   getDownloadUrl: (id: string) => get<{ url: string; fileName: string }>(`/vault/documents/${id}/download`),
 
-  // Fetch the actual bytes WITH the auth header (a raw browser navigation to the
-  // blob URL has no header -> 401). Returns a Blob + the file name, which the UI
-  // turns into an object URL for download or inline preview.
   async fetchDocBlob(id: string, opts: { inline?: boolean; mimeType?: string | null } = {}): Promise<{ blob: Blob; fileName: string }> {
-    const meta = await this.getDownloadUrl(id)         // { url, fileName }
+    const meta = await this.getDownloadUrl(id)
     let url = meta.url
-    // ask the local blob route to serve inline (for preview) vs attachment
     if (opts.inline && !/^https?:\/\//i.test(url)) {
       url += (url.includes('?') ? '&' : '?') + 'disposition=inline'
     }
     const isAbsolute = /^https?:\/\//i.test(url)
     const res = isAbsolute
-      ? await fetch(url)                                // MinIO presigned (already authed)
-      : await authFetch(url)                            // local blob route (needs Bearer)
+      ? await fetch(url)
+      : await authFetch(url)
     if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`)
     let blob = await res.blob()
-    // Defensive: if the server didn't set a usable type but we know it, re-type
-    // the blob so the browser renders a preview correctly instead of showing
-    // raw bytes as text.
     if ((!blob.type || blob.type === 'application/octet-stream') && opts.mimeType) {
       blob = new Blob([await blob.arrayBuffer()], { type: opts.mimeType })
     }
@@ -163,10 +197,6 @@ export const vaultApi = {
   },
   deleteDocument: (id: string) => del<{ ok: true }>(`/vault/documents/${id}`),
 
-  // Full upload helper: initiate -> PUT bytes -> complete. Returns the documentId.
-  // The server returns a fully-formed uploadUrl (local: our /api/v1/vault/blob/...;
-  // MinIO later: an absolute presigned URL). authFetch handles our own URLs; an
-  // absolute URL (starts with http) is sent with a plain fetch (no auth header).
   async uploadDocument(input: UploadDocInput, file: File): Promise<string> {
     const init = await this.initiateUpload({
       ...input,

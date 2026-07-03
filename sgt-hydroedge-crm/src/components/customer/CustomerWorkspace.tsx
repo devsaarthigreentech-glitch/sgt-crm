@@ -19,7 +19,7 @@ if (typeof document !== 'undefined' && !document.getElementById('vault-spin-kf')
   document.head.appendChild(_s)
 }
 import { useIsMobile } from '../../hooks/useIsMobile'
-import { vaultApi, type Workspace, type Contact, type Poc, type DocItem, type TimelineEvent, type VaultDoc, type DocMeta } from '../../lib/vaultApi'
+import { vaultApi, type Workspace, type Contact, type Poc, type VaultPoc, type CreatePocInput, type DocItem, type TimelineEvent, type VaultDoc, type DocMeta } from '../../lib/vaultApi'
 
 // ---------- label / colour maps ---------------------------------------------
 const ROLE_META: Record<string, { label: string; bg: string; fg: string }> = {
@@ -265,7 +265,7 @@ export default function CustomerWorkspace({ accountId, workspace, onBack }: Prop
           {tab === 'timeline' && <Timeline events={ws.timeline} />}
           {tab === 'contacts' && <Contacts contacts={ws.contacts} />}
           {tab === 'team' && <Team team={ws.team} />}
-          {tab === 'pocs' && <Pocs pocs={ws.pocs} />}
+          {tab === 'pocs' && <Pocs accountId={ws.account.id} initialPocs={ws.pocs} />}
           {tab === 'documents' && <Documents accountId={ws.account.id} initialDocs={ws.documents} q={docQuery} setQ={setDocQuery} />}
           {tab === 'sites' && <Sites sites={ws.sites} />}
         </div>
@@ -454,9 +454,90 @@ function Team({ team }: { team: Workspace['team'] }) {
   )
 }
 
-function Pocs({ pocs }: { pocs: Poc[] }) {
-  if (pocs.length === 0) return <Empty text="No POCs yet. Each trial gets its own record — equipment, baseline, readings, and result." />
-  return <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>{pocs.map((p) => <PocCard key={p.id} p={p} />)}</div>
+// =============================================================================
+// POCs tab — list + add + detail.
+// -----------------------------------------------------------------------------
+// Seeds instantly from the thin Workspace.pocs, then hydrates the full VaultPoc
+// records via listPocs (same pattern as the Documents tab). Readings /
+// observations / issues are the next round — PocDetail already carries labelled
+// slots for them so they drop in without reshaping this tab.
+// =============================================================================
+const POC_PRODUCTS = ['GreenDrive', 'GreenX', 'HHOx', 'GreenMarine', 'GreenEdge', 'GreenVision']
+const POC_APPLICATIONS = ['vehicle', 'dg', 'marine', 'boiler', 'kiln', 'furnace', 'industrial']
+const POC_FUELS = ['diesel', 'coal', 'furnace_oil', 'gas', 'petrol', 'lpg', 'other']
+const POC_UNITS = ['kVA', 'TPH', 'HP', 'tonne', 'kW', 'other']
+const POC_STATUSES = ['planned', 'installing', 'monitoring', 'completed', 'aborted']
+
+function numOrNull(s: string): number | null {
+  const v = s.trim()
+  if (!v) return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+// Widen a thin workspace Poc into a VaultPoc for instant render before the
+// full records hydrate from the API. Fields the thin shape doesn't carry are
+// left null/empty and fill in on hydrate.
+function seedPoc(p: Poc): VaultPoc {
+  return {
+    id: p.id, displayId: p.displayId, accountId: '', siteId: null, leadId: null,
+    product: p.product, application: p.application,
+    equipmentMake: p.equipmentMake, equipmentModel: p.equipmentModel,
+    ratingValue: p.ratingValue, ratingUnit: p.ratingUnit, fuelType: p.fuelType,
+    spec: {}, baselineFrom: null, baselineTo: null, trialFrom: null, trialTo: null,
+    startDate: p.startDate, endDate: p.endDate, status: p.status, savingsPct: p.savingsPct,
+    finalResult: p.finalResult, recommendedNextStep: p.recommendedNextStep,
+    sgtComments: null, customerComments: null, ownerId: null, ownerName: null,
+    createdByName: null, createdAt: '', updatedAt: '',
+  }
+}
+
+function Pocs({ accountId, initialPocs }: { accountId: string; initialPocs: Poc[] }) {
+  const [pocs, setPocs] = useState<VaultPoc[]>(() => initialPocs.map(seedPoc))
+  const [showAdd, setShowAdd] = useState(false)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+
+  // Seed shows instantly; hydrate the full records once on mount.
+  useEffect(() => {
+    vaultApi.listPocs(accountId).then(setPocs).catch(() => {})
+  }, [accountId])
+
+  const selected = selectedId ? pocs.find((p) => p.id === selectedId) ?? null : null
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 12.5, color: t.muted }}>{pocs.length} POC{pocs.length === 1 ? '' : 's'} on record</div>
+        <button onClick={() => setShowAdd(true)} style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 14px',
+          border: 'none', borderRadius: 8, background: t.green, color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+        }}>
+          <Plus size={15} /> Add POC
+        </button>
+      </div>
+
+      {pocs.length === 0
+        ? <Empty text="No POCs yet. Each trial gets its own record — equipment, baseline, readings, and result." />
+        : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {pocs.map((p) => (
+              <div key={p.id} onClick={() => setSelectedId(p.id)} style={{ cursor: 'pointer' }}>
+                <PocCard p={p} />
+              </div>
+            ))}
+          </div>
+        )}
+
+      {showAdd && (
+        <AddPocModal
+          accountId={accountId}
+          onClose={() => setShowAdd(false)}
+          onDone={(created) => { setShowAdd(false); setPocs((ps) => [created, ...ps]) }}
+        />
+      )}
+      {selected && <PocDetail poc={selected} onClose={() => setSelectedId(null)} />}
+    </div>
+  )
 }
 function PocCard({ p, compact }: { p: Poc; compact?: boolean }) {
   const st = POC_STATUS[p.status] ?? { label: titleCase(p.status), bg: '#EEF1F6', fg: '#3A4A66' }
@@ -502,6 +583,249 @@ function KeyVal({ k, v, icon }: { k: string; v: string; icon?: React.ReactNode }
       <span style={{ color: '#54514A' }}>{v}</span>
     </div>
   )
+}
+
+// ---- Add POC modal ----------------------------------------------------------
+function AddPocModal({ accountId, onClose, onDone }: {
+  accountId: string
+  onClose: () => void
+  onDone: (created: VaultPoc) => void
+}) {
+  const [product, setProduct] = useState('GreenDrive')
+  const [application, setApplication] = useState('')
+  const [equipmentMake, setEquipmentMake] = useState('')
+  const [equipmentModel, setEquipmentModel] = useState('')
+  const [ratingValue, setRatingValue] = useState('')
+  const [ratingUnit, setRatingUnit] = useState('kVA')
+  const [fuelType, setFuelType] = useState('')
+  const [status, setStatus] = useState('planned')
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
+  const [savingsPct, setSavingsPct] = useState('')
+  const [finalResult, setFinalResult] = useState('')
+  const [recommendedNextStep, setRecommendedNextStep] = useState('')
+  const [sgtComments, setSgtComments] = useState('')
+  const [customerComments, setCustomerComments] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function submit() {
+    if (!product.trim()) { setError('Pick a product.'); return }
+    setBusy(true); setError(null)
+    try {
+      const payload: CreatePocInput = {
+        accountId,
+        product,
+        application: application || null,
+        equipmentMake: equipmentMake.trim() || null,
+        equipmentModel: equipmentModel.trim() || null,
+        ratingValue: numOrNull(ratingValue),
+        ratingUnit: ratingUnit || null,
+        fuelType: fuelType || null,
+        status,
+        startDate: startDate || null,
+        endDate: endDate || null,
+        savingsPct: numOrNull(savingsPct),
+        finalResult: finalResult.trim() || null,
+        recommendedNextStep: recommendedNextStep.trim() || null,
+        sgtComments: sgtComments.trim() || null,
+        customerComments: customerComments.trim() || null,
+      }
+      const created = await vaultApi.createPoc(payload)
+      onDone(created)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Create failed')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(20,20,18,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, zIndex: 300 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, width: 'min(560px, 100%)', maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 16px 50px rgba(0,0,0,0.25)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', borderBottom: `1px solid ${t.border}` }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: t.green }}>Add POC</div>
+          <button onClick={onClose} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: t.muted, display: 'inline-flex' }}><X size={18} /></button>
+        </div>
+
+        <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <Field label="Product" grow>
+              <select value={product} onChange={(e) => setProduct(e.target.value)} style={inputStyle}>
+                {POC_PRODUCTS.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </Field>
+            <Field label="Application" grow>
+              <select value={application} onChange={(e) => setApplication(e.target.value)} style={inputStyle}>
+                <option value="">—</option>
+                {POC_APPLICATIONS.map((ap) => <option key={ap} value={ap}>{titleCase(ap)}</option>)}
+              </select>
+            </Field>
+          </div>
+
+          <div style={{ display: 'flex', gap: 12 }}>
+            <Field label="Equipment make" grow>
+              <input value={equipmentMake} onChange={(e) => setEquipmentMake(e.target.value)} placeholder="e.g. Cummins" style={inputStyle} />
+            </Field>
+            <Field label="Equipment model" grow>
+              <input value={equipmentModel} onChange={(e) => setEquipmentModel(e.target.value)} placeholder="e.g. C500D5" style={inputStyle} />
+            </Field>
+          </div>
+
+          <div style={{ display: 'flex', gap: 12 }}>
+            <Field label="Rating" grow>
+              <input value={ratingValue} onChange={(e) => setRatingValue(e.target.value)} inputMode="decimal" placeholder="e.g. 500" style={inputStyle} />
+            </Field>
+            <Field label="Unit" grow>
+              <select value={ratingUnit} onChange={(e) => setRatingUnit(e.target.value)} style={inputStyle}>
+                {POC_UNITS.map((u) => <option key={u} value={u}>{u}</option>)}
+              </select>
+            </Field>
+            <Field label="Fuel" grow>
+              <select value={fuelType} onChange={(e) => setFuelType(e.target.value)} style={inputStyle}>
+                <option value="">—</option>
+                {POC_FUELS.map((f) => <option key={f} value={f}>{titleCase(f)}</option>)}
+              </select>
+            </Field>
+          </div>
+
+          <div style={{ display: 'flex', gap: 12 }}>
+            <Field label="Status" grow>
+              <select value={status} onChange={(e) => setStatus(e.target.value)} style={inputStyle}>
+                {POC_STATUSES.map((s) => <option key={s} value={s}>{POC_STATUS[s]?.label ?? titleCase(s)}</option>)}
+              </select>
+            </Field>
+            <Field label="Savings %" grow>
+              <input value={savingsPct} onChange={(e) => setSavingsPct(e.target.value)} inputMode="decimal" placeholder="e.g. 8.4" style={inputStyle} />
+            </Field>
+          </div>
+
+          <div style={{ display: 'flex', gap: 12 }}>
+            <Field label="Start date" grow>
+              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={inputStyle} />
+            </Field>
+            <Field label="End date" grow>
+              <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={inputStyle} />
+            </Field>
+          </div>
+
+          <Field label="Result (optional)">
+            <textarea value={finalResult} onChange={(e) => setFinalResult(e.target.value)} rows={2} placeholder="What the trial showed…" style={{ ...inputStyle, resize: 'vertical' }} />
+          </Field>
+          <Field label="Recommended next step (optional)">
+            <textarea value={recommendedNextStep} onChange={(e) => setRecommendedNextStep(e.target.value)} rows={2} placeholder="Where this goes next…" style={{ ...inputStyle, resize: 'vertical' }} />
+          </Field>
+          <Field label="SGT comments (optional)">
+            <textarea value={sgtComments} onChange={(e) => setSgtComments(e.target.value)} rows={2} placeholder="Internal notes…" style={{ ...inputStyle, resize: 'vertical' }} />
+          </Field>
+          <Field label="Customer comments (optional)">
+            <textarea value={customerComments} onChange={(e) => setCustomerComments(e.target.value)} rows={2} placeholder="What the customer said…" style={{ ...inputStyle, resize: 'vertical' }} />
+          </Field>
+
+          {error && <div style={{ fontSize: 12.5, color: '#C84A3A' }}>{error}</div>}
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, padding: '14px 20px', borderTop: `1px solid ${t.border}` }}>
+          <button onClick={onClose} disabled={busy}
+            style={{ padding: '9px 16px', border: `1px solid ${t.border}`, borderRadius: 8, background: '#fff', color: t.muted, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+            Cancel
+          </button>
+          <button onClick={submit} disabled={busy}
+            style={{ padding: '9px 18px', border: 'none', borderRadius: 8, background: t.green, color: '#fff', fontSize: 13, fontWeight: 600, cursor: busy ? 'wait' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+            {busy ? <><Loader size={14} className="spin" /> Creating…</> : <>Create POC</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ---- POC detail -------------------------------------------------------------
+function PocDetail({ poc, onClose }: { poc: VaultPoc; onClose: () => void }) {
+  const st = POC_STATUS[poc.status] ?? { label: titleCase(poc.status), bg: '#EEF1F6', fg: '#3A4A66' }
+  const rating = poc.ratingValue ? `${poc.ratingValue} ${poc.ratingUnit ?? ''}`.trim() : null
+  const equip = [poc.equipmentMake, poc.equipmentModel].filter(Boolean).join(' ') || null
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(20,20,18,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, zIndex: 300 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, width: 'min(600px, 100%)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 16px 50px rgba(0,0,0,0.25)' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, padding: '16px 20px', borderBottom: `1px solid ${t.border}` }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 16, fontWeight: 700, color: t.ink }}>{poc.product}</span>
+              <span style={{ fontSize: 11.5, color: t.muted, fontWeight: 600 }}>{poc.displayId}</span>
+              <Chip label={st.label} bg={st.bg} fg={st.fg} />
+            </div>
+            <div style={{ fontSize: 12.5, color: '#54514A', marginTop: 4 }}>
+              {[titleCase(poc.application), rating, equip, poc.fuelType ? titleCase(poc.fuelType) : null].filter(Boolean).join(' · ') || '—'}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: t.muted, display: 'inline-flex' }}><X size={18} /></button>
+        </div>
+
+        <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {poc.savingsPct != null && (
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, alignSelf: 'flex-start', background: '#EAF3EC', color: t.green, borderRadius: 8, padding: '6px 12px', fontWeight: 700, fontSize: 15 }}>
+              <TrendingUp size={16} /> {poc.savingsPct}% savings
+            </div>
+          )}
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <DetailKV k="Baseline" v={rangeText(poc.baselineFrom, poc.baselineTo)} />
+            <DetailKV k="Trial" v={rangeText(poc.trialFrom, poc.trialTo)} />
+            <DetailKV k="Run window" v={rangeText(poc.startDate, poc.endDate)} />
+            <DetailKV k="Owner" v={poc.ownerName ?? '—'} />
+          </div>
+
+          {(poc.finalResult || poc.recommendedNextStep) && (
+            <Card>
+              {poc.finalResult && <KeyVal k="Result" v={poc.finalResult} />}
+              {poc.recommendedNextStep && (
+                <div style={{ marginTop: poc.finalResult ? 8 : 0 }}>
+                  <KeyVal k="Next step" v={poc.recommendedNextStep} icon={<ChevronRight size={13} color={t.gold} />} />
+                </div>
+              )}
+            </Card>
+          )}
+          {(poc.sgtComments || poc.customerComments) && (
+            <Card>
+              {poc.sgtComments && <KeyVal k="SGT" v={poc.sgtComments} />}
+              {poc.customerComments && (
+                <div style={{ marginTop: poc.sgtComments ? 8 : 0 }}>
+                  <KeyVal k="Customer" v={poc.customerComments} />
+                </div>
+              )}
+            </Card>
+          )}
+
+          {/* Hooks for the next round — the sub-tables slot straight in here. */}
+          <div>
+            <SectionLabel>Readings</SectionLabel>
+            <Empty text="Fuel / run-hours / emission readings land in the next round." />
+          </div>
+          <div>
+            <SectionLabel>Observations</SectionLabel>
+            <Empty text="SGT notes, customer comments and objections attach here next." />
+          </div>
+          <div>
+            <SectionLabel>Issues</SectionLabel>
+            <Empty text="Issues and corrective actions attach here next." />
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+function DetailKV({ k, v }: { k: string; v: string }) {
+  return (
+    <div>
+      <div style={{ fontSize: 10.5, fontWeight: 700, color: t.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{k}</div>
+      <div style={{ fontSize: 13, color: t.ink, marginTop: 2 }}>{v}</div>
+    </div>
+  )
+}
+function rangeText(from: string | null, to: string | null): string {
+  if (!from && !to) return '—'
+  return `${fmtDate(from)}${to ? ` → ${fmtDate(to)}` : ''}`
 }
 
 function Documents({ accountId, initialDocs, q, setQ }: {
