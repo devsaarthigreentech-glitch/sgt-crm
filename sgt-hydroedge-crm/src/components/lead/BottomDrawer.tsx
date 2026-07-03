@@ -15,19 +15,23 @@ interface Props {
 }
 
 const TYPES: { id: ActivityType; label: string }[] = [
-  { id: 'meeting',  label: 'Meeting'  },
-  { id: 'call',     label: 'Call'     },
-  { id: 'email',    label: 'Email'    },
-  { id: 'whatsapp', label: 'WhatsApp' },
-  { id: 'document', label: 'Document' },
+  { id: 'meeting',      label: 'Meeting'       },
+  { id: 'call',         label: 'Call'          },
+  { id: 'email',        label: 'Email'         },
+  { id: 'whatsapp',     label: 'WhatsApp'      },
+  { id: 'document',     label: 'Document'      },
+  { id: 'installation', label: 'Installation'  },
+  { id: 'service',      label: 'Service Visit' },
 ]
 
 const AI_DRAFTS: Record<string, string> = {
-  meeting:  'Met with the team for approx 60 minutes. Covered scope of existing infrastructure and key pain points. Budget confirmed for this quarter. Next: send revised proposal.',
-  call:     'Outbound call (~20 min). Qualified on budget and timeline. Key concern raised around SLA terms. Requested a site visit. Next: confirm date by EOW.',
-  email:    'Sent follow-up email with the case study as requested on last call. Asked for a call this week to walk through their baseline numbers.',
-  whatsapp: 'WhatsApp thread active. Shared brochure and one-pager. Contact responsive, confirmed decision timeline of Q2 FY27.',
-  document: 'Submitted revised proposal via email. Key changes: updated pricing, added monsoon SLA clause, corrected fuel baseline.',
+  meeting:      'Met with the team for approx 60 minutes. Covered scope of existing infrastructure and key pain points. Budget confirmed for this quarter. Next: send revised proposal.',
+  call:         'Outbound call (~20 min). Qualified on budget and timeline. Key concern raised around SLA terms. Requested a site visit. Next: confirm date by EOW.',
+  email:        'Sent follow-up email with the case study as requested on last call. Asked for a call this week to walk through their baseline numbers.',
+  whatsapp:     'WhatsApp thread active. Shared brochure and one-pager. Contact responsive, confirmed decision timeline of Q2 FY27.',
+  document:     'Submitted revised proposal via email. Key changes: updated pricing, added monsoon SLA clause, corrected fuel baseline.',
+  installation: 'Unit powered up and handed over to the site team. Verified safe shutdown/restart, captured baseline readings, and walked the operator through daily checks. No open issues at handover.',
+  service:      'Ran full diagnostic, cleaned and inspected the core assembly, verified sensor calibration. Unit returned to normal operation and site team briefed on next preventive window.',
 }
 
 export default function BottomDrawer({ lead, onClose, onSubmit }: Props) {
@@ -40,6 +44,25 @@ export default function BottomDrawer({ lead, onClose, onSubmit }: Props) {
   const [meetingFormat, setMeetingFormat] = useState('In-person')
   const [callDir, setCallDir] = useState('Outbound')
   const [duration, setDuration] = useState('')
+
+  // Installation meta
+  const [instSite, setInstSite]         = useState('')
+  const [instDate, setInstDate]         = useState('')
+  const [instModel, setInstModel]       = useState('')
+  const [instSerial, setInstSerial]     = useState('')
+  const [instQty, setInstQty]           = useState('')
+  const [instEngineer, setInstEngineer] = useState('')
+  const [instBaseline, setInstBaseline] = useState('')
+  const [instStatus, setInstStatus]     = useState('Commissioned')
+
+  // Service meta
+  const [svcType, setSvcType]             = useState('Preventive')
+  const [svcModel, setSvcModel]           = useState('')
+  const [svcSerial, setSvcSerial]         = useState('')
+  const [svcIssue, setSvcIssue]           = useState('')
+  const [svcParts, setSvcParts]           = useState('')
+  const [svcNextDue, setSvcNextDue]       = useState('')
+  const [svcResolution, setSvcResolution] = useState('Resolved')
 
   // Close on ESC
   useEffect(() => {
@@ -57,19 +80,77 @@ export default function BottomDrawer({ lead, onClose, onSubmit }: Props) {
     }, 900)
   }
 
+  // ── Structured summary composers ─────────────────────────────
+  const composeInstall = (): string => {
+    const facts: string[] = []
+    const head: string[] = []
+    if (instQty)   head.push(`${instQty}×`)
+    if (instModel) head.push(instModel)
+    let line = head.join(' ')
+    if (instSerial) line += ` (SN ${instSerial})`
+    if (instSite)   line += ` at ${instSite}`
+    if (line.trim()) facts.push(`Installed ${line.trim()}.`)
+    if (instDate)     facts.push(`Commissioned ${instDate}.`)
+    if (instEngineer) facts.push(`Engineer: ${instEngineer}.`)
+    if (instBaseline) facts.push(`Baseline: ${instBaseline}.`)
+    if (instStatus)   facts.push(`Status: ${instStatus}.`)
+    const head2 = facts.join(' ')
+    return summary.trim() ? `${head2}\n${summary.trim()}` : head2
+  }
+
+  const composeService = (): string => {
+    const facts: string[] = []
+    let head = `${svcType} service`
+    if (svcModel)  head += ` — ${svcModel}`
+    if (svcSerial) head += ` (SN ${svcSerial})`
+    facts.push(head + '.')
+    if (svcIssue)       facts.push(`Issue: ${svcIssue}.`)
+    if (summary.trim()) facts.push(`Work: ${summary.trim()}.`)
+    if (svcParts)       facts.push(`Parts: ${svcParts}.`)
+    if (svcResolution)  facts.push(`Outcome: ${svcResolution}.`)
+    if (svcNextDue)     facts.push(`Next service due ${svcNextDue}.`)
+    return facts.join(' ')
+  }
+
   const submit = () => {
-    if (!type || !summary.trim()) return
+    if (!type || !canSubmit) return
+
+    let finalSummary = summary
+    let channel: string = type
+    let step = nextStep.description ? nextStep : undefined
+
+    if (type === 'meeting') {
+      channel = meetingFormat
+    } else if (type === 'installation') {
+      finalSummary = composeInstall()
+      channel = instStatus || 'Installation'
+    } else if (type === 'service') {
+      finalSummary = composeService()
+      channel = svcType || 'Service'
+      if (!step && svcNextDue) step = { description: 'Next service visit', due: svcNextDue }
+    }
+
     onSubmit({
       type,
-      channel: type === 'meeting' ? meetingFormat : type,
-      summary,
+      channel,
+      summary: finalSummary,
       outcome: outcome ?? undefined,
-      nextStep: nextStep.description ? nextStep : undefined,
+      nextStep: step,
     })
     onClose()
   }
 
-  const canSubmit = type && summary.trim().length >= 5
+  const baseText = summary.trim().length >= 5
+  const canSubmit = !!type && (
+    type === 'installation' ? (instSite.trim().length > 0 || instModel.trim().length > 0)
+    : type === 'service'    ? (svcIssue.trim().length > 0 || baseText)
+    : baseText
+  )
+
+  const summaryPlaceholder =
+    type === 'installation' ? 'Handover notes, operator training, anything to flag…'
+    : type === 'service'    ? 'Work performed on site, diagnostics, observations…'
+    : `What happened in this ${type}?`
 
   return (
     <>
@@ -228,14 +309,92 @@ export default function BottomDrawer({ lead, onClose, onSubmit }: Props) {
                 </div>
               )}
 
+              {/* Installation meta */}
+              {type === 'installation' && (
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                    <div>
+                      <Label>Site / location</Label>
+                      <input value={instSite} onChange={e => setInstSite(e.target.value)} placeholder="e.g. Chakan plant" style={inputStyle} />
+                    </div>
+                    <div>
+                      <Label>Commissioning date</Label>
+                      <input type="date" value={instDate} onChange={e => setInstDate(e.target.value)} style={{ ...inputStyle, fontFamily: 'monospace', fontSize: 11.5 }} />
+                    </div>
+                    <div>
+                      <Label>Product / model</Label>
+                      <input value={instModel} onChange={e => setInstModel(e.target.value)} placeholder="e.g. GreenDrive H2-50" style={inputStyle} />
+                    </div>
+                    <div>
+                      <Label>Serial no.</Label>
+                      <input value={instSerial} onChange={e => setInstSerial(e.target.value)} placeholder="SN…" style={inputStyle} />
+                    </div>
+                    <div>
+                      <Label>Quantity</Label>
+                      <input type="number" value={instQty} onChange={e => setInstQty(e.target.value)} placeholder="1" style={inputStyle} />
+                    </div>
+                    <div>
+                      <Label>Engineer</Label>
+                      <input value={instEngineer} onChange={e => setInstEngineer(e.target.value)} placeholder="Technician name" style={inputStyle} />
+                    </div>
+                  </div>
+                  <div style={{ marginBottom: 10 }}>
+                    <Label>Baseline reading</Label>
+                    <input value={instBaseline} onChange={e => setInstBaseline(e.target.value)} placeholder="e.g. diesel baseline 42 L/day, meter 10432" style={inputStyle} />
+                  </div>
+                  <div>
+                    <Label>Status</Label>
+                    <ChipRow options={['Installed', 'Commissioned', 'Handover done', 'Issue open']} value={instStatus} onChange={setInstStatus} />
+                  </div>
+                </div>
+              )}
+
+              {/* Service meta */}
+              {type === 'service' && (
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ marginBottom: 10 }}>
+                    <Label>Visit type</Label>
+                    <ChipRow options={['Preventive', 'Corrective', 'Breakdown']} value={svcType} onChange={setSvcType} />
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                    <div>
+                      <Label>Product / model</Label>
+                      <input value={svcModel} onChange={e => setSvcModel(e.target.value)} placeholder="e.g. GreenDrive H2-50" style={inputStyle} />
+                    </div>
+                    <div>
+                      <Label>Serial no.</Label>
+                      <input value={svcSerial} onChange={e => setSvcSerial(e.target.value)} placeholder="SN…" style={inputStyle} />
+                    </div>
+                  </div>
+                  <div style={{ marginBottom: 10 }}>
+                    <Label>Issue reported</Label>
+                    <input value={svcIssue} onChange={e => setSvcIssue(e.target.value)} placeholder="What was the fault / reason for the visit?" style={inputStyle} />
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                    <div>
+                      <Label>Parts replaced</Label>
+                      <input value={svcParts} onChange={e => setSvcParts(e.target.value)} placeholder="e.g. filter, sensor" style={inputStyle} />
+                    </div>
+                    <div>
+                      <Label>Next service due</Label>
+                      <input type="date" value={svcNextDue} onChange={e => setSvcNextDue(e.target.value)} style={{ ...inputStyle, fontFamily: 'monospace', fontSize: 11.5 }} />
+                    </div>
+                  </div>
+                  <div>
+                    <Label>Resolution</Label>
+                    <ChipRow options={['Resolved', 'Pending parts', 'Escalated']} value={svcResolution} onChange={setSvcResolution} />
+                  </div>
+                </div>
+              )}
+
               {/* Summary */}
               <div style={{ marginBottom: 14 }}>
-                <Label>Summary</Label>
+                <Label>{type === 'installation' || type === 'service' ? 'Work notes' : 'Summary'}</Label>
                 <div style={{ position: 'relative' }}>
                   <textarea
                     value={summary}
                     onChange={e => setSummary(e.target.value)}
-                    placeholder={`What happened in this ${type}?`}
+                    placeholder={summaryPlaceholder}
                     rows={4}
                     style={{ ...inputStyle, resize: 'vertical', minHeight: 88, paddingRight: 44 }}
                   />
@@ -400,6 +559,32 @@ function Label({ children }: { children: React.ReactNode }) {
       letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6,
     }}>
       {children}
+    </div>
+  )
+}
+
+function ChipRow({ options, value, onChange }: {
+  options: string[]
+  value: string
+  onChange: (v: string) => void
+}) {
+  return (
+    <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+      {options.map(o => (
+        <button
+          key={o}
+          onClick={() => onChange(o)}
+          style={{
+            padding: '7px 12px', fontSize: 11.5, fontWeight: 600,
+            backgroundColor: value === o ? '#0E5550' : '#fff',
+            color: value === o ? '#fff' : '#363633',
+            border: `1px solid ${value === o ? '#0E5550' : '#DDD7C6'}`,
+            borderRadius: 5, cursor: 'pointer',
+          }}
+        >
+          {o}
+        </button>
+      ))}
     </div>
   )
 }
