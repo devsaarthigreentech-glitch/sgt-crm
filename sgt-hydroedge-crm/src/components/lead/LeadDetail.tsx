@@ -1001,6 +1001,8 @@ function FactsRail({ lead, stage, onEdit, onChanged }: { lead: Lead; stage: stri
         <Fact label="Days in stage" value={`${lead.daysInStage}d`} />
         {L.captureSource && <Fact label="Source" value={L.captureSource} />}
         {L.referredBy && <Fact label="Referred by" value={L.referredBy} />}
+        {L.createdBy && <Fact label="Created by" value={L.createdBy} />}
+        {L.updatedBy && <Fact label="Last modified by" value={L.updatedBy} />}
       </div>
 
       {/* Capture notes — entered at quick capture / triage */}

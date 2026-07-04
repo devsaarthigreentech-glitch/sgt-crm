@@ -53,7 +53,7 @@ export default function TriageQueue({ leads, onLeadClick, onRefresh }: Props) {
   // Needs classification = still at the 'New' stage (triage moves it to 'Allocated').
   // The leads list itself is already owner-scoped server-side, so a sales rep only
   // ever receives their own leads here, while a director receives everyone's.
-  const triageLeads = leads.filter(l => l.stage === 'New')
+  const triageLeads = leads.filter(l => !l.owner || l.owner === 'Unassigned')
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>

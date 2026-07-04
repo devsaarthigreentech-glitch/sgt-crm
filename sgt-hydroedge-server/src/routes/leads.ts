@@ -171,6 +171,8 @@ function formatLead(row: any) {
     reservedAccount: row.anchor_account ?? false,
     erpnextLeadId: row.erpnext_lead_id,
     version: row.version,
+    createdBy: row.created_by ?? null,
+    updatedBy: row.updated_by ?? null,
 
     // ── (c) Prospect rating ──────────────────────────────────────────
     prospectTier: row.prospect_tier ?? null,
@@ -217,7 +219,7 @@ export async function leadsRoutes(fastify: FastifyInstance) {
     // (a) Ownership scope. Match on owner_id (set at create) OR owner_name (set
     // at triage) so it holds regardless of which path stamped the owner.
     if (isScoped(user)) {
-      conditions.push(`(l.owner_id = $${i} OR l.owner_name = $${i + 1})`)
+      conditions.push(`(l.owner_id = $${i} OR l.owner_name = $${i + 1} OR (l.owner_name IS NULL AND l.created_by = $${i + 1}))`)
       params.push(user.sub, user.name)
       i += 2
     }
@@ -313,9 +315,12 @@ export async function leadsRoutes(fastify: FastifyInstance) {
 
     const row = result.rows[0]
     // (a) Don't leak another rep's lead via a direct id hit.
-    if (isScoped(user) && row.owner_id !== user.sub && row.owner_name !== user.name) {
-      return reply.status(404).send({ error: 'Lead not found' })
-    }
+    if (isScoped(user)
+      && row.owner_id !== user.sub
+      && row.owner_name !== user.name
+      && !(row.owner_name == null && row.created_by === user.name)) {
+    return reply.status(404).send({ error: 'Lead not found' })
+  }
 
     return reply.send({ data: formatLead(row) })
   })
@@ -387,11 +392,12 @@ export async function leadsRoutes(fastify: FastifyInstance) {
           owner_name, owner_id,
           estimated_value, estimated_close_date,
           capture_source, initial_notes,
-          lead_type, referred_by, metadata
+          lead_type, referred_by, metadata,
+          created_by
         ) VALUES (
           $1, $2, $3, $4, $5, $6, $7,
           $8, $9, $10, $11, $12, $13,
-          $14, $15, $16
+          $14, $15, $16, $17
         ) RETURNING *`,
         [
           displayId, accountId, contactId,
@@ -399,8 +405,8 @@ export async function leadsRoutes(fastify: FastifyInstance) {
           body.commercialModel ?? null,
           body.origin ?? null,
           body.vertical ? defaultDivision(body.vertical) : 'GREENEDGE',
-          body.ownerName ?? request.user?.name ?? null,   // auto-assign to the capturer
-          body.ownerId ?? request.user?.sub ?? null,
+          body.ownerName ?? null,        // stays unassigned — capture never assigns
+          body.ownerId ?? null,
           body.estimatedValue ? body.estimatedValue * 100 : null,
           body.estimatedCloseDate ?? null,
           body.captureSource ?? 'INTERNAL',
@@ -408,6 +414,7 @@ export async function leadsRoutes(fastify: FastifyInstance) {
           body.leadType ?? 'Prospect',
           body.referredBy ?? null,
           JSON.stringify(body.metadata ?? {}),
+          request.user?.name ?? null,    // created_by — who captured it
         ]
       )
 
@@ -513,7 +520,7 @@ export async function leadsRoutes(fastify: FastifyInstance) {
   })
 
   // POST /leads/:id/advance
-  fastify.post<{ Params: { id: string } }>('/leads/:id/advance', async (request, reply) => {
+  fastify.post<{ Params: { id: string } }>('/leads/:id/advance', { preHandler: requireAuth }, async (request, reply) => {
     const body = AdvanceStageSchema.parse(request.body)
     const { id } = request.params
 
@@ -539,9 +546,10 @@ export async function leadsRoutes(fastify: FastifyInstance) {
       `UPDATE lead_service.leads
        SET stage = $1, stage_changed_at = NOW(),
            sla_state = 'ok', days_in_stage = 0,
-           version = version + 1, updated_at = NOW()
+           version = version + 1, updated_at = NOW(),
+           updated_by = $3
        WHERE id = $2`,
-      [body.toStage, id]
+      [body.toStage, id, request.user?.name ?? null]
     )
 
     await query(
@@ -560,7 +568,7 @@ export async function leadsRoutes(fastify: FastifyInstance) {
   })
 
   // POST /leads/:id/close
-  fastify.post<{ Params: { id: string } }>('/leads/:id/close', async (request, reply) => {
+  fastify.post<{ Params: { id: string } }>('/leads/:id/close', { preHandler: requireAuth }, async (request, reply) => {
     const body = CloseSchema.parse(request.body)
     const { id } = request.params
 
@@ -597,7 +605,8 @@ export async function leadsRoutes(fastify: FastifyInstance) {
            competitor_name = $4,
            actual_close_date = $5,
            estimated_value = COALESCE($6, estimated_value),
-           version = version + 1, updated_at = NOW()
+           version = version + 1, updated_at = NOW(),
+           updated_by = $8
        WHERE id = $7`,
       [
         newStage, body.outcome,
@@ -606,6 +615,7 @@ export async function leadsRoutes(fastify: FastifyInstance) {
         body.closeDate ? new Date(body.closeDate) : new Date(),
         body.finalValue ? body.finalValue * 100 : null,
         id,
+        request.user?.name ?? null,
       ]
     )
 
@@ -635,7 +645,7 @@ export async function leadsRoutes(fastify: FastifyInstance) {
   // PATCH /leads/:id — edit lead facts + primary contact.
   // Lead columns: lead_type, owner_name, estimated_value (paise), estimated_close_date, prospect_tier.
   // Contact fields live on lead_service.contacts (created if missing).
-  fastify.patch<{ Params: { id: string } }>('/leads/:id', async (req, reply) => {
+  fastify.patch<{ Params: { id: string } }>('/leads/:id', { preHandler: requireAuth }, async (req, reply) => {
     const { id } = req.params
     const body = UpdateLeadSchema.parse(req.body ?? {})
 
@@ -798,7 +808,7 @@ export async function leadsRoutes(fastify: FastifyInstance) {
   })
 
   // POST /leads/:id/triage
-  fastify.post<{ Params: { id: string } }>('/leads/:id/triage', async (request, reply) => {
+  fastify.post<{ Params: { id: string } }>('/leads/:id/triage', { preHandler: requireAuth }, async (request, reply) => {
     const body = z.object({
       leadType: z.string(),
       vertical: z.string().optional(),
@@ -831,9 +841,10 @@ export async function leadsRoutes(fastify: FastifyInstance) {
          stage = $4,
          -- only reset the SLA clock when the stage actually changes
          stage_changed_at = CASE WHEN $4 <> stage THEN NOW() ELSE stage_changed_at END,
-         updated_at = NOW()
+         updated_at = NOW(),
+         updated_by = $6
      WHERE id = $5`,
-      [body.leadType, body.vertical ?? null, body.ownerName, targetStage, id]
+      [body.leadType, body.vertical ?? null, body.ownerName, targetStage, id, request.user?.name ?? null]
     )
 
     await query(

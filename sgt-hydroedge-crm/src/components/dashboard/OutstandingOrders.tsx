@@ -1,10 +1,12 @@
 // src/components/dashboard/OutstandingOrders.tsx
 // Single unified Orders view: open Sales Orders from ERPNext, each as one
-// expandable row (placed date, expected delivery, value, currency, progress).
-// DaaS rentals are folded server-side into data.rentals and shown as engagement
-// rows (upfront + recurring as ONE card) — they no longer appear as overdue orders.
+// expandable row (placed date, expected delivery, value, currency, progress,
+// and the line items sold). DaaS rentals are folded server-side into
+// data.rentals. Service-only SOs (no deliverable stock line) are folded into
+// data.serviceOrders and shown as "Expected income" — they have no delivery
+// note so they must not read as overdue.
 import { useEffect, useState } from 'react'
-import { PackageOpen, Timer, Hourglass, Clock, Truck, AlertTriangle, ChevronRight, Repeat } from 'lucide-react'
+import { PackageOpen, Timer, Hourglass, Clock, Truck, AlertTriangle, ChevronRight, Repeat, Coins } from 'lucide-react'
 
 const API = import.meta.env.VITE_API_URL ?? '/api/v1'
 const C = { forest: '#1F4E2E', green2: '#2D7A4F', gold: '#C9A24E', red: '#C84A3A', healthy: '#3B9D6E', navy: '#1E3A6B' }
@@ -22,11 +24,24 @@ const fmtDate = (d: string | null) => {
   return isNaN(dt.getTime()) ? d : dt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
+type LineItem = {
+  itemCode: string; itemName: string; qty: number; rate: number; amount: number
+}
+
 type Order = {
   id: string; customer: string; placedOn: string | null; deliveryDate: string | null
   status: string; total: number; delivered: number; ageDays: number | null
   currency?: string; isForeign?: boolean; origTotal?: number | null; conversionRate?: number | null
   overdue?: boolean; overdueDays?: number | null; daysToDelivery?: number | null
+  billed?: number; items?: LineItem[]
+}
+
+// Service-only Sales Order (every line non-stock): billed directly, no delivery.
+type ServiceOrder = {
+  id: string; customer: string; placedOn: string | null; status: string
+  total: number; currency?: string; isForeign?: boolean
+  origTotal?: number | null; conversionRate?: number | null
+  billed: number; items: LineItem[]
 }
 
 // DaaS rental engagement (built server-side from rentalModel.detectDaaSEngagements).
@@ -45,6 +60,7 @@ type Data = {
   avgFulfilmentDays: number | null; fulfilmentSamples: number
   overdueCount?: number; lastOrder?: Order | null; nextDelivery?: Order | null
   rentals?: Rental[]; awaitingInstallationValue?: number
+  serviceOrders?: ServiceOrder[]; serviceValue?: number
 }
 
 function deliveryLabel(o: Order): { text: string; color: string } {
@@ -78,6 +94,8 @@ export default function OutstandingOrders() {
 
   const rentals = data?.rentals ?? []
   const totalMRR = rentals.reduce((s, r) => s + (r.monthlyNet ?? 0), 0)
+  const serviceOrders = data?.serviceOrders ?? []
+  const serviceValue = data?.serviceValue ?? 0
 
   return (
     <div>
@@ -155,6 +173,73 @@ export default function OutstandingOrders() {
             </div>
           )}
 
+          {/* Service-only orders — direct-billed, no delivery. Shown as expected income. */}
+          {serviceOrders.length > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 10.5, fontWeight: 700, color: '#161614', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+                  <Coins size={12} strokeWidth={2.2} style={{ color: C.navy }} /> Expected income · Service
+                </span>
+                <span style={{ fontSize: 11, color: '#6A675F' }}>
+                  <b style={{ fontFamily: 'monospace', color: '#161614' }}>{inrShort(serviceValue)}</b> · {serviceOrders.length} order{serviceOrders.length === 1 ? '' : 's'}
+                </span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                {serviceOrders.map(s => {
+                  const isOpen = openId === s.id
+                  return (
+                    <div key={s.id} style={{
+                      backgroundColor: '#fff', borderRadius: 8, border: '1px solid #E8E3D2',
+                      borderLeft: `3px solid ${C.navy}`, overflow: 'hidden',
+                    }}>
+                      <div
+                        onClick={() => setOpenId(isOpen ? null : s.id)}
+                        style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 14px', cursor: 'pointer' }}
+                      >
+                        <ChevronRight size={14} strokeWidth={2}
+                          style={{ color: '#A39F94', flexShrink: 0, transform: isOpen ? 'rotate(90deg)' : 'none', transition: 'transform 150ms' }} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                            <span style={{ fontSize: 13, fontWeight: 600, color: '#161614' }}>{s.customer}</span>
+                            <span style={{ fontSize: 10, fontWeight: 700, color: C.navy, background: '#E5EAF3', padding: '1px 7px', borderRadius: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Service</span>
+                          </div>
+                          <div style={{ fontSize: 11.5, color: '#6A675F', marginTop: 1 }}>
+                            {s.id} · {s.status}
+                            {s.billed > 0 ? ` · ${Math.round(s.billed)}% billed` : ' · not yet billed'}
+                          </div>
+                        </div>
+                        <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                          <div style={{ fontFamily: 'monospace', fontSize: 13, fontWeight: 600, color: '#161614' }}>
+                            {inrShort(s.total)}
+                          </div>
+                          <div style={{ fontSize: 10.5, color: '#A39F94', marginTop: 2 }}>expected</div>
+                        </div>
+                      </div>
+
+                      {isOpen && (
+                        <div style={{
+                          padding: '12px 14px 14px 38px', borderTop: '1px solid #F0EDE3',
+                          backgroundColor: '#FCFBF6',
+                        }}>
+                          <ItemsTable items={s.items} />
+                          <div style={{
+                            display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))',
+                            gap: 12, marginTop: s.items?.length ? 12 : 0,
+                          }}>
+                            <Detail label="Placed on" value={fmtDate(s.placedOn)} />
+                            <Detail label="Order value (INR)" value={inr(s.total)}
+                              sub={s.isForeign && s.origTotal != null ? `${s.currency} ${s.origTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}${s.conversionRate ? ` @ ${s.conversionRate}` : ''}` : undefined} />
+                            <Detail label="Billed" value={`${Math.round(s.billed)}%`} sub={s.status} />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
           {data.orders.length === 0 ? (
             <Box>No outstanding orders — everything submitted has been delivered.</Box>
           ) : (
@@ -207,13 +292,18 @@ export default function OutstandingOrders() {
                       <div style={{
                         padding: '12px 14px 14px 38px', borderTop: '1px solid #F0EDE3',
                         backgroundColor: '#FCFBF6',
-                        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 12,
                       }}>
-                        <Detail label="Placed on" value={fmtDate(o.placedOn)} sub={o.ageDays != null ? `open ${o.ageDays}d` : undefined} />
-                        <Detail label="Expected delivery" value={fmtDate(o.deliveryDate)} sub={dl.text || undefined} subColor={dl.color} />
-                        <Detail label="Order value (INR)" value={inr(o.total)}
-                          sub={o.isForeign && o.origTotal != null ? `${o.currency} ${o.origTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}${o.conversionRate ? ` @ ${o.conversionRate}` : ''}` : undefined} />
-                        <Detail label="Delivered" value={`${Math.round(o.delivered)}%`} sub={o.status} />
+                        <ItemsTable items={o.items} />
+                        <div style={{
+                          display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))',
+                          gap: 12, marginTop: o.items?.length ? 12 : 0,
+                        }}>
+                          <Detail label="Placed on" value={fmtDate(o.placedOn)} sub={o.ageDays != null ? `open ${o.ageDays}d` : undefined} />
+                          <Detail label="Expected delivery" value={fmtDate(o.deliveryDate)} sub={dl.text || undefined} subColor={dl.color} />
+                          <Detail label="Order value (INR)" value={inr(o.total)}
+                            sub={o.isForeign && o.origTotal != null ? `${o.currency} ${o.origTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}${o.conversionRate ? ` @ ${o.conversionRate}` : ''}` : undefined} />
+                          <Detail label="Delivered" value={`${Math.round(o.delivered)}%`} sub={o.status} />
+                        </div>
                       </div>
                     )}
                   </div>
@@ -223,6 +313,36 @@ export default function OutstandingOrders() {
           )}
         </>
       )}
+    </div>
+  )
+}
+
+function ItemsTable({ items }: { items?: LineItem[] }) {
+  if (!items || items.length === 0) return null
+  return (
+    <div>
+      <div style={{ fontSize: 9.5, fontWeight: 700, color: '#A39F94', letterSpacing: '0.05em', textTransform: 'uppercase', marginBottom: 6 }}>
+        Items sold
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+        {items.map((it, i) => (
+          <div key={i} style={{
+            display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 12,
+            alignItems: 'baseline', padding: '6px 10px',
+            backgroundColor: '#fff', border: '1px solid #F0EDE3', borderRadius: 6,
+          }}>
+            <span style={{ fontSize: 12.5, fontWeight: 600, color: '#161614', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {it.itemName}
+            </span>
+            <span style={{ fontSize: 11.5, color: '#6A675F', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+              {it.qty} × {inr(it.rate)}
+            </span>
+            <span style={{ fontSize: 12.5, fontWeight: 600, color: '#161614', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+              {inr(it.amount)}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }

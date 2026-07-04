@@ -114,6 +114,22 @@ async function itemMeta(codes: string[]) {
     return map;
 }
 
+// ---- is_stock_item per item code (bulk) ----
+// A Sales Order whose every line is a non-stock item (service / AMC / direct
+// invoice) has no delivery obligation, so it can never reach per_delivered = 100
+// and must not be treated as an overdue goods order.
+async function itemStockFlags(codes: string[]) {
+  const map: Record<string, boolean> = {};
+  for (const chunk of chunked(codes, 100)) {
+      const items = await getList('Item', {
+          filters: [['item_code', 'in', chunk]],
+          fields: ['item_code', 'is_stock_item'],
+      });
+      for (const it of items) map[it.item_code] = Number(it.is_stock_item) === 1;
+  }
+  return map;
+}
+
 export async function getBuildable() {
     return cached('buildable', 5 * 60_000, async () => {
         const boms = await getList('BOM', {
@@ -547,11 +563,12 @@ export async function getIncomeBreakdown(from?: string, to?: string) {
     });
   }
 
-  // ---- outstanding (open) Sales Orders + fulfilment time on delivered ones ----
+// ---- outstanding (open) Sales Orders + fulfilment time on delivered ones ----
   // "Outstanding" = submitted, not Closed, not 100% delivered.
-  // DaaS rentals are folded out into `rentals` (billed monthly by a Subscription,
-  // not delivered as goods) so they no longer read as overdue delivery orders.
-  // For delivered orders we measure days from order date to the last Delivery Note.
+  // - DaaS rentals fold out into `rentals` (billed by Subscription, not delivered).
+  // - Service-only SOs (every line non-stock) fold out into `serviceOrders`
+  //   ("Expected income") — they have no delivery note, so they'd otherwise sit
+  //   at 0% delivered forever and read as permanently overdue.
   export async function getOutstandingOrders(limit = 50) {
     return cached(`outstanding-orders:${limit}`, 5 * 60_000, async () => {
       const SO = `/api/resource/${encodeURIComponent('Sales Order')}`;
@@ -562,72 +579,123 @@ export async function getIncomeBreakdown(from?: string, to?: string) {
           ['status', 'not in', ['Closed', 'Completed', 'Cancelled']],
           ['per_delivered', '<', 100],
         ],
-        // grand_total is in the order's TRANSACTION currency (e.g. USD);
-        // base_grand_total is always in company currency (INR). We report INR
-        // and surface the original for display.
         fields: ['name', 'customer', 'customer_name', 'transaction_date',
                  'delivery_date', 'status', 'grand_total', 'base_grand_total',
-                 'currency', 'conversion_rate', 'per_delivered'],
+                 'currency', 'conversion_rate', 'per_delivered', 'per_billed'],
         order_by: 'transaction_date asc',
         limit_page_length: limit,
       });
 
+      const openList = (open ?? []) as any[];
+
+      // ---- line items for every open SO (expand panel + service detection) ----
+      const itemsByParent: Record<string, any[]> = {};
+      const allCodes = new Set<string>();
+      for (const chunk of chunked(openList.map((o) => o.name), 50)) {
+        if (!chunk.length) continue;
+        const its = await frappeGet(`/api/resource/${encodeURIComponent('Sales Order Item')}`, {
+          parent: 'Sales Order',
+          filters: [['parent', 'in', chunk]],
+          fields: ['parent', 'item_code', 'item_name', 'qty',
+                   'rate', 'amount', 'base_rate', 'base_amount'],
+          limit_page_length: 0,
+        });
+        for (const it of its ?? []) {
+          (itemsByParent[it.parent] ??= []).push(it);
+          if (it.item_code) allCodes.add(it.item_code);
+        }
+      }
+      const stockFlags = await itemStockFlags([...allCodes]);
+
       const today = new Date();
       const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-
       const COMPANY_CCY = process.env.ERP_COMPANY_CURRENCY ?? 'INR';
-      const allOrders = (open ?? []).map((o: any) => {
+
+      const built = openList.map((o: any) => {
         const placed = o.transaction_date ? new Date(o.transaction_date) : null;
         const ageDays = placed ? Math.max(0, Math.round((startOfDay(today) - startOfDay(placed)) / 86400000)) : null;
         const txnCcy = o.currency || COMPANY_CCY;
-        // base_grand_total is INR; if a doc somehow lacks it, derive from rate.
         const inrTotal = Number(o.base_grand_total
           || Number(o.grand_total || 0) * Number(o.conversion_rate || 1));
         const isForeign = txnCcy !== COMPANY_CCY;
-        // Overdue = promised delivery date is in the past but order isn't fully delivered.
         const dd = o.delivery_date ? new Date(o.delivery_date) : null;
         const overdueDays = dd ? Math.round((startOfDay(today) - startOfDay(dd)) / 86400000) : null;
         const overdue = overdueDays != null && overdueDays > 0;
-        const daysToDelivery = (overdueDays != null) ? -overdueDays : null; // +ve = days left, -ve = overdue
+        const daysToDelivery = (overdueDays != null) ? -overdueDays : null;
+
+        const lines = itemsByParent[o.name] ?? [];
+        const items = lines.map((l) => ({
+          itemCode: l.item_code,
+          itemName: l.item_name || l.item_code,
+          qty: Number(l.qty || 0),
+          rate: Number(l.base_rate || l.rate || 0),      // INR
+          amount: Number(l.base_amount || l.amount || 0), // INR
+        }));
+        // service-only = has lines and not one of them is a stock item
+        const hasStockLine = lines.some((l) => stockFlags[l.item_code] === true);
+        const isServiceOnly = lines.length > 0 && !hasStockLine;
+
         return {
           id: o.name,
           customer: o.customer_name || o.customer,
           placedOn: o.transaction_date ?? null,
           deliveryDate: o.delivery_date ?? null,
           status: o.status,
-          total: inrTotal,                       // always INR (company currency)
-          currency: txnCcy,                      // original transaction currency
+          total: inrTotal,
+          currency: txnCcy,
           isForeign,
-          origTotal: isForeign ? Number(o.grand_total || 0) : null,  // amount in USD etc
+          origTotal: isForeign ? Number(o.grand_total || 0) : null,
           conversionRate: isForeign ? Number(o.conversion_rate || 0) : null,
           delivered: Number(o.per_delivered || 0),
+          billed: Number(o.per_billed || 0),
           ageDays,
           overdue,
           overdueDays: overdue ? overdueDays : null,
           daysToDelivery,
+          items,
+          isServiceOnly,
         };
       });
 
-      // Fold DaaS rentals out of the goods-delivery list.
+      // Fold DaaS rentals out entirely.
       const { engagements, soNames } = await getRentalEngagements();
-      const orders = allOrders.filter((o: any) => !soNames.has(o.id));
+      const nonDaaS = built.filter((o) => !soNames.has(o.id));
 
-      const outstandingValue = orders.reduce((s: number, o: any) => s + o.total, 0);
+      // Split: deliverable goods orders vs service-only (direct-invoice) orders.
+      const orders = nonDaaS.filter((o) => !o.isServiceOnly);
+      const serviceOrders = nonDaaS
+        .filter((o) => o.isServiceOnly)
+        .map((o) => ({
+          id: o.id,
+          customer: o.customer,
+          placedOn: o.placedOn,
+          status: o.status,
+          total: o.total,
+          currency: o.currency,
+          isForeign: o.isForeign,
+          origTotal: o.origTotal,
+          conversionRate: o.conversionRate,
+          billed: o.billed,
+          items: o.items,
+        }));
+
+      const outstandingValue = orders.reduce((s, o) => s + o.total, 0);
+      const serviceValue = serviceOrders.reduce((s, o) => s + o.total, 0);
 
       // Rental DTOs for the dashboard's "Rentals · DaaS" section.
       const rentals = engagements.map((e) => ({
         key: e.key,
         customer: e.customerName,
         machines: e.machines,
-        monthlyNet: e.monthlyNet,         // ₹8,268 — the monthly rent (net)
-        monthlyGross: e.monthlyGross,     // incl. GST
-        periods: e.periods,               // 24 — number of monthly invoices
-        recurringNet: e.recurringNet,     // monthlyNet * periods
+        monthlyNet: e.monthlyNet,
+        monthlyGross: e.monthlyGross,
+        periods: e.periods,
+        recurringNet: e.recurringNet,
         upfrontGross: e.upfrontGross,
         tcvNet: e.tcvNet,
         upfrontStatus: e.upfrontStatus,
-        nextInvoiceDate: null as string | null, // filled once /erp/subscriptions exists
-        invoicesPaid: null as number | null,     // months actually paid (from Subscription SIs)
+        nextInvoiceDate: null as string | null,
+        invoicesPaid: null as number | null,
       }));
 
       // Machines billed but not yet installed — shown separately, not as outstanding AR.
@@ -671,9 +739,6 @@ export async function getIncomeBreakdown(from?: string, to?: string) {
         ? Math.round(fulfilment.reduce((s, f) => s + f.days, 0) / fulfilment.length)
         : null;
 
-      // Summaries so the dashboard can show one unified Orders section:
-      // - lastOrder: most recently placed open order
-      // - nextDelivery: nearest upcoming (not overdue) delivery
       const byPlaced = [...orders].sort((a, b) =>
         (a.placedOn ?? '') < (b.placedOn ?? '') ? 1 : -1);
       const lastOrder = byPlaced[0] ?? null;
@@ -687,6 +752,8 @@ export async function getIncomeBreakdown(from?: string, to?: string) {
         count: orders.length,
         outstandingValue,
         orders,
+        serviceOrders,
+        serviceValue,
         rentals,
         awaitingInstallationValue,
         avgFulfilmentDays,
