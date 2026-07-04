@@ -320,8 +320,8 @@ export async function leadsRoutes(fastify: FastifyInstance) {
     return reply.send({ data: formatLead(row) })
   })
 
-  // POST /leads
-  fastify.post('/leads', async (request, reply) => {
+  // POST /leads — capture. requireAuth so we can stamp the capturing user as owner.
+  fastify.post('/leads', { preHandler: requireAuth }, async (request, reply) => {
     const body = CreateLeadSchema.parse(request.body)
     const client = await (await import('../db/pool')).pool.connect()
 
@@ -399,8 +399,8 @@ export async function leadsRoutes(fastify: FastifyInstance) {
           body.commercialModel ?? null,
           body.origin ?? null,
           body.vertical ? defaultDivision(body.vertical) : 'GREENEDGE',
-          body.ownerName ?? null,
-          body.ownerId ?? null,
+          body.ownerName ?? request.user?.name ?? null,   // auto-assign to the capturer
+          body.ownerId ?? request.user?.sub ?? null,
           body.estimatedValue ? body.estimatedValue * 100 : null,
           body.estimatedCloseDate ?? null,
           body.captureSource ?? 'INTERNAL',
@@ -418,7 +418,7 @@ export async function leadsRoutes(fastify: FastifyInstance) {
          VALUES ($1, $2, $3, $4)`,
         [
           lead.rows[0].id,
-          body.ownerName ?? 'System',
+          body.ownerName ?? request.user?.name ?? 'System',
           'lead_created',
           JSON.stringify({ stage: 'New', vertical: body.vertical }),
         ]

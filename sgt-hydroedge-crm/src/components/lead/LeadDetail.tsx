@@ -405,8 +405,14 @@ export default function LeadDetail({ lead, onBack, onDeleted, onChanged, current
           onClose={() => setShowDrawer(false)}
           onSubmit={async (activity) => {
             try {
+              // Map the drawer's nested nextStep -> the flat fields the API/DB expect.
               await api.logActivity(lead.id, {
-                ...activity,
+                type: activity.type,
+                channel: activity.channel,
+                summary: activity.summary,
+                outcome: activity.outcome,
+                nextStepDescription: activity.nextStep?.description,
+                nextStepDueDate: activity.nextStep?.due,
                 actorName: actor,
               })
               setLocalActivities(prev => [{
@@ -1369,6 +1375,8 @@ function ActivityRow({ activity, isLast }: {
     call: '#B8541E',
     system: '#6A675F',
     document: '#5B3B6F',
+    installation: '#8A5A00',
+    service: '#155E63',
   }
   const color = colorMap[activity.type] ?? '#6A675F'
 
