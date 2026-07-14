@@ -12,8 +12,9 @@ import HomeDashboard from './components/dashboard/HomeDashboard'
 import { me, clearToken, type User } from './lib/auth'
 import Login from './components/auth/Login'
 import CustomerList from './components/customer/CustomerList'
+import OutreachDesk from './components/outreach/OutreachDesk';
 
-type Page = 'home' | 'my-dashboard' | 'pipeline' | 'customers' | 'triage' | 'capture'
+type Page = 'home' | 'my-dashboard' | 'pipeline' | 'customers' | 'triage' | 'capture' | 'outreach'
 
 export default function App() {
   const [page, setPage] = useState<Page>('home')
@@ -92,7 +93,9 @@ export default function App() {
       />
       <main style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-        {effectivePage === 'home' || effectivePage === 'my-dashboard' ? (
+        {effectivePage === 'outreach' ? (
+            <OutreachDesk />
+        ) : effectivePage === 'home' || effectivePage === 'my-dashboard' ? (
           <HomeDashboard
             leads={leads}
             view={effectivePage === 'home' ? 'director' : (user.role === 'supply_chain' ? 'supply' : user.role === 'accounts' ? 'accounts' : 'sales')}

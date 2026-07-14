@@ -675,6 +675,8 @@ export async function leadsRoutes(fastify: FastifyInstance) {
     if ('prospectTier' in body) { sets.push(`prospect_tier = $${i++}`); vals.push(body.prospectTier ?? null) }
 
     if (sets.length) {
+      sets.push(`updated_by = $${i++}`)
+      vals.push(req.user?.name ?? null)
       vals.push(id)
       await query(
         `UPDATE lead_service.leads

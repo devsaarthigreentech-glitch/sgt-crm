@@ -1,7 +1,7 @@
 import { useIsMobile } from '../hooks/useIsMobile'
-import { LayoutGrid, Inbox, Plus, BarChart3, LayoutDashboard, User, Handshake, LogOut, Building2 } from 'lucide-react'
+import { LayoutGrid, Inbox, Plus, BarChart3, LayoutDashboard, User, Handshake, LogOut, Building2, Send } from 'lucide-react'
 
-type Page = 'home' | 'my-dashboard' | 'pipeline' | 'triage' | 'capture' | 'customers'
+type Page = 'home' | 'my-dashboard' | 'pipeline' | 'triage' | 'capture' | 'customers' | 'outreach'
 
 interface Props {
   current: Page
@@ -29,6 +29,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'customers', label: 'Customers', short: 'Customers', icon: Building2, roles: ['director', 'sales'] },
   { id: 'triage', label: 'Triage queue', short: 'Triage', icon: Inbox, roles: ['director', 'sales'] },
   { id: 'capture', label: 'Capture lead', short: 'Capture', icon: Plus, roles: ['director', 'sales'] },
+  { id: 'outreach', label: 'Outreach', short: 'Outreach', icon: Send, roles: ['director', 'sales'] },
 ]
 
 function initials(name: string): string {
