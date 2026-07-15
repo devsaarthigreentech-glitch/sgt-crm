@@ -4,7 +4,7 @@
 // =====================================================================
 
 import { pool } from '../db/pool';
-import { createLeadInTx } from './leadCreate.ts';
+import { createLeadInTx } from './leadCreate';
 
 export type OutreachContact = {
   id: number;
@@ -48,6 +48,43 @@ export type IncomingRow = {
 };
 
 const s = (v: unknown): string => (v == null ? '' : String(v).trim());
+
+// Canonical statuses. Keep in sync with OUTREACH_STATUSES in the frontend lib.
+export const CANONICAL_STATUSES = [
+  'Not contacted',
+  'Contacted',
+  'Replied',
+  'Green',
+  'Not now',
+  'Do not contact',
+  'TO FIND',
+] as const;
+
+// Statuses that mean outreach actually happened. Whitelist, NOT "everything
+// except X" — the blacklist version silently counted "Do not contact" as
+// contacted the moment the sheet used a value outside the enum.
+const CONTACTED_STATUSES = ['Contacted', 'Replied', 'Not now', 'Green'];
+
+// Map sheet spellings onto the enum. Unknown values are returned unchanged
+// (not forced to a default) so we never invent a status the user didn't write;
+// the UI renders unrecognised values verbatim.
+const STATUS_ALIASES: Record<string, string> = {
+  'do not contact': 'Do not contact', 'do-not-contact': 'Do not contact',
+  'donotcontact': 'Do not contact', 'dnc': 'Do not contact', 'do not approach': 'Do not contact',
+  'not contacted': 'Not contacted', 'not contacted yet': 'Not contacted',
+  'uncontacted': 'Not contacted', 'new': 'Not contacted',
+  'contacted': 'Contacted', 'sent': 'Contacted', 'reached out': 'Contacted', 'emailed': 'Contacted',
+  'replied': 'Replied', 'responded': 'Replied', 'reply': 'Replied',
+  'green': 'Green', 'green signal': 'Green', 'interested': 'Green', 'warm': 'Green',
+  'not now': 'Not now', 'later': 'Not now', 'revisit': 'Not now', 'cold': 'Not now',
+  'to find': 'TO FIND', 'tofind': 'TO FIND', 'to-find': 'TO FIND', 'gap': 'TO FIND', 'missing': 'TO FIND',
+};
+
+export function normaliseStatus(raw: unknown): string {
+  const v = s(raw);
+  if (!v) return '';
+  return STATUS_ALIASES[v.toLowerCase()] ?? v;
+}
 
 // dedup_key: prefer a real email, else company|name. Keeps re-drops idempotent.
 function dedupKey(company: string, name: string, email: string): string {
@@ -168,7 +205,7 @@ export async function importContacts(
         s(raw.linkedin),
         s(raw.city),
         s(raw.messageAngle),
-        s(raw.status),
+        normaliseStatus(raw.status),
         sourceFile,
         key,
         user,
@@ -192,7 +229,7 @@ export async function importContacts(
 // ---------------------------------------------------------------------
 // PATCH (inline edits). Whitelisted fields only.
 // ---------------------------------------------------------------------
-const PATCHABLE = new Set(['status', 'mail_status', 'phone', 'email', 'linkedin']);
+const PATCHABLE = new Set(['status', 'mail_status', 'phone', 'email', 'linkedin', 'layer', 'title']);
 
 export async function updateContact(
   id: number,
@@ -204,7 +241,7 @@ export async function updateContact(
 
   for (const [k, v] of Object.entries(patch)) {
     if (!PATCHABLE.has(k)) continue;
-    params.push(s(v));
+    params.push(k === 'status' ? normaliseStatus(v) : s(v));
     sets.push(`${k} = $${params.length}`);
   }
   if (!sets.length) {
@@ -239,6 +276,7 @@ export async function contactStats(): Promise<{
   signers: number;
   contacted: number;
   green: number;
+  dnc: number;
   promoted: number;
 }> {
   const sql = `
@@ -248,14 +286,16 @@ export async function contactStats(): Promise<{
       count(*) filter (where (lower(layer) like '%signer%'
                           or lower(layer) like '%decision-maker%')
                          and promoted_lead_id is null)::int                    as signers,
-      count(*) filter (where status not in ('Not contacted','TO FIND')
+      count(*) filter (where status = any($1::text[])
                          and promoted_lead_id is null)::int                    as contacted,
       count(*) filter (where status = 'Green'
                          and promoted_lead_id is null)::int                    as green,
+      count(*) filter (where status = 'Do not contact'
+                         and promoted_lead_id is null)::int                    as dnc,
       count(*) filter (where promoted_lead_id is not null)::int                as promoted
     from outreach_service.contacts
   `;
-  const { rows } = await pool.query(sql);
+  const { rows } = await pool.query(sql, [CONTACTED_STATUSES]);
   return rows[0];
 }
 

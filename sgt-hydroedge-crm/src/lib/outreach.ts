@@ -47,6 +47,7 @@ export type OutreachStats = {
   signers: number;
   contacted: number;
   green: number;
+  dnc: number;
   promoted: number;
 };
 
@@ -79,6 +80,7 @@ export const OUTREACH_STATUSES = [
   'Replied',
   'Green',
   'Not now',
+  'Do not contact',
   'TO FIND',
 ] as const;
 
@@ -228,7 +230,7 @@ export async function importContacts(
 
 export async function patchContact(
   id: number,
-  patch: Partial<Pick<OutreachContact, 'status' | 'mail_status' | 'phone' | 'email' | 'linkedin'>>
+  patch: Partial<Pick<OutreachContact, 'status' | 'mail_status' | 'phone' | 'email' | 'linkedin' | 'layer' | 'title'>>
 ): Promise<OutreachContact> {
   const res = await authFetch(`${BASE}/contacts/${id}`, {
     method: 'PATCH',

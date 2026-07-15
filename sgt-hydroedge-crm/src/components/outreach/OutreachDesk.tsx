@@ -54,6 +54,7 @@ function layerStyle(layer: string): { bg: string; fg: string } {
   if (l.includes('gatekeeper') || l.includes('influencer') || l.includes('procurement')) return { bg: C.amberSoft, fg: C.amber };
   if (l.includes('esg') || l.includes('comms') || l.includes('hr') || l.includes('ir')) return { bg: C.purpleSoft, fg: C.purple };
   if (l.includes('operations') || l.includes('ops') || l.includes('planning')) return { bg: C.greenSoft, fg: C.green };
+  if (l.includes('off-target') || l.includes('off target')) return { bg: '#EDE9DE', fg: '#8A857B' };
   return { bg: C.tone, fg: C.sub };
 }
 
@@ -63,6 +64,7 @@ function statusStyle(status: string): { bg: string; fg: string } {
     case 'Replied': return { bg: C.blueSoft, fg: C.blue };
     case 'Contacted': return { bg: C.amberSoft, fg: C.amber };
     case 'Not now': return { bg: C.tone, fg: C.sub };
+    case 'Do not contact': return { bg: C.redSoft, fg: C.red };
     case 'TO FIND': return { bg: C.purpleSoft, fg: C.purple };
     default: return { bg: '#EDE9DE', fg: '#8A857B' };
   }
@@ -180,7 +182,7 @@ export default function OutreachDesk() {
   // save an edited field (phone/email/linkedin) on the open contact
   const saveField = useCallback(async (
     c: OutreachContact,
-    patch: Partial<Pick<OutreachContact, 'phone' | 'email' | 'linkedin'>>,
+    patch: Partial<Pick<OutreachContact, 'phone' | 'email' | 'linkedin' | 'layer' | 'title'>>,
   ) => {
     const fresh = await patchContact(c.id, patch);
     setContacts((prev) => prev.map((x) => (x.id === c.id ? fresh : x)));
@@ -226,6 +228,7 @@ export default function OutreachDesk() {
             <Stat label="Signers" value={stats.signers} accent={C.red} />
             <Stat label="Contacted" value={stats.contacted} accent={C.amber} />
             <Stat label="Green" value={stats.green} accent={C.green} />
+            <Stat label="Do not contact" value={stats.dnc} accent={C.red} />
             <Stat label="Promoted" value={stats.promoted} accent={C.teal} />
           </div>
         )}
@@ -358,6 +361,11 @@ function Chip({ text, style }: { text: string; style: { bg: string; fg: string }
 
 function StatusPicker({ c, onStatus }: { c: OutreachContact; onStatus: (c: OutreachContact, s: string) => void; }) {
   const st = statusStyle(c.status);
+  // If the stored value isn't one of ours (an unexpected sheet value), show it
+  // as a real option. A <select> with no matching option silently renders the
+  // FIRST one — which is how 'Do not contact' rows displayed as 'Not contacted'.
+  const known = (OUTREACH_STATUSES as readonly string[]).includes(c.status);
+  const options = known ? [...OUTREACH_STATUSES] : [c.status, ...OUTREACH_STATUSES];
   return (
     <select
       value={c.status}
@@ -368,7 +376,7 @@ function StatusPicker({ c, onStatus }: { c: OutreachContact; onStatus: (c: Outre
         padding: '4px 10px', fontSize: 12, fontWeight: 600, cursor: 'pointer', outline: 'none',
       }}
     >
-      {OUTREACH_STATUSES.map((s) => (
+      {options.map((s) => (
         <option key={s} value={s} style={{ background: C.card, color: C.text }}>{s}</option>
       ))}
     </select>
@@ -458,11 +466,13 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function EditableField({ label, value, placeholder, onSave }: {
+function EditableField({ label, value, placeholder, onSave, render }: {
   label: string;
   value: string;
   placeholder: string;
   onSave: (v: string) => Promise<void>;
+  /** optional custom display (e.g. render the layer as a chip) */
+  render?: (v: string) => React.ReactNode;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -499,7 +509,7 @@ function EditableField({ label, value, placeholder, onSave }: {
           style={{ cursor: 'text', color: value ? C.text : C.faint, borderBottom: `1px dashed ${C.border}`, paddingBottom: 2 }}
           title="Click to edit"
         >
-          {value || placeholder}
+          {render ? render(value) : (value || placeholder)}
         </div>
       )}
     </Field>
@@ -510,7 +520,7 @@ function Drawer({ c, onClose, onStatus, onSaveField, onPromote, promoting }: {
   c: OutreachContact;
   onClose: () => void;
   onStatus: (c: OutreachContact, s: string) => void;
-  onSaveField: (c: OutreachContact, patch: Partial<Pick<OutreachContact, 'phone' | 'email' | 'linkedin'>>) => Promise<void>;
+  onSaveField: (c: OutreachContact, patch: Partial<Pick<OutreachContact, 'phone' | 'email' | 'linkedin' | 'layer' | 'title'>>) => Promise<void>;
   onPromote: (c: OutreachContact) => void;
   promoting: boolean;
 }) {
@@ -540,12 +550,20 @@ function Drawer({ c, onClose, onStatus, onSaveField, onPromote, promoting }: {
         </div>
 
         <div style={{ display: 'flex', gap: 8, margin: '14px 0 20px', flexWrap: 'wrap', alignItems: 'center' }}>
-          <Chip text={c.layer || '—'} style={layerStyle(c.layer)} />
           {c.verified && <Chip text={c.verified} style={{ bg: C.tealSoft, fg: C.teal }} />}
           {isPromoted
             ? <Chip text={`Promoted → ${c.promoted_display_id ?? 'lead'}`} style={{ bg: C.tealSoft, fg: C.teal }} />
             : <StatusPicker c={c} onStatus={onStatus} />}
         </div>
+
+        {/* Layer drives targeting (and the Signers stat) — editable when the sheet got it wrong */}
+        <EditableField
+          label="Layer"
+          value={c.layer || ''}
+          placeholder="e.g. DECISION-MAKER (signer)"
+          onSave={(v) => onSaveField(c, { layer: v })}
+          render={(v) => <Chip text={v || '—'} style={layerStyle(v)} />}
+        />
 
         <Field label="Company">{c.company}</Field>
         {c.city && <Field label="City">{c.city}</Field>}
