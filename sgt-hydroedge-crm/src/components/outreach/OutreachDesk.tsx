@@ -14,6 +14,7 @@ import {
   importContacts,
   parseContactsFile,
   patchContact,
+  promoteContact,
   OUTREACH_STATUSES,
   type OutreachContact,
   type OutreachStats,
@@ -90,9 +91,11 @@ export default function OutreachDesk() {
   const [search, setSearch] = useState('');
   const [company, setCompany] = useState('all');
   const [status, setStatus] = useState('all');
+  const [view, setView] = useState<'active' | 'promoted'>('active');
 
   const [dragOver, setDragOver] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [promoting, setPromoting] = useState(false);
   const [banner, setBanner] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [selected, setSelected] = useState<OutreachContact | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -101,7 +104,7 @@ export default function OutreachDesk() {
     setLoading(true);
     setErr(null);
     try {
-      const { contacts, stats } = await fetchContacts({ company, status, search });
+      const { contacts, stats } = await fetchContacts({ company, status, search, promoted: view });
       setContacts(contacts);
       setStats(stats);
     } catch (e: any) {
@@ -109,7 +112,7 @@ export default function OutreachDesk() {
     } finally {
       setLoading(false);
     }
-  }, [company, status, search]);
+  }, [company, status, search, view]);
 
   useEffect(() => {
     const t = setTimeout(load, 200);
@@ -167,12 +170,38 @@ export default function OutreachDesk() {
     setSelected((s) => (s && s.id === c.id ? { ...s, status: next } : s));
     try {
       await patchContact(c.id, { status: next });
-      const { stats } = await fetchContacts({ company, status, search });
+      const { stats } = await fetchContacts({ company, status, search, promoted: view });
       setStats(stats);
     } catch {
       load();
     }
-  }, [company, status, search, load]);
+  }, [company, status, search, view, load]);
+
+  // save an edited field (phone/email/linkedin) on the open contact
+  const saveField = useCallback(async (
+    c: OutreachContact,
+    patch: Partial<Pick<OutreachContact, 'phone' | 'email' | 'linkedin'>>,
+  ) => {
+    const fresh = await patchContact(c.id, patch);
+    setContacts((prev) => prev.map((x) => (x.id === c.id ? fresh : x)));
+    setSelected((s) => (s && s.id === c.id ? fresh : s));
+  }, []);
+
+  // Green signal → create a real lead; it lands unassigned in the triage queue
+  const promote = useCallback(async (c: OutreachContact) => {
+    setPromoting(true);
+    setBanner(null);
+    try {
+      const { data } = await promoteContact(c.id);
+      setBanner({ kind: 'ok', text: `${c.name} promoted to lead ${data.displayId} — now in the triage queue.` });
+      setSelected(null);
+      await load();
+    } catch (e: any) {
+      setBanner({ kind: 'err', text: e?.message || 'Promote failed' });
+    } finally {
+      setPromoting(false);
+    }
+  }, [load]);
 
   // ── render: root fills <main> and scrolls internally ──────────────
   return (
@@ -197,6 +226,7 @@ export default function OutreachDesk() {
             <Stat label="Signers" value={stats.signers} accent={C.red} />
             <Stat label="Contacted" value={stats.contacted} accent={C.amber} />
             <Stat label="Green" value={stats.green} accent={C.green} />
+            <Stat label="Promoted" value={stats.promoted} accent={C.teal} />
           </div>
         )}
 
@@ -250,6 +280,11 @@ export default function OutreachDesk() {
           />
           <Select value={company} onChange={setCompany} options={[['all', 'All companies'], ...companies.map((c) => [c, c] as [string, string])]} />
           <Select value={status} onChange={setStatus} options={[['all', 'All statuses'], ...OUTREACH_STATUSES.map((s) => [s, s] as [string, string])]} />
+          <Select
+            value={view}
+            onChange={(v) => setView(v as 'active' | 'promoted')}
+            options={[['active', 'Working list'], ['promoted', 'Promoted']]}
+          />
         </div>
 
         {/* list */}
@@ -259,7 +294,9 @@ export default function OutreachDesk() {
           ) : err ? (
             <Empty text={err} tone="err" />
           ) : contacts.length === 0 ? (
-            <Empty text="No contacts yet. Drop your MDO_Contacts sheet above to get started." />
+            <Empty text={view === 'promoted'
+              ? 'Nothing promoted yet. Mark a contact Green, then promote it into the pipeline.'
+              : 'No contacts yet. Drop your MDO_Contacts sheet above to get started.'} />
           ) : narrow ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {contacts.map((c) => (
@@ -272,7 +309,16 @@ export default function OutreachDesk() {
         </div>
       </div>
 
-      {selected && <Drawer c={selected} onClose={() => setSelected(null)} onStatus={changeStatus} />}
+      {selected && (
+        <Drawer
+          c={selected}
+          onClose={() => setSelected(null)}
+          onStatus={changeStatus}
+          onSaveField={saveField}
+          onPromote={promote}
+          promoting={promoting}
+        />
+      )}
     </div>
   );
 }
@@ -369,7 +415,11 @@ function Table({ contacts, onOpen, onStatus }: {
               <td style={{ ...td, color: C.text2 }}>{c.company}</td>
               <td style={td}><Chip text={c.layer || '—'} style={layerStyle(c.layer)} /></td>
               <td style={{ ...td, color: C.sub }}>{c.city || '—'}</td>
-              <td style={td}><StatusPicker c={c} onStatus={onStatus} /></td>
+              <td style={td}>
+                {c.promoted_lead_id
+                  ? <Chip text={`→ ${c.promoted_display_id ?? 'lead'}`} style={{ bg: C.tealSoft, fg: C.teal }} />
+                  : <StatusPicker c={c} onStatus={onStatus} />}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -386,7 +436,9 @@ function Card({ c, onOpen, onStatus }: { c: OutreachContact; onOpen: () => void;
           <div style={{ fontWeight: 600, color: C.text }}>{c.name}</div>
           <div style={{ color: C.sub, fontSize: 12 }}>{c.title}</div>
         </div>
-        <StatusPicker c={c} onStatus={onStatus} />
+        {c.promoted_lead_id
+          ? <Chip text={`→ ${c.promoted_display_id ?? 'lead'}`} style={{ bg: C.tealSoft, fg: C.teal }} />
+          : <StatusPicker c={c} onStatus={onStatus} />}
       </div>
       <div style={{ color: C.text2, fontSize: 13, marginTop: 8 }}>{c.company}</div>
       <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
@@ -406,10 +458,69 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function Drawer({ c, onClose, onStatus }: { c: OutreachContact; onClose: () => void; onStatus: (c: OutreachContact, s: string) => void; }) {
+function EditableField({ label, value, placeholder, onSave }: {
+  label: string;
+  value: string;
+  placeholder: string;
+  onSave: (v: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setDraft(value); }, [value]);
+
+  const commit = async () => {
+    if (draft.trim() === value.trim()) { setEditing(false); return; }
+    setSaving(true);
+    try { await onSave(draft.trim()); setEditing(false); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <Field label={label}>
+      {editing ? (
+        <div style={{ display: 'flex', gap: 6 }}>
+          <input
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') { setDraft(value); setEditing(false); } }}
+            placeholder={placeholder}
+            style={{ flex: 1, background: C.card, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: '6px 9px', fontSize: 13.5, outline: 'none' }}
+          />
+          <button onClick={commit} disabled={saving}
+            style={{ background: C.teal, color: '#fff', border: 'none', borderRadius: 6, padding: '6px 11px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}>
+            {saving ? '…' : 'Save'}
+          </button>
+        </div>
+      ) : (
+        <div
+          onClick={() => setEditing(true)}
+          style={{ cursor: 'text', color: value ? C.text : C.faint, borderBottom: `1px dashed ${C.border}`, paddingBottom: 2 }}
+          title="Click to edit"
+        >
+          {value || placeholder}
+        </div>
+      )}
+    </Field>
+  );
+}
+
+function Drawer({ c, onClose, onStatus, onSaveField, onPromote, promoting }: {
+  c: OutreachContact;
+  onClose: () => void;
+  onStatus: (c: OutreachContact, s: string) => void;
+  onSaveField: (c: OutreachContact, patch: Partial<Pick<OutreachContact, 'phone' | 'email' | 'linkedin'>>) => Promise<void>;
+  onPromote: (c: OutreachContact) => void;
+  promoting: boolean;
+}) {
   const mailto = c.email && c.email.includes('@')
     ? `mailto:${c.email}?subject=${encodeURIComponent(`SGT HydroEdge — ${c.company}`)}`
     : undefined;
+
+  const isPromoted = !!c.promoted_lead_id;
+  const canPromote = c.status === 'Green' && !isPromoted;
+
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(22,22,20,0.42)', display: 'flex', justifyContent: 'flex-end', zIndex: 1000 }}>
       <div
@@ -431,7 +542,9 @@ function Drawer({ c, onClose, onStatus }: { c: OutreachContact; onClose: () => v
         <div style={{ display: 'flex', gap: 8, margin: '14px 0 20px', flexWrap: 'wrap', alignItems: 'center' }}>
           <Chip text={c.layer || '—'} style={layerStyle(c.layer)} />
           {c.verified && <Chip text={c.verified} style={{ bg: C.tealSoft, fg: C.teal }} />}
-          <StatusPicker c={c} onStatus={onStatus} />
+          {isPromoted
+            ? <Chip text={`Promoted → ${c.promoted_display_id ?? 'lead'}`} style={{ bg: C.tealSoft, fg: C.teal }} />
+            : <StatusPicker c={c} onStatus={onStatus} />}
         </div>
 
         <Field label="Company">{c.company}</Field>
@@ -443,6 +556,14 @@ function Drawer({ c, onClose, onStatus }: { c: OutreachContact; onClose: () => v
             : <span style={{ color: C.faint }}>—</span>}
           {c.email2 && <div style={{ color: C.sub, fontSize: 13, marginTop: 4 }}>alt: {c.email2}</div>}
         </Field>
+
+        {/* Phone isn't in the MDO sheet — hand-entered when found, carried to the lead on promote */}
+        <EditableField
+          label="Phone"
+          value={c.phone || ''}
+          placeholder="Add a phone number…"
+          onSave={(v) => onSaveField(c, { phone: v })}
+        />
 
         {c.linkedin && (
           <Field label="LinkedIn">
@@ -458,18 +579,40 @@ function Drawer({ c, onClose, onStatus }: { c: OutreachContact; onClose: () => v
           </Field>
         )}
 
-        {/* NEXT ROUNDS — not wired yet: draft email (Gemini), sent/not-sent,
-            n8n auto-capture, promote-to-lead on Green. */}
         <div style={{ marginTop: 18, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          {mailto && (
-            <a href={mailto} style={{ background: C.teal, color: '#fff', borderRadius: 8, padding: '9px 14px', fontSize: 13, fontWeight: 600, textDecoration: 'none' }}>
+          {mailto && !isPromoted && (
+            <a href={mailto} style={{ background: C.card, color: C.teal, border: `1px solid ${C.border}`, borderRadius: 8, padding: '9px 14px', fontSize: 13, fontWeight: 600, textDecoration: 'none' }}>
               Open in mail →
             </a>
           )}
-          <button disabled title="Coming in the next round" style={{ background: C.tone, color: C.faint, border: `1px solid ${C.border}`, borderRadius: 8, padding: '9px 14px', fontSize: 13, fontWeight: 600, cursor: 'not-allowed' }}>
-            Promote to lead (soon)
-          </button>
+
+          {isPromoted ? (
+            <div style={{ fontSize: 12.5, color: C.sub }}>
+              Promoted as <strong style={{ color: C.teal }}>{c.promoted_display_id}</strong> — find it in the triage queue.
+            </div>
+          ) : (
+            <button
+              onClick={() => onPromote(c)}
+              disabled={!canPromote || promoting}
+              title={canPromote ? 'Create a lead and send it to triage' : 'Mark this contact Green first'}
+              style={{
+                background: canPromote ? C.teal : C.tone,
+                color: canPromote ? '#fff' : C.faint,
+                border: canPromote ? 'none' : `1px solid ${C.border}`,
+                borderRadius: 8, padding: '9px 14px', fontSize: 13, fontWeight: 600,
+                cursor: canPromote && !promoting ? 'pointer' : 'not-allowed',
+              }}
+            >
+              {promoting ? 'Promoting…' : 'Promote to lead →'}
+            </button>
+          )}
         </div>
+
+        {!canPromote && !isPromoted && (
+          <div style={{ fontSize: 12, color: C.sub, marginTop: 8 }}>
+            Only contacts marked <strong>Green</strong> can be promoted.
+          </div>
+        )}
       </div>
     </div>
   );

@@ -14,8 +14,8 @@
 import * as XLSX from 'xlsx';
 import { authFetch } from './auth';
 
-const API = import.meta.env.VITE_API_URL ?? '/api/v1'
-const BASE = `${API}/outreach`
+const API = import.meta.env.VITE_API_URL ?? '/api/v1';
+const BASE = `${API}/outreach`;
 
 export type OutreachContact = {
   id: number;
@@ -25,6 +25,7 @@ export type OutreachContact = {
   layer: string;
   email: string;
   email2: string;
+  phone: string;
   verified: string;
   linkedin: string;
   city: string;
@@ -32,7 +33,9 @@ export type OutreachContact = {
   status: string;
   mail_status: string;
   last_touch_at: string | null;
-  promoted_lead_id: number | null;
+  promoted_lead_id: string | null;
+  promoted_display_id: string | null;
+  promoted_at: string | null;
   source_file: string | null;
   created_at: string;
   updated_at: string;
@@ -44,6 +47,7 @@ export type OutreachStats = {
   signers: number;
   contacted: number;
   green: number;
+  promoted: number;
 };
 
 export type IncomingRow = {
@@ -53,6 +57,7 @@ export type IncomingRow = {
   layer?: string;
   email?: string;
   email2?: string;
+  phone?: string;
   verified?: string;
   linkedin?: string;
   city?: string;
@@ -93,6 +98,7 @@ const FIELD_ALIASES: Array<[keyof IncomingRow, string[]]> = [
   ['title', ['title', 'designation', 'role', 'jobtitle', 'position']],
   ['layer', ['layer', 'persona', 'segment', 'tier']],
   ['email', ['email', 'emailaddress', 'primaryemail', 'mail', 'workemail']],
+  ['phone', ['phone', 'mobile', 'contactnumber', 'phoneno', 'phonenumber', 'cell', 'telephone', 'contactno']],
   ['verified', ['verified', 'verification', 'emailstatus', 'valid']],
   ['linkedin', ['linkedin', 'linkedinurl', 'li', 'profile', 'linkedinprofile']],
   ['city', ['city', 'location', 'base', 'town']],
@@ -196,11 +202,13 @@ export async function fetchContacts(params: {
   company?: string;
   status?: string;
   search?: string;
+  promoted?: 'active' | 'promoted' | 'all';
 } = {}): Promise<{ contacts: OutreachContact[]; stats: OutreachStats }> {
   const qs = new URLSearchParams();
   if (params.company && params.company !== 'all') qs.set('company', params.company);
   if (params.status && params.status !== 'all') qs.set('status', params.status);
   if (params.search) qs.set('search', params.search);
+  if (params.promoted) qs.set('promoted', params.promoted);
   const q = qs.toString();
   const res = await authFetch(`${BASE}/contacts${q ? `?${q}` : ''}`);
   return json(res);
@@ -220,7 +228,7 @@ export async function importContacts(
 
 export async function patchContact(
   id: number,
-  patch: Partial<Pick<OutreachContact, 'status' | 'mail_status'>>
+  patch: Partial<Pick<OutreachContact, 'status' | 'mail_status' | 'phone' | 'email' | 'linkedin'>>
 ): Promise<OutreachContact> {
   const res = await authFetch(`${BASE}/contacts/${id}`, {
     method: 'PATCH',
@@ -228,4 +236,17 @@ export async function patchContact(
     body: JSON.stringify(patch),
   });
   return json(res);
+}
+
+// Promote a Green contact into lead_service.leads. Lands unassigned so it
+// enters the triage queue like any other capture.
+export async function promoteContact(
+  id: number
+): Promise<{ data: { ok: true; leadId: string; displayId: string } }> {
+  const res = await authFetch(`${BASE}/contacts/${id}/promote`, { method: 'POST' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({} as any));
+    throw new Error(body?.error ?? `HTTP ${res.status}`);
+  }
+  return res.json();
 }

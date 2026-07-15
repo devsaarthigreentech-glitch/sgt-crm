@@ -2,8 +2,7 @@
 // routes/outreach.routes.ts   (wiring only — SQL lives in services/outreach.ts)
 //
 // Registered in index.ts as:  await app.register(outreachRoutes, { prefix: '/api/v1' })
-// …so paths here are RELATIVE to that prefix, exactly like leadsRoutes /
-// erpRoutes / usersRoutes. Final URLs resolve to /api/v1/outreach/...
+// …so paths here are RELATIVE to that prefix, like leadsRoutes / erpRoutes.
 // =====================================================================
 
 import type { FastifyInstance } from 'fastify';
@@ -12,15 +11,20 @@ import * as svc from '../services/outreach';
 
 // pull a user identifier off the request set by requireAuth
 function currentUser(req: any): string | null {
-  return req?.user?.email ?? req?.user?.id ?? req?.user?.name ?? null;
+  return req?.user?.name ?? req?.user?.email ?? null;
 }
 
 export async function outreachRoutes(app: FastifyInstance) {
-  // GET /api/v1/outreach/contacts?company=&status=&search=
+  // GET /api/v1/outreach/contacts?company=&status=&search=&promoted=
   app.get('/outreach/contacts', { preHandler: [requireAuth] }, async (req) => {
     const q = req.query as Record<string, string>;
     const [contacts, stats] = await Promise.all([
-      svc.listContacts({ company: q.company, status: q.status, search: q.search }),
+      svc.listContacts({
+        company: q.company,
+        status: q.status,
+        search: q.search,
+        promoted: q.promoted,
+      }),
       svc.contactStats(),
     ]);
     return { contacts, stats };
@@ -35,7 +39,7 @@ export async function outreachRoutes(app: FastifyInstance) {
     });
   });
 
-  // PATCH /api/v1/outreach/contacts/:id   body: { status?, mail_status? }
+  // PATCH /api/v1/outreach/contacts/:id   body: { status?, mail_status?, phone?, email?, linkedin? }
   app.patch('/outreach/contacts/:id', { preHandler: [requireAuth] }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const updated = await svc.updateContact(
@@ -45,5 +49,17 @@ export async function outreachRoutes(app: FastifyInstance) {
     );
     if (!updated) return reply.code(404).send({ error: 'not found' });
     return updated;
+  });
+
+  // POST /api/v1/outreach/contacts/:id/promote  → creates a lead (Green only)
+  app.post('/outreach/contacts/:id/promote', { preHandler: [requireAuth] }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const result = await svc.promoteContact(Number(id), currentUser(req));
+
+    if (!result.ok) {
+      const code = result.reason === 'not_found' ? 404 : 422;
+      return reply.code(code).send({ error: result.message });
+    }
+    return reply.code(201).send({ data: result });
   });
 }

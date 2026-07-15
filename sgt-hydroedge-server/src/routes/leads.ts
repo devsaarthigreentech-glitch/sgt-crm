@@ -3,6 +3,8 @@ import { z } from 'zod'
 import { query } from '../db/pool'
 import { requireAuth } from '../auth/guard'
 import { ensureErpCustomer } from '../services/erpCustomer.js'
+import { createLeadInTx } from '../services/leadCreate.js'
+
 import {
   normaliseAccountName,
   generateDisplayId,
@@ -326,115 +328,132 @@ export async function leadsRoutes(fastify: FastifyInstance) {
   })
 
   // POST /leads — capture. requireAuth so we can stamp the capturing user as owner.
+  // fastify.post('/leads', { preHandler: requireAuth }, async (request, reply) => {
+  //   const body = CreateLeadSchema.parse(request.body)
+  //   const client = await (await import('../db/pool')).pool.connect()
+
+  //   try {
+  //     await client.query('BEGIN')
+
+  //     // 1. Find or create account
+  //     const nameNorm = normaliseAccountName(body.account.name)
+
+  //     let accountId: string
+  //     const existing = await client.query(
+  //       `SELECT id FROM lead_service.accounts
+  //        WHERE name_normalized = $1 AND deleted_at IS NULL LIMIT 1`,
+  //       [nameNorm]
+  //     )
+
+  //     if (existing.rows.length > 0) {
+  //       accountId = existing.rows[0].id
+  //     } else {
+  //       const acc = await client.query(
+  //         `INSERT INTO lead_service.accounts
+  //            (name, name_normalized, location, pan)
+  //          VALUES ($1, $2, $3, $4)
+  //          RETURNING id`,
+  //         [body.account.name, nameNorm, body.account.location ?? null, body.account.pan ?? null]
+  //       )
+  //       accountId = acc.rows[0].id
+  //     }
+
+  //     // 2. Create contact if provided
+  //     let contactId: string | null = null
+  //     if (body.primaryContact) {
+  //       const c = await client.query(
+  //         `INSERT INTO lead_service.contacts
+  //            (account_id, name, role, email, phone, is_primary)
+  //          VALUES ($1, $2, $3, $4, $5, true)
+  //          RETURNING id`,
+  //         [
+  //           accountId,
+  //           body.primaryContact.name,
+  //           body.primaryContact.role ?? null,
+  //           body.primaryContact.email ?? null,
+  //           body.primaryContact.phone ?? null,
+  //         ]
+  //       )
+  //       contactId = c.rows[0].id
+  //     }
+
+  //     // 3. Generate display ID
+  //     const seqResult = await client.query(
+  //       `SELECT nextval('lead_service.lead_id_seq') AS seq`
+  //     )
+  //     const displayId = generateDisplayId(Number(seqResult.rows[0].seq))
+
+  //     // 4. Create lead
+  //     const division = body.vertical ? defaultDivision(body.vertical) : 'GREENEDGE'
+  //     const valueInPaise = body.estimatedValue ? body.estimatedValue * 100 : null
+
+  //     const lead = await client.query(
+  //       `INSERT INTO lead_service.leads (
+  //         display_id, account_id, primary_contact_id,
+  //         vertical, commercial_model, origin, division,
+  //         owner_name, owner_id,
+  //         estimated_value, estimated_close_date,
+  //         capture_source, initial_notes,
+  //         lead_type, referred_by, metadata,
+  //         created_by
+  //       ) VALUES (
+  //         $1, $2, $3, $4, $5, $6, $7,
+  //         $8, $9, $10, $11, $12, $13,
+  //         $14, $15, $16, $17
+  //       ) RETURNING *`,
+  //       [
+  //         displayId, accountId, contactId,
+  //         body.vertical ?? null,
+  //         body.commercialModel ?? null,
+  //         body.origin ?? null,
+  //         body.vertical ? defaultDivision(body.vertical) : 'GREENEDGE',
+  //         body.ownerName ?? null,        // stays unassigned — capture never assigns
+  //         body.ownerId ?? null,
+  //         body.estimatedValue ? body.estimatedValue * 100 : null,
+  //         body.estimatedCloseDate ?? null,
+  //         body.captureSource ?? 'INTERNAL',
+  //         body.initialNotes ?? null,
+  //         body.leadType ?? 'Prospect',
+  //         body.referredBy ?? null,
+  //         JSON.stringify(body.metadata ?? {}),
+  //         request.user?.name ?? null,    // created_by — who captured it
+  //       ]
+  //     )
+
+  //     // 5. Audit log
+  //     await client.query(
+  //       `INSERT INTO lead_service.lead_audit_log
+  //          (lead_id, actor_name, action, to_state)
+  //        VALUES ($1, $2, $3, $4)`,
+  //       [
+  //         lead.rows[0].id,
+  //         body.ownerName ?? request.user?.name ?? 'System',
+  //         'lead_created',
+  //         JSON.stringify({ stage: 'New', vertical: body.vertical }),
+  //       ]
+  //     )
+
+  //     await client.query('COMMIT')
+
+  //     return reply.status(201).send({ data: { id: lead.rows[0].id, displayId } })
+
+  //   } catch (err) {
+  //     await client.query('ROLLBACK')
+  //     throw err
+  //   } finally {
+  //     client.release()
+  //   }
+  // })
+
   fastify.post('/leads', { preHandler: requireAuth }, async (request, reply) => {
     const body = CreateLeadSchema.parse(request.body)
     const client = await (await import('../db/pool')).pool.connect()
-
+ 
     try {
       await client.query('BEGIN')
-
-      // 1. Find or create account
-      const nameNorm = normaliseAccountName(body.account.name)
-
-      let accountId: string
-      const existing = await client.query(
-        `SELECT id FROM lead_service.accounts
-         WHERE name_normalized = $1 AND deleted_at IS NULL LIMIT 1`,
-        [nameNorm]
-      )
-
-      if (existing.rows.length > 0) {
-        accountId = existing.rows[0].id
-      } else {
-        const acc = await client.query(
-          `INSERT INTO lead_service.accounts
-             (name, name_normalized, location, pan)
-           VALUES ($1, $2, $3, $4)
-           RETURNING id`,
-          [body.account.name, nameNorm, body.account.location ?? null, body.account.pan ?? null]
-        )
-        accountId = acc.rows[0].id
-      }
-
-      // 2. Create contact if provided
-      let contactId: string | null = null
-      if (body.primaryContact) {
-        const c = await client.query(
-          `INSERT INTO lead_service.contacts
-             (account_id, name, role, email, phone, is_primary)
-           VALUES ($1, $2, $3, $4, $5, true)
-           RETURNING id`,
-          [
-            accountId,
-            body.primaryContact.name,
-            body.primaryContact.role ?? null,
-            body.primaryContact.email ?? null,
-            body.primaryContact.phone ?? null,
-          ]
-        )
-        contactId = c.rows[0].id
-      }
-
-      // 3. Generate display ID
-      const seqResult = await client.query(
-        `SELECT nextval('lead_service.lead_id_seq') AS seq`
-      )
-      const displayId = generateDisplayId(Number(seqResult.rows[0].seq))
-
-      // 4. Create lead
-      const division = body.vertical ? defaultDivision(body.vertical) : 'GREENEDGE'
-      const valueInPaise = body.estimatedValue ? body.estimatedValue * 100 : null
-
-      const lead = await client.query(
-        `INSERT INTO lead_service.leads (
-          display_id, account_id, primary_contact_id,
-          vertical, commercial_model, origin, division,
-          owner_name, owner_id,
-          estimated_value, estimated_close_date,
-          capture_source, initial_notes,
-          lead_type, referred_by, metadata,
-          created_by
-        ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7,
-          $8, $9, $10, $11, $12, $13,
-          $14, $15, $16, $17
-        ) RETURNING *`,
-        [
-          displayId, accountId, contactId,
-          body.vertical ?? null,
-          body.commercialModel ?? null,
-          body.origin ?? null,
-          body.vertical ? defaultDivision(body.vertical) : 'GREENEDGE',
-          body.ownerName ?? null,        // stays unassigned — capture never assigns
-          body.ownerId ?? null,
-          body.estimatedValue ? body.estimatedValue * 100 : null,
-          body.estimatedCloseDate ?? null,
-          body.captureSource ?? 'INTERNAL',
-          body.initialNotes ?? null,
-          body.leadType ?? 'Prospect',
-          body.referredBy ?? null,
-          JSON.stringify(body.metadata ?? {}),
-          request.user?.name ?? null,    // created_by — who captured it
-        ]
-      )
-
-      // 5. Audit log
-      await client.query(
-        `INSERT INTO lead_service.lead_audit_log
-           (lead_id, actor_name, action, to_state)
-         VALUES ($1, $2, $3, $4)`,
-        [
-          lead.rows[0].id,
-          body.ownerName ?? request.user?.name ?? 'System',
-          'lead_created',
-          JSON.stringify({ stage: 'New', vertical: body.vertical }),
-        ]
-      )
-
+      const result = await createLeadInTx(client, body, request.user?.name ?? null)
       await client.query('COMMIT')
-
-      return reply.status(201).send({ data: { id: lead.rows[0].id, displayId } })
-
+      return reply.status(201).send({ data: result })
     } catch (err) {
       await client.query('ROLLBACK')
       throw err
@@ -442,7 +461,7 @@ export async function leadsRoutes(fastify: FastifyInstance) {
       client.release()
     }
   })
-
+  
   // GET /leads/:id/activities
   fastify.get<{ Params: { id: string } }>('/leads/:id/activities', async (request, reply) => {
     const result = await query(
