@@ -1,6 +1,11 @@
 // =====================================================================
 // services/outreach.ts
 // Domain SQL for the Outreach (pre-CRM) module. Route file is wiring only.
+//
+// Contacts only. "Companies" are just the company text already on each
+// contact — the desk groups by it client-side, so there's no company table
+// and nothing to keep in sync. If a company ever needs to OWN data (sales
+// intelligence, notes), that's when it earns a table.
 // =====================================================================
 
 import { pool } from '../db/pool';
@@ -25,6 +30,7 @@ export type OutreachContact = {
   promoted_lead_id: string | null;
   promoted_display_id: string | null;
   promoted_at: string | null;
+  deleted_at: string | null;
   source_file: string | null;
   created_by: string | null;
   updated_by: string | null;
@@ -51,16 +57,10 @@ const s = (v: unknown): string => (v == null ? '' : String(v).trim());
 
 // Canonical statuses. Keep in sync with OUTREACH_STATUSES in the frontend lib.
 export const CANONICAL_STATUSES = [
-  'Not contacted',
-  'Contacted',
-  'Replied',
-  'Green',
-  'Not now',
-  'Do not contact',
-  'TO FIND',
+  'Not contacted', 'Contacted', 'Replied', 'Green', 'Not now', 'Do not contact', 'TO FIND',
 ] as const;
 
-// Statuses that mean outreach actually happened. Whitelist, NOT "everything
+// Statuses that mean outreach actually happened. A whitelist, NOT "everything
 // except X" — the blacklist version silently counted "Do not contact" as
 // contacted the moment the sheet used a value outside the enum.
 const CONTACTED_STATUSES = ['Contacted', 'Replied', 'Not now', 'Green'];
@@ -102,10 +102,9 @@ export async function listContacts(filters: {
   search?: string;
   promoted?: string;   // 'active' (default) | 'promoted' | 'all'
 } = {}): Promise<OutreachContact[]> {
-  const where: string[] = [];
+  const where: string[] = ['deleted_at is null'];
   const params: any[] = [];
 
-  // Default desk view hides contacts that already became leads.
   const p = filters.promoted ?? 'active';
   if (p === 'active') where.push('promoted_lead_id is null');
   else if (p === 'promoted') where.push('promoted_lead_id is not null');
@@ -129,7 +128,7 @@ export async function listContacts(filters: {
   const sql = `
     select *
     from outreach_service.contacts
-    ${where.length ? 'where ' + where.join(' and ') : ''}
+    where ${where.join(' and ')}
     order by company asc, name asc
   `;
   const { rows } = await pool.query(sql, params);
@@ -138,7 +137,7 @@ export async function listContacts(filters: {
 
 // ---------------------------------------------------------------------
 // IMPORT (append + upsert). Refreshes SOURCE fields but NEVER touches
-// app-owned workflow state (status / mail_status / promoted / phone).
+// app-owned state (status / mail_status / promoted / phone / deleted_at).
 // ---------------------------------------------------------------------
 export async function importContacts(
   incoming: IncomingRow[],
@@ -147,9 +146,7 @@ export async function importContacts(
   const sourceFile = meta.sourceFile ?? null;
   const user = meta.user ?? null;
 
-  let inserted = 0;
-  let updated = 0;
-  let skipped = 0;
+  let inserted = 0, updated = 0, skipped = 0;
 
   const client = await pool.connect();
   try {
@@ -160,10 +157,7 @@ export async function importContacts(
       const name = s(raw.name);
       const email = s(raw.email);
 
-      if (!company || (!name && !email)) {
-        skipped++;
-        continue;
-      }
+      if (!company || (!name && !email)) { skipped++; continue; }
 
       const key = dedupKey(company, name, email);
 
@@ -186,7 +180,9 @@ export async function importContacts(
           linkedin      = case when excluded.linkedin <> '' then excluded.linkedin else outreach_service.contacts.linkedin end,
           city          = excluded.city,
           message_angle = excluded.message_angle,
-          -- status / mail_status / promoted_* / last_touch_at intentionally NOT overwritten
+          -- status / mail_status / promoted_* / last_touch_at / deleted_at are
+          -- intentionally NOT overwritten. deleted_at especially: a row you
+          -- deleted must stay deleted when the same sheet is dropped again.
           source_file   = excluded.source_file,
           updated_by    = excluded.updated_by,
           updated_at    = now()
@@ -194,25 +190,12 @@ export async function importContacts(
       `;
 
       const { rows } = await client.query(sql, [
-        company,
-        name,
-        s(raw.title),
-        s(raw.layer),
-        email,
-        s(raw.email2),
-        s(raw.phone),
-        s(raw.verified),
-        s(raw.linkedin),
-        s(raw.city),
-        s(raw.messageAngle),
-        normaliseStatus(raw.status),
-        sourceFile,
-        key,
-        user,
+        company, name, s(raw.title), s(raw.layer), email, s(raw.email2),
+        s(raw.phone), s(raw.verified), s(raw.linkedin), s(raw.city),
+        s(raw.messageAngle), normaliseStatus(raw.status), sourceFile, key, user,
       ]);
 
-      if (rows[0]?.was_insert) inserted++;
-      else updated++;
+      if (rows[0]?.was_insert) inserted++; else updated++;
     }
 
     await client.query('commit');
@@ -232,9 +215,7 @@ export async function importContacts(
 const PATCHABLE = new Set(['status', 'mail_status', 'phone', 'email', 'linkedin', 'layer', 'title']);
 
 export async function updateContact(
-  id: number,
-  patch: Record<string, unknown>,
-  user: string | null
+  id: number, patch: Record<string, unknown>, user: string | null
 ): Promise<OutreachContact | null> {
   const sets: string[] = [];
   const params: any[] = [];
@@ -245,25 +226,19 @@ export async function updateContact(
     sets.push(`${k} = $${params.length}`);
   }
   if (!sets.length) {
-    const { rows } = await pool.query(
-      'select * from outreach_service.contacts where id = $1',
-      [id]
-    );
+    const { rows } = await pool.query('select * from outreach_service.contacts where id = $1', [id]);
     return rows[0] ?? null;
   }
 
   params.push(user);
   sets.push(`updated_by = $${params.length}`);
   sets.push(`updated_at = now()`);
-
   params.push(id);
-  const sql = `
-    update outreach_service.contacts
-    set ${sets.join(', ')}
-    where id = $${params.length}
-    returning *
-  `;
-  const { rows } = await pool.query(sql, params);
+
+  const { rows } = await pool.query(
+    `update outreach_service.contacts set ${sets.join(', ')} where id = $${params.length} returning *`,
+    params,
+  );
   return rows[0] ?? null;
 }
 
@@ -271,18 +246,13 @@ export async function updateContact(
 // STATS
 // ---------------------------------------------------------------------
 export async function contactStats(): Promise<{
-  total: number;
-  companies: number;
-  signers: number;
-  contacted: number;
-  green: number;
-  dnc: number;
-  promoted: number;
+  total: number; companies: number; signers: number;
+  contacted: number; green: number; dnc: number; promoted: number;
 }> {
   const sql = `
     select
       count(*) filter (where promoted_lead_id is null)::int                    as total,
-      count(distinct company)::int                                             as companies,
+      count(distinct company) filter (where promoted_lead_id is null)::int     as companies,
       count(*) filter (where (lower(layer) like '%signer%'
                           or lower(layer) like '%decision-maker%')
                          and promoted_lead_id is null)::int                    as signers,
@@ -294,56 +264,75 @@ export async function contactStats(): Promise<{
                          and promoted_lead_id is null)::int                    as dnc,
       count(*) filter (where promoted_lead_id is not null)::int                as promoted
     from outreach_service.contacts
+    where deleted_at is null
   `;
   const { rows } = await pool.query(sql, [CONTACTED_STATUSES]);
   return rows[0];
 }
 
 // ---------------------------------------------------------------------
+// DELETE (soft)
+// The placeholder rows ("— GAP: MD / promoter —") aren't people, so they need
+// removing from the desk.
+//
+// Soft, deliberately: dedup_key is unique, so a re-import UPDATEs this row
+// rather than inserting a new one — and that update never touches deleted_at.
+// So a deleted row stays deleted when the same sheet is dropped again. A hard
+// delete would resurrect every GAP row on the next import.
+// ---------------------------------------------------------------------
+export async function deleteContact(id: number, user: string | null): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `update outreach_service.contacts
+        set deleted_at = now(), updated_by = $2, updated_at = now()
+      where id = $1 and deleted_at is null`,
+    [id, user],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+export async function restoreContact(id: number, user: string | null): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `update outreach_service.contacts
+        set deleted_at = null, updated_by = $2, updated_at = now()
+      where id = $1`,
+    [id, user],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+// ---------------------------------------------------------------------
 // PROMOTE → lead_service.leads
-// Gated on status='Green'. Lands UNASSIGNED (owner_name null) so it enters
-// the triage queue exactly like a normal capture; created_by = promoter so
-// a scoped rep still sees their own. Reuses createLeadInTx — same code path
-// as POST /leads, in one transaction with the contact stamp.
+// Gated on status='Green'. Lands UNASSIGNED (owner_name null) so it enters the
+// triage queue exactly like a normal capture; created_by = promoter so a scoped
+// rep still sees their own. Reuses createLeadInTx — the same code path as
+// POST /leads — in one transaction with the contact stamp.
 // ---------------------------------------------------------------------
 export type PromoteResult =
   | { ok: true; leadId: string; displayId: string }
   | { ok: false; reason: 'not_found' | 'not_green' | 'already_promoted'; message: string };
 
-export async function promoteContact(
-  id: number,
-  actor: string | null,
-): Promise<PromoteResult> {
+export async function promoteContact(id: number, actor: string | null): Promise<PromoteResult> {
   const client = await pool.connect();
   try {
     await client.query('begin');
 
     // lock the row so two clicks can't create two leads
     const { rows } = await client.query(
-      'select * from outreach_service.contacts where id = $1 for update',
-      [id],
+      'select * from outreach_service.contacts where id = $1 for update', [id],
     );
     const c: OutreachContact | undefined = rows[0];
 
-    if (!c) {
+    if (!c || c.deleted_at) {
       await client.query('rollback');
       return { ok: false, reason: 'not_found', message: 'Contact not found' };
     }
     if (c.promoted_lead_id) {
       await client.query('rollback');
-      return {
-        ok: false,
-        reason: 'already_promoted',
-        message: `Already promoted as ${c.promoted_display_id ?? 'a lead'}`,
-      };
+      return { ok: false, reason: 'already_promoted', message: `Already promoted as ${c.promoted_display_id ?? 'a lead'}` };
     }
     if (c.status !== 'Green') {
       await client.query('rollback');
-      return {
-        ok: false,
-        reason: 'not_green',
-        message: 'Only contacts marked Green can be promoted to a lead',
-      };
+      return { ok: false, reason: 'not_green', message: 'Only contacts marked Green can be promoted to a lead' };
     }
 
     // Only pass an email the leads side would accept as real.
@@ -354,33 +343,21 @@ export async function promoteContact(
       c.source_file ? `Source: ${c.source_file}` : null,
     ].filter(Boolean).join('\n') || undefined;
 
-    const lead = await createLeadInTx(
-      client,
-      {
-        account: { name: c.company, location: c.city || undefined },
-        primaryContact: {
-          name: c.name,
-          role: c.title || undefined,
-          email,
-          phone: c.phone || undefined,
-        },
-        leadType: 'Prospect',
-        captureSource: 'INTERNAL',
-        initialNotes: notes,
-        ownerName: undefined,   // unassigned → lands in triage
-        ownerId: undefined,
-        metadata: { promotedFromOutreachContactId: c.id, outreachLayer: c.layer || null },
-      },
-      actor,                    // created_by = promoter
-    );
+    const lead = await createLeadInTx(client, {
+      account: { name: c.company, location: c.city || undefined },
+      primaryContact: { name: c.name, role: c.title || undefined, email, phone: c.phone || undefined },
+      leadType: 'Prospect',
+      captureSource: 'INTERNAL',
+      initialNotes: notes,
+      ownerName: undefined,   // unassigned → lands in triage
+      ownerId: undefined,
+      metadata: { promotedFromOutreachContactId: c.id, outreachLayer: c.layer || null },
+    }, actor);                // created_by = promoter
 
     await client.query(
       `update outreach_service.contacts
-          set promoted_lead_id = $1,
-              promoted_display_id = $2,
-              promoted_at = now(),
-              updated_by = $3,
-              updated_at = now()
+          set promoted_lead_id = $1, promoted_display_id = $2, promoted_at = now(),
+              updated_by = $3, updated_at = now()
         where id = $4`,
       [lead.id, lead.displayId, actor, id],
     );

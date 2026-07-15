@@ -1,30 +1,23 @@
 // =====================================================================
 // routes/outreach.routes.ts   (wiring only — SQL lives in services/outreach.ts)
-//
-// Registered in index.ts as:  await app.register(outreachRoutes, { prefix: '/api/v1' })
-// …so paths here are RELATIVE to that prefix, like leadsRoutes / erpRoutes.
+// Registered as: await app.register(outreachRoutes, { prefix: '/api/v1' })
 // =====================================================================
 
 import type { FastifyInstance } from 'fastify';
 import { requireAuth } from '../auth/guard';
 import * as svc from '../services/outreach';
 
-// pull a user identifier off the request set by requireAuth
 function currentUser(req: any): string | null {
   return req?.user?.name ?? req?.user?.email ?? null;
 }
 
 export async function outreachRoutes(app: FastifyInstance) {
   // GET /api/v1/outreach/contacts?company=&status=&search=&promoted=
+  // Returns a flat list; the desk groups by company client-side.
   app.get('/outreach/contacts', { preHandler: [requireAuth] }, async (req) => {
     const q = req.query as Record<string, string>;
     const [contacts, stats] = await Promise.all([
-      svc.listContacts({
-        company: q.company,
-        status: q.status,
-        search: q.search,
-        promoted: q.promoted,
-      }),
+      svc.listContacts({ company: q.company, status: q.status, search: q.search, promoted: q.promoted }),
       svc.contactStats(),
     ]);
     return { contacts, stats };
@@ -39,23 +32,34 @@ export async function outreachRoutes(app: FastifyInstance) {
     });
   });
 
-  // PATCH /api/v1/outreach/contacts/:id   body: { status?, mail_status?, phone?, email?, linkedin? }
+  // PATCH /api/v1/outreach/contacts/:id  { status?, mail_status?, phone?, email?, linkedin?, layer?, title? }
   app.patch('/outreach/contacts/:id', { preHandler: [requireAuth] }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const updated = await svc.updateContact(
-      Number(id),
-      (req.body ?? {}) as Record<string, unknown>,
-      currentUser(req),
-    );
+    const updated = await svc.updateContact(Number(id), (req.body ?? {}) as Record<string, unknown>, currentUser(req));
     if (!updated) return reply.code(404).send({ error: 'not found' });
     return updated;
   });
 
-  // POST /api/v1/outreach/contacts/:id/promote  → creates a lead (Green only)
+  // DELETE /api/v1/outreach/contacts/:id — soft delete (GAP placeholder rows)
+  app.delete('/outreach/contacts/:id', { preHandler: [requireAuth] }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const ok = await svc.deleteContact(Number(id), currentUser(req));
+    if (!ok) return reply.code(404).send({ error: 'not found' });
+    return { data: { id: Number(id), deleted: true } };
+  });
+
+  // POST /api/v1/outreach/contacts/:id/restore — undo a delete
+  app.post('/outreach/contacts/:id/restore', { preHandler: [requireAuth] }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const ok = await svc.restoreContact(Number(id), currentUser(req));
+    if (!ok) return reply.code(404).send({ error: 'not found' });
+    return { data: { id: Number(id), restored: true } };
+  });
+
+  // POST /api/v1/outreach/contacts/:id/promote → creates a lead (Green only)
   app.post('/outreach/contacts/:id/promote', { preHandler: [requireAuth] }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const result = await svc.promoteContact(Number(id), currentUser(req));
-
     if (!result.ok) {
       const code = result.reason === 'not_found' ? 404 : 422;
       return reply.code(code).send({ error: result.message });

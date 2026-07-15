@@ -36,10 +36,12 @@ export type OutreachContact = {
   promoted_lead_id: string | null;
   promoted_display_id: string | null;
   promoted_at: string | null;
+  deleted_at: string | null;
   source_file: string | null;
   created_at: string;
   updated_at: string;
 };
+
 
 export type OutreachStats = {
   total: number;
@@ -139,7 +141,8 @@ function headerScore(headerRow: any[]): number {
 
 /**
  * Parse a dropped File (.xlsx / .xls / .csv) into IncomingRow[].
- * Scans every sheet, finds the best header row, and maps it.
+ * Scans every sheet, picks the one that looks most like a contact list
+ * (so a "Summary" tab is ignored), finds its header row, and maps it.
  */
 export async function parseContactsFile(file: File): Promise<IncomingRow[]> {
   const buf = await file.arrayBuffer();
@@ -149,22 +152,14 @@ export async function parseContactsFile(file: File): Promise<IncomingRow[]> {
 
   for (const sheetName of wb.SheetNames) {
     const ws = wb.Sheets[sheetName];
-    const grid: any[][] = XLSX.utils.sheet_to_json(ws, {
-      header: 1,
-      defval: '',
-      blankrows: false,
-    });
+    const grid: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', blankrows: false });
     if (!grid.length) continue;
 
-    // Header is the row (within the first few) with the highest header score.
     let headerIdx = -1;
     let headerBest = 0;
     for (let r = 0; r < Math.min(grid.length, 5); r++) {
       const sc = headerScore(grid[r]);
-      if (sc > headerBest) {
-        headerBest = sc;
-        headerIdx = r;
-      }
+      if (sc > headerBest) { headerBest = sc; headerIdx = r; }
     }
     if (headerIdx < 0 || headerBest < 4) continue; // not a contact sheet
 
@@ -176,17 +171,13 @@ export async function parseContactsFile(file: File): Promise<IncomingRow[]> {
       if (!line || line.every((c) => String(c ?? '').trim() === '')) continue;
       const row: IncomingRow = {};
       for (const [idxStr, field] of Object.entries(headerMap)) {
-        const idx = Number(idxStr);
-        const val = String(line[idx] ?? '').trim();
+        const val = String(line[Number(idxStr)] ?? '').trim();
         if (val) (row as any)[field] = val;
       }
-      // keep only rows that look like a contact
       if (row.company && (row.name || row.email)) rows.push(row);
     }
 
-    if (rows.length && headerBest > best.score) {
-      best = { rows, score: headerBest };
-    }
+    if (rows.length && headerBest > best.score) best = { rows, score: headerBest };
   }
 
   return best.rows;
@@ -226,6 +217,11 @@ export async function importContacts(
     body: JSON.stringify({ rows, sourceFile }),
   });
   return json(res);
+}
+
+export async function deleteContact(id: number): Promise<void> {
+  const res = await authFetch(`${BASE}/contacts/${id}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
 }
 
 export async function patchContact(
