@@ -152,9 +152,9 @@ export default function OutstandingOrders() {
             <Tile icon={<Hourglass size={15} strokeWidth={2} />} accent={C.green2}
               label="Outstanding value" value={inrShort(data.outstandingValue)}
               sub={data.awaitingInstallationValue ? `+${inrShort(data.awaitingInstallationValue)} awaiting install` : 'across open orders'} />
-            <Tile icon={<Timer size={15} strokeWidth={2} />} accent={C.forest}
+            <Tile icon={<Timer size={15} strokeWidth={2} />} accent={data.avgFulfilmentDays != null && data.avgFulfilmentDays > 7 ? C.red : C.healthy}
               label="Avg fulfilment" value={data.avgFulfilmentDays != null ? `${data.avgFulfilmentDays}d` : '—'}
-              sub={data.fulfilmentSamples ? `from ${data.fulfilmentSamples} delivered` : 'no delivered orders'} />
+              sub={data.fulfilmentSamples ? `target 7d · from ${data.fulfilmentSamples} delivered` : 'target 7d · no delivered orders'} />
           </div>
 
           {rentals.length > 0 && (

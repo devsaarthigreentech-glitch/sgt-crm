@@ -402,11 +402,44 @@ function Stat({ label, value, color }: { label: string; value: string; color: st
   );
 }
 
+// ---- ABC-D stock class, by unit rate (₹/unit) ----
+// A > 8k · B > 5k · C > 1k · D ≤ 1k. No rate on file → no class (never guess).
+const ABC_BANDS: { cls: 'A' | 'B' | 'C' | 'D'; min: number; color: string; bg: string }[] = [
+  { cls: 'A', min: 8000, color: '#7A1F12', bg: '#F6DCD7' },
+  { cls: 'B', min: 5000, color: '#7A4A0E', bg: '#F7E7C4' },
+  { cls: 'C', min: 1000, color: '#1F4E2E', bg: '#DDEBD9' },
+  { cls: 'D', min: 0,    color: '#5A5750', bg: '#EAE7DC' },
+];
+
+function abcClass(rate: number) {
+  if (!rate || rate <= 0) return null;          // unknown rate → no class
+  return ABC_BANDS.find((b) => rate > b.min) ?? ABC_BANDS[ABC_BANDS.length - 1];
+}
+
+function AbcChip({ rate }: { rate: number }) {
+  const b = abcClass(rate);
+  if (!b) return null;
+  return (
+    <span title={`Class ${b.cls} · ${inr(rate)}/unit`}
+      style={{
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        width: 14, height: 14, borderRadius: 3, flexShrink: 0,
+        fontSize: 9, fontWeight: 800, lineHeight: 1,
+        color: b.color, background: b.bg, marginRight: 5,
+      }}>
+      {b.cls}
+    </span>
+  );
+}
+
 function RawRow({ s, isLast }: { s: { itemName: string; need: number; available: number; short: number; rate: number; cost: number; leadTimeDays: number }; isLast: boolean }) {
   const fmt = (n: number) => Number(n.toFixed(2)).toLocaleString('en-IN');
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '4px 0', borderBottom: isLast ? 'none' : '1px solid #f0e6d2', fontSize: 11, color: '#555' }}>
-      <span style={{ color: C.forest, flex: 1, minWidth: 0 }}>{s.itemName}</span>
+      <span style={{ color: C.forest, flex: 1, minWidth: 0, display: 'flex', alignItems: 'center' }}>
+        <AbcChip rate={s.rate} />
+        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.itemName}</span>
+      </span>
       <span style={{ whiteSpace: 'nowrap', textAlign: 'right' }}>
         need {fmt(s.need)} · have {fmt(s.available)} · <b style={{ color: C.red }}>short {fmt(s.short)}</b>
         {s.leadTimeDays ? ` · ${s.leadTimeDays}d lead` : ''}
@@ -511,6 +544,15 @@ function ProductCard({ p }: { p: Product }) {
           {/* Shortage breakdown tree */}
           {r.hasShortage && open && (
             <div style={{ marginTop: 8, background: '#FCF6EE', border: '1px solid #efe3cd', borderRadius: 8, padding: 10 }}>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', fontSize: 9.5, color: '#999', paddingBottom: 7, marginBottom: 7, borderBottom: '1px solid #efe3cd' }}>
+                <span style={{ fontWeight: 700, letterSpacing: 0.4 }}>CLASS BY UNIT RATE</span>
+                {ABC_BANDS.map((b) => (
+                  <span key={b.cls} style={{ display: 'inline-flex', alignItems: 'center' }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 12, height: 12, borderRadius: 3, fontSize: 8, fontWeight: 800, color: b.color, background: b.bg, marginRight: 3 }}>{b.cls}</span>
+                    {b.cls === 'D' ? '≤ ₹1k' : `> ₹${b.min / 1000}k`}
+                  </span>
+                ))}
+              </div>
               {r.nodes.map((node, ni) => {
                 const isLastNode = ni === r.nodes.length - 1;
                 if (node.kind === 'direct') {
@@ -523,7 +565,8 @@ function ProductCard({ p }: { p: Product }) {
                   <div key={node.itemCode} style={{ borderBottom: isLastNode ? 'none' : '1px solid #e8d9be', paddingBottom: isLastNode ? 0 : 8, marginBottom: isLastNode ? 0 : 8 }}>
                     {/* Sub-assembly header row */}
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '3px 0', fontSize: 11.5 }}>
-                      <span style={{ color: C.forest, fontWeight: 700, flex: 1, minWidth: 0 }}>
+                    <span style={{ color: C.forest, fontWeight: 700, flex: 1, minWidth: 0, display: 'flex', alignItems: 'center' }}>
+                        <AbcChip rate={node.subUnitCost} />
                         🔩 {node.itemName}
                       </span>
                       <span style={{ whiteSpace: 'nowrap', textAlign: 'right', color: '#555' }}>
