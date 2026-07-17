@@ -12,15 +12,18 @@ function currentUser(req: any): string | null {
 }
 
 export async function outreachRoutes(app: FastifyInstance) {
-  // GET /api/v1/outreach/contacts?company=&status=&search=&promoted=
+  // GET /api/v1/outreach/contacts?company=&status=&search=&vertical=&promoted=
   // Returns a flat list; the desk groups by company client-side.
+  // `stats` are scoped to the selected vertical; `verticals` always spans all
+  // of them so the pills keep their counts while one is selected.
   app.get('/outreach/contacts', { preHandler: [requireAuth] }, async (req) => {
     const q = req.query as Record<string, string>;
-    const [contacts, stats] = await Promise.all([
-      svc.listContacts({ company: q.company, status: q.status, search: q.search, promoted: q.promoted }),
-      svc.contactStats(),
+    const [contacts, stats, verticals] = await Promise.all([
+      svc.listContacts({ company: q.company, status: q.status, search: q.search, vertical: q.vertical, promoted: q.promoted }),
+      svc.contactStats(q.vertical),
+      svc.verticalStats(),
     ]);
-    return { contacts, stats };
+    return { contacts, stats, verticals };
   });
 
   // POST /api/v1/outreach/import   body: { rows: IncomingRow[], sourceFile?: string }
@@ -32,7 +35,7 @@ export async function outreachRoutes(app: FastifyInstance) {
     });
   });
 
-  // PATCH /api/v1/outreach/contacts/:id  { status?, mail_status?, phone?, email?, linkedin?, layer?, title? }
+  // PATCH /api/v1/outreach/contacts/:id  { status?, mail_status?, phone?, email?, linkedin?, layer?, title?, vertical? }
   app.patch('/outreach/contacts/:id', { preHandler: [requireAuth] }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const updated = await svc.updateContact(Number(id), (req.body ?? {}) as Record<string, unknown>, currentUser(req));

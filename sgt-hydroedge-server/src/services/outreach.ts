@@ -24,6 +24,7 @@ export type OutreachContact = {
   linkedin: string;
   city: string;
   message_angle: string;
+  vertical: string;
   status: string;
   mail_status: string;
   last_touch_at: string | null;
@@ -50,6 +51,7 @@ export type IncomingRow = {
   linkedin?: string;
   city?: string;
   messageAngle?: string;
+  vertical?: string;
   status?: string;
 };
 
@@ -80,6 +82,23 @@ const STATUS_ALIASES: Record<string, string> = {
   'to find': 'TO FIND', 'tofind': 'TO FIND', 'to-find': 'TO FIND', 'gap': 'TO FIND', 'missing': 'TO FIND',
 };
 
+// Verticals. Free text (so a new one never gets silently dropped), but these
+// are the known values the UI offers.
+export const VERTICALS = ['DG', 'Mining', 'Marine', 'Vehicles', 'Small DG'] as const;
+
+const VERTICAL_ALIASES: Record<string, string> = {
+  'dg': 'DG', 'd.g.': 'DG', 'industry': 'DG', 'dg / industry': 'DG', 'genset': 'DG', 'partner': 'DG',
+  'mining': 'Mining', 'mines': 'Mining', 'mine': 'Mining',
+  'marine': 'Marine', 'vehicles': 'Vehicles', 'vehicle': 'Vehicles',
+  'small dg': 'Small DG', 'smalldg': 'Small DG',
+};
+
+export function normaliseVertical(raw: unknown): string {
+  const v = s(raw);
+  if (!v) return '';
+  return VERTICAL_ALIASES[v.toLowerCase()] ?? v;
+}
+
 export function normaliseStatus(raw: unknown): string {
   const v = s(raw);
   if (!v) return '';
@@ -100,6 +119,7 @@ export async function listContacts(filters: {
   company?: string;
   status?: string;
   search?: string;
+  vertical?: string;   // 'all' (default) | 'DG' | 'Mining' | …
   promoted?: string;   // 'active' (default) | 'promoted' | 'all'
 } = {}): Promise<OutreachContact[]> {
   const where: string[] = ['deleted_at is null'];
@@ -109,6 +129,10 @@ export async function listContacts(filters: {
   if (p === 'active') where.push('promoted_lead_id is null');
   else if (p === 'promoted') where.push('promoted_lead_id is not null');
 
+  if (filters.vertical && filters.vertical !== 'all') {
+    params.push(filters.vertical);
+    where.push(`vertical = $${params.length}`);
+  }
   if (filters.company && filters.company !== 'all') {
     params.push(filters.company);
     where.push(`company = $${params.length}`);
@@ -161,12 +185,24 @@ export async function importContacts(
 
       const key = dedupKey(company, name, email);
 
+      // Vertical: use the sheet's value; if absent, inherit whatever the rest of
+      // this company already uses, so a company never ends up split across two.
+      let vertical = normaliseVertical(raw.vertical);
+      if (!vertical) {
+        const { rows: v } = await client.query(
+          `select vertical from outreach_service.contacts
+            where lower(company) = lower($1) and vertical <> '' limit 1`,
+          [company],
+        );
+        vertical = v[0]?.vertical ?? '';
+      }
+
       const sql = `
         insert into outreach_service.contacts
           (company, name, title, layer, email, email2, phone, verified, linkedin,
-           city, message_angle, status, source_file, dedup_key, created_by, updated_by)
+           city, message_angle, vertical, status, source_file, dedup_key, created_by, updated_by)
         values
-          ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
+          ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$16,
            coalesce(nullif($12,''),'Not contacted'),$13,$14,$15,$15)
         on conflict (dedup_key) do update set
           company       = excluded.company,
@@ -180,6 +216,7 @@ export async function importContacts(
           linkedin      = case when excluded.linkedin <> '' then excluded.linkedin else outreach_service.contacts.linkedin end,
           city          = excluded.city,
           message_angle = excluded.message_angle,
+          vertical      = case when excluded.vertical <> '' then excluded.vertical else outreach_service.contacts.vertical end,
           -- status / mail_status / promoted_* / last_touch_at / deleted_at are
           -- intentionally NOT overwritten. deleted_at especially: a row you
           -- deleted must stay deleted when the same sheet is dropped again.
@@ -192,7 +229,7 @@ export async function importContacts(
       const { rows } = await client.query(sql, [
         company, name, s(raw.title), s(raw.layer), email, s(raw.email2),
         s(raw.phone), s(raw.verified), s(raw.linkedin), s(raw.city),
-        s(raw.messageAngle), normaliseStatus(raw.status), sourceFile, key, user,
+        s(raw.messageAngle), normaliseStatus(raw.status), sourceFile, key, user, vertical,
       ]);
 
       if (rows[0]?.was_insert) inserted++; else updated++;
@@ -212,7 +249,7 @@ export async function importContacts(
 // ---------------------------------------------------------------------
 // PATCH (inline edits). Whitelisted fields only.
 // ---------------------------------------------------------------------
-const PATCHABLE = new Set(['status', 'mail_status', 'phone', 'email', 'linkedin', 'layer', 'title']);
+const PATCHABLE = new Set(['status', 'mail_status', 'phone', 'email', 'linkedin', 'layer', 'title', 'vertical']);
 
 export async function updateContact(
   id: number, patch: Record<string, unknown>, user: string | null
@@ -222,7 +259,7 @@ export async function updateContact(
 
   for (const [k, v] of Object.entries(patch)) {
     if (!PATCHABLE.has(k)) continue;
-    params.push(k === 'status' ? normaliseStatus(v) : s(v));
+    params.push(k === 'status' ? normaliseStatus(v) : k === 'vertical' ? normaliseVertical(v) : s(v));
     sets.push(`${k} = $${params.length}`);
   }
   if (!sets.length) {
@@ -245,10 +282,11 @@ export async function updateContact(
 // ---------------------------------------------------------------------
 // STATS
 // ---------------------------------------------------------------------
-export async function contactStats(): Promise<{
+export async function contactStats(vertical?: string): Promise<{
   total: number; companies: number; signers: number;
   contacted: number; green: number; dnc: number; promoted: number;
 }> {
+  const vFilter = vertical && vertical !== 'all' ? 'and vertical = $2' : '';
   const sql = `
     select
       count(*) filter (where promoted_lead_id is null)::int                    as total,
@@ -264,10 +302,28 @@ export async function contactStats(): Promise<{
                          and promoted_lead_id is null)::int                    as dnc,
       count(*) filter (where promoted_lead_id is not null)::int                as promoted
     from outreach_service.contacts
-    where deleted_at is null
+    where deleted_at is null ${vFilter}
   `;
-  const { rows } = await pool.query(sql, [CONTACTED_STATUSES]);
+  const args: any[] = [CONTACTED_STATUSES];
+  if (vFilter) args.push(vertical);
+  const { rows } = await pool.query(sql, args);
   return rows[0];
+}
+
+/** Counts per vertical — drives the segmented pills. */
+export async function verticalStats(): Promise<
+  { vertical: string; contacts: number; companies: number }[]
+> {
+  const { rows } = await pool.query(`
+    select coalesce(nullif(vertical,''), 'Untagged') as vertical,
+           count(*)::int                             as contacts,
+           count(distinct company)::int              as companies
+      from outreach_service.contacts
+     where deleted_at is null and promoted_lead_id is null
+     group by 1
+     order by 2 desc
+  `);
+  return rows;
 }
 
 // ---------------------------------------------------------------------

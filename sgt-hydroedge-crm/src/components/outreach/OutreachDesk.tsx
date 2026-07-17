@@ -18,8 +18,10 @@ import {
   promoteContact,
   deleteContact as apiDeleteContact,
   OUTREACH_STATUSES,
+  VERTICALS,
   type OutreachContact,
   type OutreachStats,
+  type VerticalStat,
 } from '../../lib/outreach';
 
 // ── SGT paper/teal palette (matches App.tsx / Sidebar.tsx) ───────────
@@ -60,6 +62,17 @@ function statusStyle(status: string): { bg: string; fg: string } {
 
 const isSigner = (layer: string) => /signer|decision-maker/i.test(layer || '');
 
+function verticalStyle(v: string): { bg: string; fg: string } {
+  switch (v) {
+    case 'DG': return { bg: C.blueSoft, fg: C.blue };
+    case 'Mining': return { bg: C.amberSoft, fg: C.amber };
+    case 'Marine': return { bg: C.tealSoft, fg: C.teal };
+    case 'Vehicles': return { bg: C.purpleSoft, fg: C.purple };
+    case 'Small DG': return { bg: C.greenSoft, fg: C.green };
+    default: return { bg: C.tone, fg: C.faint };
+  }
+}
+
 function useIsNarrow(bp = 820) {
   const [narrow, setNarrow] = useState(typeof window !== 'undefined' ? window.innerWidth < bp : false);
   useEffect(() => {
@@ -72,6 +85,7 @@ function useIsNarrow(bp = 820) {
 
 type Group = {
   company: string;
+  vertical: string;          // company-level in practice: taken from its contacts
   contacts: OutreachContact[];
   green: number;
   signers: number;
@@ -82,12 +96,14 @@ export default function OutreachDesk() {
   const narrow = useIsNarrow();
   const [contacts, setContacts] = useState<OutreachContact[]>([]);
   const [stats, setStats] = useState<OutreachStats | null>(null);
+  const [verticals, setVerticals] = useState<VerticalStat[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('all');
   const [view, setView] = useState<'active' | 'promoted'>('active');
+  const [vertical, setVertical] = useState('all');
   const [grouped, setGrouped] = useState(true);
 
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -101,13 +117,14 @@ export default function OutreachDesk() {
   const load = useCallback(async () => {
     setLoading(true); setErr(null);
     try {
-      const r = await fetchContacts({ status, search, promoted: view });
+      const r = await fetchContacts({ status, search, vertical, promoted: view });
       setContacts(r.contacts);
       setStats(r.stats);
+      setVerticals(r.verticals ?? []);
     } catch (e: any) {
       setErr(e?.message || 'Failed to load contacts');
     } finally { setLoading(false); }
-  }, [status, search, view]);
+  }, [status, search, vertical, view]);
 
   useEffect(() => { const t = setTimeout(load, 200); return () => clearTimeout(t); }, [load]);
 
@@ -122,6 +139,7 @@ export default function OutreachDesk() {
     }
     return Array.from(m, ([company, cs]) => ({
       company,
+      vertical: cs.find((c) => c.vertical)?.vertical ?? '',
       contacts: [...cs].sort((a, b) => a.name.localeCompare(b.name)),
       green: cs.filter((c) => c.status === 'Green').length,
       signers: cs.filter((c) => isSigner(c.layer)).length,
@@ -178,14 +196,15 @@ export default function OutreachDesk() {
     patchLocal({ ...c, status: next });                     // optimistic
     try {
       patchLocal(await patchContact(c.id, { status: next }));
-      const r = await fetchContacts({ status, search, promoted: view });
+      const r = await fetchContacts({ status, search, vertical, promoted: view });
       setStats(r.stats);
+      setVerticals(r.verticals ?? []);
     } catch { load(); }
-  }, [status, search, view, load]);
+  }, [status, search, vertical, view, load]);
 
   const saveField = useCallback(async (
     c: OutreachContact,
-    patch: Partial<Pick<OutreachContact, 'phone' | 'email' | 'linkedin' | 'layer' | 'title'>>,
+    patch: Partial<Pick<OutreachContact, 'phone' | 'email' | 'linkedin' | 'layer' | 'title' | 'vertical'>>,
   ) => { patchLocal(await patchContact(c.id, patch)); }, []);
 
   const removeContact = useCallback(async (c: OutreachContact) => {
@@ -222,6 +241,20 @@ export default function OutreachDesk() {
             Cold contacts before triage · mark one Green to promote into the pipeline
           </span>
         </div>
+
+        {/* Two different pipelines — mining are end customers, DG are channel
+            partners. Showing one at a time keeps the stats meaningful. */}
+        {verticals.length > 1 && (
+          <div style={{ display: 'flex', gap: 6, marginTop: 14, flexWrap: 'wrap' }}>
+            <Pill label="All" count={verticals.reduce((n, v) => n + v.contacts, 0)}
+              active={vertical === 'all'} onClick={() => setVertical('all')} />
+            {verticals.map((v) => (
+              <Pill key={v.vertical} label={v.vertical} count={v.contacts} sub={`${v.companies} co`}
+                active={vertical === v.vertical} onClick={() => setVertical(v.vertical)}
+                tone={verticalStyle(v.vertical)} />
+            ))}
+          </div>
+        )}
 
         {stats && (
           <div style={{ display: 'flex', gap: 10, marginTop: 16, flexWrap: 'wrap' }}>
@@ -295,12 +328,14 @@ export default function OutreachDesk() {
                 ? 'No matches. Try a different search or clear the filters.'
                 : view === 'promoted'
                   ? 'Nothing promoted yet. Mark a contact Green, then promote it into the pipeline.'
-                  : 'No contacts yet. Drop your contact sheet above to get started.'} />
+                  : vertical !== 'all'
+                    ? `Nothing in ${vertical} yet.`
+                    : 'No contacts yet. Drop your contact sheet above to get started.'} />
             ) : grouped ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {groups.map((g) => (
                   <CompanyGroup
-                    key={g.company} g={g} narrow={narrow}
+                    key={g.company} g={g} narrow={narrow} showVertical={vertical === 'all'}
                     open={isOpen(g.company)} onToggle={() => toggle(g.company)}
                     onContact={setSelected} onStatus={changeStatus} onDelete={removeContact}
                   />
@@ -329,8 +364,8 @@ export default function OutreachDesk() {
 }
 
 // ── company group ─────────────────────────────────────────────────────
-function CompanyGroup({ g, narrow, open, onToggle, onContact, onStatus, onDelete }: {
-  g: Group; narrow: boolean; open: boolean; onToggle: () => void;
+function CompanyGroup({ g, narrow, open, showVertical, onToggle, onContact, onStatus, onDelete }: {
+  g: Group; narrow: boolean; open: boolean; showVertical: boolean; onToggle: () => void;
   onContact: (c: OutreachContact) => void;
   onStatus: (c: OutreachContact, s: string) => void;
   onDelete: (c: OutreachContact) => void;
@@ -343,7 +378,10 @@ function CompanyGroup({ g, narrow, open, onToggle, onContact, onStatus, onDelete
           {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
         </span>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 600, fontSize: 14.5 }}>{g.company}</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontWeight: 600, fontSize: 14.5 }}>{g.company}</span>
+            {showVertical && g.vertical && <Chip text={g.vertical} style={verticalStyle(g.vertical)} />}
+          </div>
           <div style={{ fontSize: 12, color: C.sub, marginTop: 2 }}>
             {g.contacts.length} contact{g.contacts.length > 1 ? 's' : ''}
             {g.signers > 0 && ` · ${g.signers} signer${g.signers > 1 ? 's' : ''}`}
@@ -405,6 +443,27 @@ function ContactRow({ c, narrow, style, showCompany, onClick, onStatus, onDelete
 }
 
 // ── shared bits ───────────────────────────────────────────────────────
+function Pill({ label, count, sub, active, onClick, tone }: {
+  label: string; count: number; sub?: string; active: boolean;
+  onClick: () => void; tone?: { bg: string; fg: string };
+}) {
+  return (
+    <button onClick={onClick}
+      style={{
+        display: 'flex', alignItems: 'baseline', gap: 6,
+        background: active ? C.teal : (tone?.bg ?? C.card),
+        color: active ? '#fff' : (tone?.fg ?? C.text2),
+        border: `1px solid ${active ? C.teal : C.border}`,
+        borderRadius: 999, padding: '6px 13px', fontSize: 13, fontWeight: 600,
+        cursor: 'pointer', transition: 'all .12s',
+      }}>
+      {label}
+      <span style={{ fontSize: 12, opacity: active ? 0.85 : 0.6 }}>{count}</span>
+      {sub && <span style={{ fontSize: 10.5, opacity: active ? 0.7 : 0.5 }}>· {sub}</span>}
+    </button>
+  );
+}
+
 function Stat({ label, value, accent }: { label: string; value: number; accent?: string }) {
   return (
     <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 16px', minWidth: 88 }}>
@@ -492,7 +551,7 @@ function EditableField({ label, value, placeholder, onSave, render }: {
 function ContactDrawer({ c, onClose, onStatus, onSaveField, onPromote, promoting, onDelete }: {
   c: OutreachContact; onClose: () => void;
   onStatus: (c: OutreachContact, s: string) => void;
-  onSaveField: (c: OutreachContact, patch: Partial<Pick<OutreachContact, 'phone' | 'email' | 'linkedin' | 'layer' | 'title'>>) => Promise<void>;
+  onSaveField: (c: OutreachContact, patch: Partial<Pick<OutreachContact, 'phone' | 'email' | 'linkedin' | 'layer' | 'title' | 'vertical'>>) => Promise<void>;
   onPromote: (c: OutreachContact) => void;
   promoting: boolean;
   onDelete: (c: OutreachContact) => void;
@@ -526,6 +585,24 @@ function ContactDrawer({ c, onClose, onStatus, onSaveField, onPromote, promoting
           onSave={(v) => onSaveField(c, { layer: v })} render={(v) => <Chip text={v || '—'} style={layerStyle(v)} />} />
 
         <Field label="Company">{c.company}</Field>
+
+        {/* Vertical is company-level in practice — changing it here changes this
+            contact only, so re-import or edit siblings if a company moves. */}
+        <Field label="Vertical">
+          <select
+            value={c.vertical || ''}
+            onChange={(e) => onSaveField(c, { vertical: e.target.value })}
+            style={{
+              background: verticalStyle(c.vertical).bg, color: verticalStyle(c.vertical).fg,
+              border: `1px solid ${C.border}`, borderRadius: 999, padding: '4px 10px',
+              fontSize: 12, fontWeight: 600, cursor: 'pointer', outline: 'none',
+            }}>
+            <option value="" style={{ background: C.card, color: C.text }}>— untagged —</option>
+            {(VERTICALS as readonly string[]).concat(
+              c.vertical && !(VERTICALS as readonly string[]).includes(c.vertical) ? [c.vertical] : []
+            ).map((v) => <option key={v} value={v} style={{ background: C.card, color: C.text }}>{v}</option>)}
+          </select>
+        </Field>
         {c.city && <Field label="City">{c.city}</Field>}
 
         <Field label="Email">

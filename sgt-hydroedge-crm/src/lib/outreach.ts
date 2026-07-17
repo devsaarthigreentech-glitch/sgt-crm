@@ -30,6 +30,7 @@ export type OutreachContact = {
   linkedin: string;
   city: string;
   message_angle: string;
+  vertical: string;
   status: string;
   mail_status: string;
   last_touch_at: string | null;
@@ -65,6 +66,7 @@ export type IncomingRow = {
   linkedin?: string;
   city?: string;
   messageAngle?: string;
+  vertical?: string;
   status?: string;
 };
 
@@ -76,6 +78,11 @@ export type ImportResult = {
 };
 
 // The statuses used across the module (edit here to change everywhere)
+// Known verticals. Free text on the wire, so an unexpected one still imports.
+export const VERTICALS = ['DG', 'Mining', 'Marine', 'Vehicles', 'Small DG'] as const;
+
+export type VerticalStat = { vertical: string; contacts: number; companies: number };
+
 export const OUTREACH_STATUSES = [
   'Not contacted',
   'Contacted',
@@ -107,6 +114,7 @@ const FIELD_ALIASES: Array<[keyof IncomingRow, string[]]> = [
   ['linkedin', ['linkedin', 'linkedinurl', 'li', 'profile', 'linkedinprofile']],
   ['city', ['city', 'location', 'base', 'town']],
   ['messageAngle', ['messageangle', 'angle', 'pitch', 'notes', 'hook', 'approach']],
+  ['vertical', ['vertical', 'segment', 'business', 'division', 'pipeline']],
   ['status', ['status', 'stage', 'outreachstatus', 'state']],
 ];
 
@@ -195,12 +203,14 @@ export async function fetchContacts(params: {
   company?: string;
   status?: string;
   search?: string;
+  vertical?: string;
   promoted?: 'active' | 'promoted' | 'all';
-} = {}): Promise<{ contacts: OutreachContact[]; stats: OutreachStats }> {
+} = {}): Promise<{ contacts: OutreachContact[]; stats: OutreachStats; verticals: VerticalStat[] }> {
   const qs = new URLSearchParams();
   if (params.company && params.company !== 'all') qs.set('company', params.company);
   if (params.status && params.status !== 'all') qs.set('status', params.status);
   if (params.search) qs.set('search', params.search);
+  if (params.vertical && params.vertical !== 'all') qs.set('vertical', params.vertical);
   if (params.promoted) qs.set('promoted', params.promoted);
   const q = qs.toString();
   const res = await authFetch(`${BASE}/contacts${q ? `?${q}` : ''}`);
@@ -226,7 +236,7 @@ export async function deleteContact(id: number): Promise<void> {
 
 export async function patchContact(
   id: number,
-  patch: Partial<Pick<OutreachContact, 'status' | 'mail_status' | 'phone' | 'email' | 'linkedin' | 'layer' | 'title'>>
+  patch: Partial<Pick<OutreachContact, 'status' | 'mail_status' | 'phone' | 'email' | 'linkedin' | 'layer' | 'title' | 'vertical'>>
 ): Promise<OutreachContact> {
   const res = await authFetch(`${BASE}/contacts/${id}`, {
     method: 'PATCH',
