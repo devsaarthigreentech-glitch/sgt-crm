@@ -7,6 +7,7 @@ import type { FastifyInstance } from 'fastify';
 import { requireAuth } from '../auth/guard';
 import * as svc from '../services/outreach';
 import * as companies from '../services/companies';
+import * as emails from '../services/emailEvents';
 
 function currentUser(req: any): string | null {
   return req?.user?.name ?? req?.user?.email ?? null;
@@ -20,7 +21,7 @@ export async function outreachRoutes(app: FastifyInstance) {
   app.get('/outreach/contacts', { preHandler: [requireAuth] }, async (req) => {
     const q = req.query as Record<string, string>;
     const [contacts, stats, verticals] = await Promise.all([
-      svc.listContacts({ company: q.company, status: q.status, search: q.search, vertical: q.vertical, promoted: q.promoted }),
+      svc.listContacts({ company: q.company, status: q.status, search: q.search, vertical: q.vertical, promoted: q.promoted, followUp: q.followUp }),
       svc.contactStats(q.vertical),
       svc.verticalStats(),
     ]);
@@ -58,6 +59,12 @@ export async function outreachRoutes(app: FastifyInstance) {
     const ok = await svc.restoreContact(Number(id), currentUser(req));
     if (!ok) return reply.code(404).send({ error: 'not found' });
     return { data: { id: Number(id), restored: true } };
+  });
+
+  // GET /api/v1/outreach/contacts/:id/activity → email events for this contact
+  app.get('/outreach/contacts/:id/activity', { preHandler: [requireAuth] }, async (req) => {
+    const { id } = req.params as { id: string };
+    return { events: await emails.eventsForContact(Number(id)) };
   });
 
   // ---- Company intel -------------------------------------------------
@@ -104,5 +111,32 @@ export async function outreachRoutes(app: FastifyInstance) {
       return reply.code(code).send({ error: result.message });
     }
     return reply.code(201).send({ data: result });
+  });
+
+  // ---- Email capture (n8n → here) -----------------------------------
+  // NOT behind requireAuth: n8n has no user JWT. Guarded instead by a shared
+  // secret header. The secret lives in OUTREACH_WEBHOOK_SECRET; if it's unset
+  // the endpoint refuses every call (fail closed, never open).
+  const webhookSecret = process.env.OUTREACH_WEBHOOK_SECRET || '';
+
+  app.post('/outreach/email-event', async (req, reply) => {
+    const provided = (req.headers['x-webhook-secret'] as string) || '';
+    if (!webhookSecret || provided !== webhookSecret) {
+      return reply.code(401).send({ error: 'unauthorised' });
+    }
+    const body = (req.body ?? {}) as emails.EmailEventInput;
+    if (!body.messageId) return reply.code(400).send({ error: 'messageId required' });
+    try {
+      const result = await emails.ingestEmailEvent(body);
+      return reply.code(200).send({ data: result });
+    } catch (e: any) {
+      req.log?.error?.(e);
+      return reply.code(500).send({ error: e?.message || 'ingest failed' });
+    }
+  });
+
+  // Unmatched review list (this one IS behind auth — it's for the desk).
+  app.get('/outreach/email-events/unmatched', { preHandler: [requireAuth] }, async () => {
+    return { events: await emails.unmatchedEvents() };
   });
 }

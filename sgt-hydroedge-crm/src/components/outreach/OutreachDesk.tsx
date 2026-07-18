@@ -9,7 +9,7 @@ export const MODULE_LABEL = 'Outreach';
 // =====================================================================
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronRight, ChevronDown, Trash2, Info, Plus, X } from 'lucide-react';
+import { ChevronRight, ChevronDown, Trash2, Info, Plus, X, Clock, Mail, MailOpen } from 'lucide-react';
 import {
   fetchContacts,
   importContacts,
@@ -22,6 +22,7 @@ import {
   parseCompaniesFile,
   ensureCompany,
   patchCompany,
+  fetchContactActivity,
   OUTREACH_STATUSES,
   VERTICALS,
   type OutreachContact,
@@ -29,6 +30,7 @@ import {
   type VerticalStat,
   type Company,
   type Fact,
+  type EmailEvent,
 } from '../../lib/outreach';
 
 // ── SGT paper/teal palette (matches App.tsx / Sidebar.tsx) ───────────
@@ -111,6 +113,7 @@ export default function OutreachDesk() {
   const [status, setStatus] = useState('all');
   const [view, setView] = useState<'active' | 'promoted'>('active');
   const [vertical, setVertical] = useState('all');
+  const [followUp, setFollowUp] = useState(false);
   const [grouped, setGrouped] = useState(true);
 
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -126,7 +129,7 @@ export default function OutreachDesk() {
   const load = useCallback(async () => {
     setLoading(true); setErr(null);
     try {
-      const r = await fetchContacts({ status, search, vertical, promoted: view });
+      const r = await fetchContacts({ status, search, vertical, promoted: view, followUp: followUp ? 'due' : undefined });
       setContacts(r.contacts);
       setStats(r.stats);
       setVerticals(r.verticals ?? []);
@@ -134,7 +137,7 @@ export default function OutreachDesk() {
     } catch (e: any) {
       setErr(e?.message || 'Failed to load contacts');
     } finally { setLoading(false); }
-  }, [status, search, vertical, view]);
+  }, [status, search, vertical, view, followUp]);
 
   useEffect(() => { const t = setTimeout(load, 200); return () => clearTimeout(t); }, [load]);
 
@@ -216,15 +219,15 @@ export default function OutreachDesk() {
     patchLocal({ ...c, status: next });                     // optimistic
     try {
       patchLocal(await patchContact(c.id, { status: next }));
-      const r = await fetchContacts({ status, search, vertical, promoted: view });
+      const r = await fetchContacts({ status, search, vertical, promoted: view, followUp: followUp ? 'due' : undefined });
       setStats(r.stats);
       setVerticals(r.verticals ?? []);
     } catch { load(); }
-  }, [status, search, vertical, view, load]);
+  }, [status, search, vertical, view, followUp, load]);
 
   const saveField = useCallback(async (
     c: OutreachContact,
-    patch: Partial<Pick<OutreachContact, 'phone' | 'email' | 'linkedin' | 'layer' | 'title' | 'vertical'>>,
+    patch: Partial<Pick<OutreachContact, 'phone' | 'email' | 'linkedin' | 'layer' | 'title' | 'vertical' | 'notes'>>,
   ) => { patchLocal(await patchContact(c.id, patch)); }, []);
 
   const removeContact = useCallback(async (c: OutreachContact) => {
@@ -300,6 +303,8 @@ export default function OutreachDesk() {
             <Stat label="Signers" value={stats.signers} accent={C.red} />
             <Stat label="Contacted" value={stats.contacted} accent={C.amber} />
             <Stat label="Green" value={stats.green} accent={C.green} />
+            <Stat label="Follow-up due" value={stats.follow_up_due} accent={C.amber}
+              active={followUp} onClick={() => setFollowUp((v) => !v)} />
             <Stat label="Do not contact" value={stats.dnc} accent={C.red} />
             <Stat label="Promoted" value={stats.promoted} accent={C.teal} />
           </div>
@@ -361,7 +366,9 @@ export default function OutreachDesk() {
           {loading ? <Empty text="Loading…" />
             : err ? <Empty text={err} tone="err" />
             : contacts.length === 0 ? (
-              <Empty text={filtering
+              <Empty text={followUp
+                ? 'Nothing needs a follow-up right now. Everyone contacted has either replied or was touched recently.'
+                : filtering
                 ? 'No matches. Try a different search or clear the filters.'
                 : view === 'promoted'
                   ? 'Nothing promoted yet. Mark a contact Green, then promote it into the pipeline.'
@@ -486,6 +493,11 @@ function ContactRow({ c, narrow, style, showCompany, onClick, onStatus, onDelete
       </div>
       <Chip text={c.layer || '—'} style={layerStyle(c.layer)} />
       {!narrow && <span style={{ color: C.sub, fontSize: 12.5, width: 96, flexShrink: 0 }}>{c.city || '—'}</span>}
+      {c.follow_up_due && !c.promoted_lead_id && (
+        <span title="Contacted, no reply yet — follow up" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: C.amber, flexShrink: 0 }}>
+          <Clock size={13} />
+        </span>
+      )}
       {c.promoted_lead_id
         ? <Chip text={`→ ${c.promoted_display_id ?? 'lead'}`} style={{ bg: C.tealSoft, fg: C.teal }} />
         : <StatusPicker c={c} onStatus={onStatus} />}
@@ -519,11 +531,13 @@ function Pill({ label, count, sub, active, onClick, tone }: {
   );
 }
 
-function Stat({ label, value, accent }: { label: string; value: number; accent?: string }) {
+function Stat({ label, value, accent, active, onClick }: { label: string; value: number; accent?: string; active?: boolean; onClick?: () => void }) {
   return (
-    <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 16px', minWidth: 88 }}>
-      <div style={{ fontSize: 22, fontWeight: 700, color: accent || C.text }}>{value}</div>
-      <div style={{ fontSize: 10.5, color: C.sub, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>{label}</div>
+    <div onClick={onClick}
+      style={{ background: active ? C.teal : C.card, border: `1px solid ${active ? C.teal : C.border}`,
+        borderRadius: 8, padding: '10px 16px', minWidth: 88, cursor: onClick ? 'pointer' : 'default' }}>
+      <div style={{ fontSize: 22, fontWeight: 700, color: active ? '#fff' : (accent || C.text) }}>{value}</div>
+      <div style={{ fontSize: 10.5, color: active ? 'rgba(255,255,255,0.85)' : C.sub, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>{label}</div>
     </div>
   );
 }
@@ -606,7 +620,7 @@ function EditableField({ label, value, placeholder, onSave, render }: {
 function ContactDrawer({ c, onClose, onStatus, onSaveField, onPromote, promoting, onDelete }: {
   c: OutreachContact; onClose: () => void;
   onStatus: (c: OutreachContact, s: string) => void;
-  onSaveField: (c: OutreachContact, patch: Partial<Pick<OutreachContact, 'phone' | 'email' | 'linkedin' | 'layer' | 'title' | 'vertical'>>) => Promise<void>;
+  onSaveField: (c: OutreachContact, patch: Partial<Pick<OutreachContact, 'phone' | 'email' | 'linkedin' | 'layer' | 'title' | 'vertical' | 'notes'>>) => Promise<void>;
   onPromote: (c: OutreachContact) => void;
   promoting: boolean;
   onDelete: (c: OutreachContact) => void;
@@ -682,6 +696,12 @@ function ContactDrawer({ c, onClose, onStatus, onSaveField, onPromote, promoting
             <div style={{ background: C.tone, border: `1px solid ${C.border}`, borderRadius: 8, padding: 12 }}>{c.message_angle}</div>
           </Field>
         )}
+
+        {/* Notes: free text the rep owns. Emails never write here — they show
+            in the read-only activity list below, so nothing gets clobbered. */}
+        <NotesBox c={c} onSave={(v) => onSaveField(c, { notes: v })} />
+
+        <ContactActivity contactId={c.id} />
 
         <div style={{ marginTop: 18, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
           {mailto && !isPromoted && (
@@ -902,4 +922,93 @@ function IntelBlock({ label, value, placeholder, tone, onSave }: {
       )}
     </div>
   );
+}
+
+// ── notes box (free text, rep-owned) ─────────────────────────────────
+function NotesBox({ c, onSave }: { c: OutreachContact; onSave: (v: string) => Promise<void> }) {
+  const [draft, setDraft] = useState(c.notes || '');
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  useEffect(() => { setDraft(c.notes || ''); setDirty(false); }, [c.id, c.notes]);
+
+  const save = async () => {
+    if (!dirty) return;
+    setSaving(true);
+    try { await onSave(draft.trim()); setDirty(false); } finally { setSaving(false); }
+  };
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 4 }}>
+        <div style={{ fontSize: 10.5, color: C.sub, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700 }}>Notes</div>
+        {c.notes_updated_at && !dirty && (
+          <div style={{ fontSize: 11, color: C.faint }}>edited {fmtDate(c.notes_updated_at)}</div>
+        )}
+      </div>
+      <textarea
+        value={draft}
+        onChange={(e) => { setDraft(e.target.value); setDirty(true); }}
+        onBlur={save}
+        placeholder="Calls, WhatsApps, what happened, what's next…"
+        rows={4}
+        style={{ width: '100%', boxSizing: 'border-box', background: C.card, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: '9px 11px', fontSize: 13.5, lineHeight: 1.5, outline: 'none', resize: 'vertical' }}
+      />
+      {dirty && (
+        <div style={{ display: 'flex', gap: 8, marginTop: 6, alignItems: 'center' }}>
+          <button onClick={save} disabled={saving}
+            style={{ background: C.teal, color: '#fff', border: 'none', borderRadius: 6, padding: '5px 12px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}>
+            {saving ? 'Saving…' : 'Save note'}
+          </button>
+          <span style={{ fontSize: 11.5, color: C.faint }}>saves when you click away, too</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── email activity (auto, read-only) ─────────────────────────────────
+function ContactActivity({ contactId }: { contactId: number }) {
+  const [events, setEvents] = useState<EmailEvent[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    fetchContactActivity(contactId).then((e) => { if (live) setEvents(e); }).catch(() => { if (live) setEvents([]); });
+    return () => { live = false; };
+  }, [contactId]);
+
+  if (events === null) return null;             // loading — say nothing
+  if (events.length === 0) return null;         // no emails yet — hide entirely
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <div style={{ fontSize: 10.5, color: C.sub, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700, marginBottom: 8 }}>Email activity</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {events.map((e) => {
+          const out = e.direction === 'outbound';
+          return (
+            <div key={e.id} style={{ display: 'flex', gap: 9, alignItems: 'flex-start' }}>
+              <span style={{ color: out ? C.teal : C.blue, marginTop: 1, flexShrink: 0 }}>
+                {out ? <Mail size={14} /> : <MailOpen size={14} />}
+              </span>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontSize: 13, color: C.text, lineHeight: 1.4 }}>
+                  {e.subject || '(no subject)'}
+                </div>
+                <div style={{ fontSize: 11.5, color: C.sub, marginTop: 1 }}>
+                  {out ? 'Sent' : 'Reply'} · {fmtDate(e.occurred_at || e.created_at)}
+                  {e.status_moved && <span style={{ color: C.teal }}> · → {e.status_moved}</span>}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function fmtDate(iso: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
 }

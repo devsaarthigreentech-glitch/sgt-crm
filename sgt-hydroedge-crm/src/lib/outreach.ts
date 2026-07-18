@@ -33,6 +33,9 @@ export type OutreachContact = {
   vertical: string;
   status: string;
   mail_status: string;
+  notes: string;
+  notes_updated_at: string | null;
+  follow_up_due: boolean;
   last_touch_at: string | null;
   promoted_lead_id: string | null;
   promoted_display_id: string | null;
@@ -52,6 +55,7 @@ export type OutreachStats = {
   green: number;
   dnc: number;
   promoted: number;
+  follow_up_due: number;
 };
 
 export type IncomingRow = {
@@ -205,6 +209,7 @@ export async function fetchContacts(params: {
   search?: string;
   vertical?: string;
   promoted?: 'active' | 'promoted' | 'all';
+  followUp?: 'due';
 } = {}): Promise<{ contacts: OutreachContact[]; stats: OutreachStats; verticals: VerticalStat[] }> {
   const qs = new URLSearchParams();
   if (params.company && params.company !== 'all') qs.set('company', params.company);
@@ -212,6 +217,7 @@ export async function fetchContacts(params: {
   if (params.search) qs.set('search', params.search);
   if (params.vertical && params.vertical !== 'all') qs.set('vertical', params.vertical);
   if (params.promoted) qs.set('promoted', params.promoted);
+  if (params.followUp) qs.set('followUp', params.followUp);
   const q = qs.toString();
   const res = await authFetch(`${BASE}/contacts${q ? `?${q}` : ''}`);
   return json(res);
@@ -236,7 +242,7 @@ export async function deleteContact(id: number): Promise<void> {
 
 export async function patchContact(
   id: number,
-  patch: Partial<Pick<OutreachContact, 'status' | 'mail_status' | 'phone' | 'email' | 'linkedin' | 'layer' | 'title' | 'vertical'>>
+  patch: Partial<Pick<OutreachContact, 'status' | 'mail_status' | 'phone' | 'email' | 'linkedin' | 'layer' | 'title' | 'vertical' | 'notes'>>
 ): Promise<OutreachContact> {
   const res = await authFetch(`${BASE}/contacts/${id}`, {
     method: 'PATCH',
@@ -404,4 +410,22 @@ export async function patchCompany(id: number, patch: Partial<Company>): Promise
     body: JSON.stringify(patch),
   });
   return (await json<{ company: Company }>(res)).company;
+}
+
+// Per-contact email activity (read-only auto-list under the notes box).
+export type EmailEvent = {
+  id: number;
+  direction: 'outbound' | 'inbound' | string;
+  address: string;
+  from_addr: string;
+  subject: string;
+  occurred_at: string | null;
+  thread_id: string | null;
+  status_moved: string;
+  created_at: string;
+};
+
+export async function fetchContactActivity(id: number): Promise<EmailEvent[]> {
+  const res = await authFetch(`${API}/outreach/contacts/${id}/activity`);
+  return (await json<{ events: EmailEvent[] }>(res)).events;
 }

@@ -27,6 +27,10 @@ export type OutreachContact = {
   vertical: string;
   status: string;
   mail_status: string;
+  notes: string;
+  notes_updated_at: string | null;
+  last_direction: string | null;
+  follow_up_due: boolean;
   last_touch_at: string | null;
   promoted_lead_id: string | null;
   promoted_display_id: string | null;
@@ -56,6 +60,11 @@ export type IncomingRow = {
 };
 
 const s = (v: unknown): string => (v == null ? '' : String(v).trim());
+
+// A contact is "follow-up due" when it's been sitting at Contacted with no
+// reply for longer than this. Derived, so it clears itself the moment they
+// reply (status → Replied) or you mark them Green. Tune via env.
+const FOLLOW_UP_DAYS = parseInt(process.env.OUTREACH_FOLLOWUP_DAYS || '4', 10);
 
 // Canonical statuses. Keep in sync with OUTREACH_STATUSES in the frontend lib.
 export const CANONICAL_STATUSES = [
@@ -121,6 +130,7 @@ export async function listContacts(filters: {
   search?: string;
   vertical?: string;   // 'all' (default) | 'DG' | 'Mining' | …
   promoted?: string;   // 'active' (default) | 'promoted' | 'all'
+  followUp?: string;   // 'due' → only contacts needing a follow-up
 } = {}): Promise<OutreachContact[]> {
   const where: string[] = ['deleted_at is null'];
   const params: any[] = [];
@@ -149,8 +159,14 @@ export async function listContacts(filters: {
     );
   }
 
+  // Derived "follow-up due": Contacted, last touched > N days ago, no reply.
+  const dueExpr = `(status = 'Contacted' and last_touch_at is not null
+                    and last_touch_at < now() - make_interval(days => ${FOLLOW_UP_DAYS}))`;
+
+  if (filters.followUp === 'due') where.push(dueExpr);
+
   const sql = `
-    select *
+    select *, ${dueExpr} as follow_up_due
     from outreach_service.contacts
     where ${where.join(' and ')}
     order by company asc, name asc
@@ -249,7 +265,7 @@ export async function importContacts(
 // ---------------------------------------------------------------------
 // PATCH (inline edits). Whitelisted fields only.
 // ---------------------------------------------------------------------
-const PATCHABLE = new Set(['status', 'mail_status', 'phone', 'email', 'linkedin', 'layer', 'title', 'vertical']);
+const PATCHABLE = new Set(['status', 'mail_status', 'phone', 'email', 'linkedin', 'layer', 'title', 'vertical', 'notes']);
 
 export async function updateContact(
   id: number, patch: Record<string, unknown>, user: string | null
@@ -267,6 +283,10 @@ export async function updateContact(
     return rows[0] ?? null;
   }
 
+  if ('notes' in patch) {
+    params.push(user); sets.push(`notes_updated_by = $${params.length}`);
+    sets.push('notes_updated_at = now()');
+  }
   params.push(user);
   sets.push(`updated_by = $${params.length}`);
   sets.push(`updated_at = now()`);
@@ -285,6 +305,7 @@ export async function updateContact(
 export async function contactStats(vertical?: string): Promise<{
   total: number; companies: number; signers: number;
   contacted: number; green: number; dnc: number; promoted: number;
+  follow_up_due: number;
 }> {
   const vFilter = vertical && vertical !== 'all' ? 'and vertical = $2' : '';
   const sql = `
@@ -300,7 +321,11 @@ export async function contactStats(vertical?: string): Promise<{
                          and promoted_lead_id is null)::int                    as green,
       count(*) filter (where status = 'Do not contact'
                          and promoted_lead_id is null)::int                    as dnc,
-      count(*) filter (where promoted_lead_id is not null)::int                as promoted
+      count(*) filter (where promoted_lead_id is not null)::int                as promoted,
+      count(*) filter (where status = 'Contacted'
+                         and last_touch_at is not null
+                         and last_touch_at < now() - make_interval(days => ${FOLLOW_UP_DAYS})
+                         and promoted_lead_id is null)::int                     as follow_up_due
     from outreach_service.contacts
     where deleted_at is null ${vFilter}
   `;
