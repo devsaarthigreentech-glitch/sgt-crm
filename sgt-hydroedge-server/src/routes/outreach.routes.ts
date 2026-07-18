@@ -6,6 +6,7 @@
 import type { FastifyInstance } from 'fastify';
 import { requireAuth } from '../auth/guard';
 import * as svc from '../services/outreach';
+import * as companies from '../services/companies';
 
 function currentUser(req: any): string | null {
   return req?.user?.name ?? req?.user?.email ?? null;
@@ -57,6 +58,41 @@ export async function outreachRoutes(app: FastifyInstance) {
     const ok = await svc.restoreContact(Number(id), currentUser(req));
     if (!ok) return reply.code(404).send({ error: 'not found' });
     return { data: { id: Number(id), restored: true } };
+  });
+
+  // ---- Company intel -------------------------------------------------
+  // GET /api/v1/outreach/companies?vertical=  → { companies: { name_key: {...} } }
+  // The desk fetches this once and looks intel up per group, no N+1.
+  app.get('/outreach/companies', { preHandler: [requireAuth] }, async (req) => {
+    const q = req.query as Record<string, string>;
+    return { companies: await companies.companyMap(q.vertical) };
+  });
+
+  // GET /api/v1/outreach/companies/:name  → one profile (or null)
+  app.get('/outreach/companies/:name', { preHandler: [requireAuth] }, async (req) => {
+    const { name } = req.params as { name: string };
+    return { company: await companies.getCompany(decodeURIComponent(name)) };
+  });
+
+  // POST /api/v1/outreach/companies/import  { rows: IncomingCompany[] }
+  app.post('/outreach/companies/import', { preHandler: [requireAuth] }, async (req) => {
+    const body = (req.body ?? {}) as { rows?: companies.IncomingCompany[] };
+    return companies.importCompanies(body.rows ?? [], currentUser(req));
+  });
+
+  // POST /api/v1/outreach/companies/ensure  { name, vertical }  → empty shell for "add intel"
+  app.post('/outreach/companies/ensure', { preHandler: [requireAuth] }, async (req, reply) => {
+    const b = (req.body ?? {}) as { name?: string; vertical?: string };
+    if (!b.name) return reply.code(400).send({ error: 'name required' });
+    return { company: await companies.ensureCompany(b.name, b.vertical ?? '', currentUser(req)) };
+  });
+
+  // PATCH /api/v1/outreach/companies/:id  { headline?, thesis?, entry_path?, …, facts? }
+  app.patch('/outreach/companies/:id', { preHandler: [requireAuth] }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const updated = await companies.updateCompany(Number(id), (req.body ?? {}) as Record<string, unknown>, currentUser(req));
+    if (!updated) return reply.code(404).send({ error: 'not found' });
+    return { company: updated };
   });
 
   // POST /api/v1/outreach/contacts/:id/promote → creates a lead (Green only)

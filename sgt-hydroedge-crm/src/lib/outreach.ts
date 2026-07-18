@@ -258,3 +258,150 @@ export async function promoteContact(
   }
   return res.json();
 }
+
+
+// =====================================================================
+// COMPANY INTEL
+// Separate grain from contacts: one row per company, joined by name.
+// =====================================================================
+export type Fact = { label: string; value: string };
+
+export type Company = {
+  id: number;
+  name: string;
+  name_key: string;
+  vertical: string;
+  headline: string;
+  thesis: string;
+  entry_path: string;
+  tier: string;
+  priority: string;
+  score: number | null;
+  website: string;
+  hq: string;
+  confidence: string;
+  source_url: string;
+  facts: Fact[];
+  created_by: string | null;
+  updated_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type IncomingCompany = {
+  company?: string; vertical?: string; headline?: string; thesis?: string;
+  entryPath?: string; tier?: string; priority?: string; score?: string | number;
+  website?: string; hq?: string; confidence?: string; sourceUrl?: string;
+  facts?: Fact[];
+};
+
+// Header aliases for the KNOWN structured columns. Anything not matched here
+// becomes a fact (label = the sheet's own column header). Per-vertical synonyms
+// live together so one parser handles both the Atlas and the Lead Engine sheet.
+const COMPANY_FIELD_ALIASES: [keyof IncomingCompany, string[]][] = [
+  ['company',    ['company', 'companyname', 'partner', 'account']],
+  ['vertical',   ['vertical', 'segment2', 'pipeline', 'division']],
+  ['headline',   ['headline', 'oneliner', 'snapshot', 'summary', 'keyoperationsassets', 'keyoperations', 'keyassets']],
+  ['thesis',     ['thesis', 'whythem', 'whygreenxfits', 'whyrelevanthook', 'whyrelevanthookoutreachopener', 'whyrelevant', 'hook']],
+  ['entryPath',  ['entrypath', 'wayin', 'entrypathnotes', 'nextstep', 'engagementstrategy', 'recommendedengagementstrategy']],
+  ['tier',       ['tier']],
+  ['priority',   ['priority', 'priorityabc']],
+  ['score',      ['score', 'score100', 'sgtscore', 'relevancyscore']],
+  ['website',    ['website', 'url', 'web']],
+  ['hq',         ['hq', 'headquarters', 'location', 'country']],
+  ['confidence', ['confidence']],
+  ['sourceUrl',  ['sourceurl', 'evidence', 'evidencesource', 'source']],
+];
+
+// Columns that are internal rubric noise — don't surface them as facts.
+const FACT_SKIP = new Set([
+  'namekey', 'owner', 'status', 'greenvisionfit',
+  'diesarelintensity25', 'dieselintensity25', 'paysfuelbill20', 'fleetdgscale15',
+  'esgregulatory15', 'geoserviceability15', 'commercialfit10',
+]);
+
+const normKey = (v: unknown) => String(v ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+export async function parseCompaniesFile(file: File): Promise<IncomingCompany[]> {
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: 'array' });
+
+  const all: IncomingCompany[] = [];
+
+  for (const sheetName of wb.SheetNames) {
+    const grid: any[][] = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, defval: '', blankrows: false });
+    if (!grid.length) continue;
+
+    // header row = the row where "company" appears
+    let headerIdx = -1;
+    for (let r = 0; r < Math.min(grid.length, 6); r++) {
+      if (grid[r].some((c) => normKey(c) === 'company')) { headerIdx = r; break; }
+    }
+    if (headerIdx < 0) continue;
+
+    const headers = grid[headerIdx];
+    // map each column index → structured field, or leave for facts
+    const colField: (keyof IncomingCompany | null)[] = [];
+    const colLabel: string[] = [];
+    const used = new Set<keyof IncomingCompany>();
+    for (let i = 0; i < headers.length; i++) {
+      const nk = normKey(headers[i]);
+      colLabel[i] = String(headers[i] ?? '').trim();
+      let matched: keyof IncomingCompany | null = null;
+      for (const [field, aliases] of COMPANY_FIELD_ALIASES) {
+        if (used.has(field)) continue;
+        if (aliases.includes(nk)) { matched = field; used.add(field); break; }
+      }
+      colField[i] = matched;
+    }
+
+    const rows: IncomingCompany[] = [];
+    for (let r = headerIdx + 1; r < grid.length; r++) {
+      const line = grid[r];
+      if (!line || line.every((c) => String(c ?? '').trim() === '')) continue;
+      const rec: IncomingCompany = {}; const facts: Fact[] = [];
+      for (let i = 0; i < headers.length; i++) {
+        const val = String(line[i] ?? '').trim();
+        if (!val) continue;
+        const f = colField[i];
+        if (f) (rec as any)[f] = val;
+        else if (!FACT_SKIP.has(normKey(colLabel[i])) && colLabel[i]) facts.push({ label: colLabel[i], value: val });
+      }
+      if (rec.company) { rec.facts = facts; rows.push(rec); }
+    }
+    if (rows.length) all.push(...rows);
+  }
+  return all;
+}
+
+const CO_BASE = `${API}/outreach/companies`;
+
+export async function fetchCompanyMap(vertical?: string): Promise<Record<string, Company>> {
+  const qs = vertical && vertical !== 'all' ? `?vertical=${encodeURIComponent(vertical)}` : '';
+  const res = await authFetch(`${CO_BASE}${qs}`);
+  return (await json<{ companies: Record<string, Company> }>(res)).companies;
+}
+
+export async function importCompanies(rows: IncomingCompany[]): Promise<{ upserted: number; skipped: number; total: number }> {
+  const res = await authFetch(`${CO_BASE}/import`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows }),
+  });
+  return json(res);
+}
+
+export async function ensureCompany(name: string, vertical: string): Promise<Company> {
+  const res = await authFetch(`${CO_BASE}/ensure`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, vertical }),
+  });
+  return (await json<{ company: Company }>(res)).company;
+}
+
+export async function patchCompany(id: number, patch: Partial<Company>): Promise<Company> {
+  const res = await authFetch(`${CO_BASE}/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  return (await json<{ company: Company }>(res)).company;
+}

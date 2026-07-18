@@ -9,7 +9,7 @@ export const MODULE_LABEL = 'Outreach';
 // =====================================================================
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronRight, ChevronDown, Trash2 } from 'lucide-react';
+import { ChevronRight, ChevronDown, Trash2, Info, Plus, X } from 'lucide-react';
 import {
   fetchContacts,
   importContacts,
@@ -17,11 +17,18 @@ import {
   patchContact,
   promoteContact,
   deleteContact as apiDeleteContact,
+  fetchCompanyMap,
+  importCompanies,
+  parseCompaniesFile,
+  ensureCompany,
+  patchCompany,
   OUTREACH_STATUSES,
   VERTICALS,
   type OutreachContact,
   type OutreachStats,
   type VerticalStat,
+  type Company,
+  type Fact,
 } from '../../lib/outreach';
 
 // ── SGT paper/teal palette (matches App.tsx / Sidebar.tsx) ───────────
@@ -112,6 +119,8 @@ export default function OutreachDesk() {
   const [promoting, setPromoting] = useState(false);
   const [banner, setBanner] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [selected, setSelected] = useState<OutreachContact | null>(null);
+  const [companyMap, setCompanyMap] = useState<Record<string, Company>>({});
+  const [openCompany, setOpenCompany] = useState<string | null>(null);   // company name whose panel is open
   const fileInput = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -121,6 +130,7 @@ export default function OutreachDesk() {
       setContacts(r.contacts);
       setStats(r.stats);
       setVerticals(r.verticals ?? []);
+      try { setCompanyMap(await fetchCompanyMap(vertical)); } catch { /* intel is optional */ }
     } catch (e: any) {
       setErr(e?.message || 'Failed to load contacts');
     } finally { setLoading(false); }
@@ -161,19 +171,29 @@ export default function OutreachDesk() {
     if (!files || !files.length) return;
     setImporting(true); setBanner(null);
     try {
-      let ins = 0, upd = 0, skip = 0, total = 0;
+      let ins = 0, upd = 0, skip = 0, total = 0, intel = 0;
       for (const file of Array.from(files)) {
-        const rows = await parseContactsFile(file);
-        if (!rows.length) {
-          setBanner({ kind: 'err', text: `No contact rows found in "${file.name}". Expected columns like Company, Name, Email…` });
+        // Company-intel sheets carry per-company profiles (no per-person email
+        // column); contact sheets are one row per person. Try intel first only
+        // when the sheet clearly looks like intel, else treat as contacts.
+        const contactRows = await parseContactsFile(file);
+        if (contactRows.length) {
+          const r = await importContacts(contactRows, file.name);
+          ins += r.inserted; upd += r.updated; skip += r.skipped; total += r.total;
           continue;
         }
-        const r = await importContacts(rows, file.name);
-        ins += r.inserted; upd += r.updated; skip += r.skipped; total += r.total;
+        const intelRows = await parseCompaniesFile(file);
+        if (intelRows.length) {
+          const r = await importCompanies(intelRows);
+          intel += r.upserted;
+          continue;
+        }
+        setBanner({ kind: 'err', text: `No rows recognised in "${file.name}". Contacts need Company + Name/Email; company intel needs Company + a profile column.` });
       }
-      if (total > 0) {
-        setBanner({ kind: 'ok', text: `Imported — ${ins} new, ${upd} updated${skip ? `, ${skip} skipped` : ''}.` });
-      }
+      const parts = [];
+      if (total > 0) parts.push(`${ins} new, ${upd} updated${skip ? `, ${skip} skipped` : ''}`);
+      if (intel > 0) parts.push(`${intel} company profile${intel > 1 ? 's' : ''}`);
+      if (parts.length) setBanner({ kind: 'ok', text: `Imported — ${parts.join(' · ')}.` });
       await load();
     } catch (e: any) {
       setBanner({ kind: 'err', text: e?.message || 'Import failed' });
@@ -218,6 +238,23 @@ export default function OutreachDesk() {
       setBanner({ kind: 'err', text: e?.message || 'Delete failed' });
     }
   }, [load]);
+
+  const openCompanyPanel = useCallback(async (name: string, vertical: string) => {
+    setOpenCompany(name);
+    // create an empty shell on first open, so "add intel" has something to edit
+    const key = name.toLowerCase().trim();
+    if (!companyMap[key]) {
+      try {
+        const shell = await ensureCompany(name, vertical);
+        setCompanyMap((m) => ({ ...m, [shell.name_key]: shell }));
+      } catch { /* leave unshelled; panel shows empty state */ }
+    }
+  }, [companyMap]);
+
+  const saveCompany = useCallback(async (id: number, patch: Partial<Company>) => {
+    const updated = await patchCompany(id, patch);
+    setCompanyMap((m) => ({ ...m, [updated.name_key]: updated }));
+  }, []);
 
   const promote = useCallback(async (c: OutreachContact) => {
     setPromoting(true); setBanner(null);
@@ -337,6 +374,9 @@ export default function OutreachDesk() {
                   <CompanyGroup
                     key={g.company} g={g} narrow={narrow} showVertical={vertical === 'all'}
                     open={isOpen(g.company)} onToggle={() => toggle(g.company)}
+                    hasIntel={!!companyMap[g.company.toLowerCase().trim()]?.headline
+                              || !!companyMap[g.company.toLowerCase().trim()]?.thesis}
+                    onOpenCompany={() => openCompanyPanel(g.company, g.vertical)}
                     onContact={setSelected} onStatus={changeStatus} onDelete={removeContact}
                   />
                 ))}
@@ -359,30 +399,45 @@ export default function OutreachDesk() {
           onSaveField={saveField} onPromote={promote} promoting={promoting} onDelete={removeContact}
         />
       )}
+
+      {openCompany && (
+        <CompanyPanel
+          name={openCompany}
+          company={companyMap[openCompany.toLowerCase().trim()] ?? null}
+          onClose={() => setOpenCompany(null)}
+          onSave={saveCompany}
+        />
+      )}
     </div>
   );
 }
 
 // ── company group ─────────────────────────────────────────────────────
-function CompanyGroup({ g, narrow, open, showVertical, onToggle, onContact, onStatus, onDelete }: {
-  g: Group; narrow: boolean; open: boolean; showVertical: boolean; onToggle: () => void;
+function CompanyGroup({ g, narrow, open, showVertical, hasIntel, onToggle, onOpenCompany, onContact, onStatus, onDelete }: {
+  g: Group; narrow: boolean; open: boolean; showVertical: boolean; hasIntel: boolean;
+  onToggle: () => void; onOpenCompany: () => void;
   onContact: (c: OutreachContact) => void;
   onStatus: (c: OutreachContact, s: string) => void;
   onDelete: (c: OutreachContact) => void;
 }) {
   return (
     <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, background: C.card, overflow: 'hidden' }}>
-      <div onClick={onToggle}
-        style={{ display: 'flex', alignItems: 'center', gap: 10, padding: narrow ? '11px 12px' : '12px 14px', cursor: 'pointer' }}>
-        <span style={{ color: C.sub, display: 'flex', flexShrink: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: narrow ? '11px 12px' : '12px 14px' }}>
+        <span onClick={onToggle} style={{ color: C.sub, display: 'flex', flexShrink: 0, cursor: 'pointer' }}>
           {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
         </span>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <span style={{ fontWeight: 600, fontSize: 14.5 }}>{g.company}</span>
+            {/* Name opens the intel panel; chevron/counts toggle expand. */}
+            <button onClick={onOpenCompany} title="Company intel"
+              style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', cursor: 'pointer',
+                fontWeight: 600, fontSize: 14.5, color: C.text, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              {g.company}
+              <Info size={13} style={{ color: hasIntel ? C.teal : C.faint, flexShrink: 0 }} />
+            </button>
             {showVertical && g.vertical && <Chip text={g.vertical} style={verticalStyle(g.vertical)} />}
           </div>
-          <div style={{ fontSize: 12, color: C.sub, marginTop: 2 }}>
+          <div onClick={onToggle} style={{ fontSize: 12, color: C.sub, marginTop: 2, cursor: 'pointer' }}>
             {g.contacts.length} contact{g.contacts.length > 1 ? 's' : ''}
             {g.signers > 0 && ` · ${g.signers} signer${g.signers > 1 ? 's' : ''}`}
             {g.green > 0 && <span style={{ color: C.green, fontWeight: 600 }}> · {g.green} green</span>}
@@ -669,5 +724,182 @@ function ContactDrawer({ c, onClose, onStatus, onSaveField, onPromote, promoting
 function Empty({ text, tone }: { text: string; tone?: 'err' }) {
   return (
     <div style={{ padding: 40, textAlign: 'center', color: tone === 'err' ? C.red : C.sub, background: C.card, border: `1px dashed ${C.border}`, borderRadius: 10, fontSize: 14 }}>{text}</div>
+  );
+}
+
+// ── company intel slide-over ─────────────────────────────────────────
+// Opens when you click a company NAME. Every block is optional — an empty
+// field simply doesn't render, so a bare company shows an "add intel" prompt
+// and a fully-researched one shows the whole profile. That's what keeps it
+// uncrowded: intel lives behind a click, and the panel collapses to whatever
+// actually exists.
+function CompanyPanel({ name, company, onClose, onSave }: {
+  name: string;
+  company: Company | null;
+  onClose: () => void;
+  onSave: (id: number, patch: Partial<Company>) => Promise<void>;
+}) {
+  const c = company;
+  const hasAny = !!c && (c.headline || c.thesis || c.entry_path || (c.facts?.length ?? 0) > 0);
+
+  const priorityChip = c && (c.tier || c.priority || c.score != null)
+    ? [c.tier, c.priority, c.score != null ? `${c.score}/100` : ''].filter(Boolean).join(' · ')
+    : '';
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(22,22,20,0.42)', display: 'flex', justifyContent: 'flex-end', zIndex: 1001 }}>
+      <div onClick={(e) => e.stopPropagation()}
+        style={{ width: 'min(440px, 100%)', height: '100%', background: C.pageBg, borderLeft: `1px solid ${C.border}`, padding: 22, overflowY: 'auto', boxShadow: '-8px 0 30px rgba(0,0,0,0.14)' }}>
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 19, fontWeight: 700, letterSpacing: '-0.02em' }}>{name}</div>
+            {c && (c.hq || c.website) && (
+              <div style={{ color: C.sub, fontSize: 13, marginTop: 2, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                {c.hq && <span>{c.hq}</span>}
+                {c.website && <a href={c.website} target="_blank" rel="noreferrer" style={{ color: C.teal, textDecoration: 'none' }}>
+                  {c.website.replace(/^https?:\/\/(www\.)?/, '')}
+                </a>}
+              </div>
+            )}
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: C.sub, cursor: 'pointer', display: 'flex' }}><X size={20} /></button>
+        </div>
+
+        {c && (c.vertical || priorityChip) && (
+          <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
+            {c.vertical && <Chip text={c.vertical} style={verticalStyle(c.vertical)} />}
+            {priorityChip && <Chip text={priorityChip} style={{ bg: C.redSoft, fg: C.red }} />}
+          </div>
+        )}
+
+        {!hasAny ? (
+          <div style={{ marginTop: 22, background: C.card, border: `1px dashed ${C.border}`, borderRadius: 10, padding: 20, textAlign: 'center' }}>
+            <Plus size={20} style={{ color: C.faint }} />
+            <div style={{ fontSize: 14, fontWeight: 600, marginTop: 6 }}>No intel yet</div>
+            <div style={{ fontSize: 12.5, color: C.sub, marginTop: 4, lineHeight: 1.5 }}>
+              Add a one-liner and a "why them" below, or drop a company-intel sheet on the desk to seed it in bulk.
+            </div>
+          </div>
+        ) : null}
+
+        {c && (
+          <div style={{ marginTop: 18, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <IntelField label="One-liner" value={c.headline} placeholder="What is this company, in a sentence?"
+              onSave={(v) => onSave(c.id, { headline: v })} />
+            <IntelBlock label="Why them" value={c.thesis} placeholder="The pre-call read — why we're talking to them"
+              tone={{ bg: C.greenSoft, fg: C.green }} onSave={(v) => onSave(c.id, { thesis: v })} />
+            <IntelField label="Way in" value={c.entry_path} placeholder="Opener + who to target"
+              onSave={(v) => onSave(c.id, { entry_path: v })} />
+
+            {(c.facts?.length ?? 0) > 0 && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontSize: 10.5, color: C.sub, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700, marginBottom: 8 }}>Facts</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '7px 14px', fontSize: 13 }}>
+                  {c.facts.map((f, i) => (
+                    <FactRow key={i} f={f} />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {(c.confidence || c.source_url) && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 16, paddingTop: 12, borderTop: `1px solid ${C.border}`, fontSize: 12, color: C.sub }}>
+                {c.confidence && <span>{c.confidence}</span>}
+                {c.source_url && <a href={c.source_url} target="_blank" rel="noreferrer" style={{ color: C.teal, textDecoration: 'none', wordBreak: 'break-all' }}>
+                  {c.source_url.replace(/^https?:\/\/(www\.)?/, '')}
+                </a>}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FactRow({ f }: { f: Fact }) {
+  return (
+    <>
+      <span style={{ color: C.sub }}>{f.label}</span>
+      <span style={{ color: C.text }}>{f.value}</span>
+    </>
+  );
+}
+
+// One-line editable field for the panel (click to edit, Enter/Escape).
+function IntelField({ label, value, placeholder, onSave }: {
+  label: string; value: string; placeholder: string; onSave: (v: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setDraft(value); }, [value]);
+  const commit = async () => {
+    if (draft.trim() === value.trim()) { setEditing(false); return; }
+    setSaving(true); try { await onSave(draft.trim()); setEditing(false); } finally { setSaving(false); }
+  };
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: 10.5, color: C.sub, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4, fontWeight: 700 }}>{label}</div>
+      {editing ? (
+        <div style={{ display: 'flex', gap: 6 }}>
+          <input autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={placeholder}
+            onKeyDown={(e) => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') { setDraft(value); setEditing(false); } }}
+            style={{ flex: 1, background: C.card, border: `1px solid ${C.border}`, color: C.text, borderRadius: 6, padding: '6px 9px', fontSize: 13.5, outline: 'none' }} />
+          <button onClick={commit} disabled={saving} style={{ background: C.teal, color: '#fff', border: 'none', borderRadius: 6, padding: '6px 11px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}>
+            {saving ? '…' : 'Save'}
+          </button>
+        </div>
+      ) : (
+        <div onClick={() => setEditing(true)} title="Click to edit"
+          style={{ cursor: 'text', fontSize: 14, lineHeight: 1.5, color: value ? C.text : C.faint, borderBottom: `1px dashed ${C.border}`, paddingBottom: 3 }}>
+          {value || placeholder}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Multi-line editable block (the "why them" thesis), tinted.
+function IntelBlock({ label, value, placeholder, tone, onSave }: {
+  label: string; value: string; placeholder: string; tone: { bg: string; fg: string }; onSave: (v: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setDraft(value); }, [value]);
+  const commit = async () => {
+    if (draft.trim() === value.trim()) { setEditing(false); return; }
+    setSaving(true); try { await onSave(draft.trim()); setEditing(false); } finally { setSaving(false); }
+  };
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: 10.5, color: C.sub, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4, fontWeight: 700 }}>{label}</div>
+      {editing ? (
+        <div>
+          <textarea autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={placeholder} rows={4}
+            style={{ width: '100%', boxSizing: 'border-box', background: C.card, border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: '8px 10px', fontSize: 13.5, lineHeight: 1.5, outline: 'none', resize: 'vertical' }} />
+          <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+            <button onClick={commit} disabled={saving} style={{ background: C.teal, color: '#fff', border: 'none', borderRadius: 6, padding: '6px 12px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}>
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+            <button onClick={() => { setDraft(value); setEditing(false); }} style={{ background: 'none', color: C.sub, border: `1px solid ${C.border}`, borderRadius: 6, padding: '6px 12px', fontSize: 12.5, cursor: 'pointer' }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : value ? (
+        <div onClick={() => setEditing(true)} title="Click to edit"
+          style={{ cursor: 'text', background: tone.bg, color: tone.fg, borderRadius: 8, padding: '10px 12px', fontSize: 13.5, lineHeight: 1.5 }}>
+          {value}
+        </div>
+      ) : (
+        <div onClick={() => setEditing(true)} title="Click to add"
+          style={{ cursor: 'text', color: C.faint, fontSize: 13.5, borderBottom: `1px dashed ${C.border}`, paddingBottom: 3 }}>
+          {placeholder}
+        </div>
+      )}
+    </div>
   );
 }
