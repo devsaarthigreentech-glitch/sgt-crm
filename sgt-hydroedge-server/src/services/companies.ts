@@ -16,11 +16,29 @@ const nameKey = (name: string) => name.toLowerCase().trim();
 
 export type Fact = { label: string; value: string };
 
+// Company types that sub-divide a vertical. Free text on the wire (so an
+// unexpected one still imports), but these are the values the UI offers.
+export const COMPANY_TYPES = ['Dealer', 'OEM / Direct', 'O&M'] as const;
+
+const TYPE_ALIASES: Record<string, string> = {
+  'dealer': 'Dealer', 'dealers': 'Dealer', 'channel partner': 'Dealer', 'partner': 'Dealer',
+  'oem': 'OEM / Direct', 'oem / direct': 'OEM / Direct', 'oem/direct': 'OEM / Direct',
+  'direct': 'OEM / Direct', 'master oem': 'OEM / Direct', 'manufacturer': 'OEM / Direct',
+  'o&m': 'O&M', 'oandm': 'O&M', 'o & m': 'O&M', 'fm': 'O&M', 'facility management': 'O&M',
+  'o&m / fm': 'O&M', 'operations': 'O&M',
+};
+export function normaliseType(raw: unknown): string {
+  const v = (raw == null ? '' : String(raw).trim());
+  if (!v) return '';
+  return TYPE_ALIASES[v.toLowerCase()] ?? v;
+}
+
 export type Company = {
   id: number;
   name: string;
   name_key: string;
   vertical: string;
+  company_type: string;
   headline: string;
   thesis: string;
   entry_path: string;
@@ -42,6 +60,7 @@ export type Company = {
 export type IncomingCompany = {
   company?: string;
   vertical?: string;
+  companyType?: string;
   headline?: string;
   thesis?: string;
   entryPath?: string;
@@ -101,11 +120,12 @@ export async function upsertCompany(
 
   const { rows } = await pool.query(
     `insert into outreach_service.companies
-       (name, name_key, vertical, headline, thesis, entry_path, tier, priority,
+       (name, name_key, vertical, company_type, headline, thesis, entry_path, tier, priority,
         score, website, hq, confidence, source_url, facts, created_by, updated_by)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$15)
+     values ($1,$2,$3,$16,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$15)
      on conflict (name_key) do update set
-       vertical   = case when excluded.vertical   <> '' then excluded.vertical   else outreach_service.companies.vertical   end,
+       vertical     = case when excluded.vertical     <> '' then excluded.vertical     else outreach_service.companies.vertical     end,
+       company_type = case when excluded.company_type <> '' then excluded.company_type else outreach_service.companies.company_type end,
        headline   = case when excluded.headline   <> '' then excluded.headline   else outreach_service.companies.headline   end,
        thesis     = case when excluded.thesis     <> '' then excluded.thesis     else outreach_service.companies.thesis     end,
        entry_path = case when excluded.entry_path <> '' then excluded.entry_path else outreach_service.companies.entry_path end,
@@ -125,7 +145,7 @@ export async function upsertCompany(
       name, key, s(incoming.vertical), s(incoming.headline), s(incoming.thesis),
       s(incoming.entryPath), s(incoming.tier), s(incoming.priority), toScore(incoming.score),
       s(incoming.website), s(incoming.hq), s(incoming.confidence), s(incoming.sourceUrl),
-      JSON.stringify(facts), user,
+      JSON.stringify(facts), user, normaliseType(incoming.companyType),
     ],
   );
   return rows[0] ?? null;
@@ -166,11 +186,12 @@ async function upsertCompanyTx(client: any, incoming: IncomingCompany, user: str
     : [];
   const { rows } = await client.query(
     `insert into outreach_service.companies
-       (name, name_key, vertical, headline, thesis, entry_path, tier, priority,
+       (name, name_key, vertical, company_type, headline, thesis, entry_path, tier, priority,
         score, website, hq, confidence, source_url, facts, created_by, updated_by)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$15)
+     values ($1,$2,$3,$16,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$15)
      on conflict (name_key) do update set
-       vertical   = case when excluded.vertical   <> '' then excluded.vertical   else outreach_service.companies.vertical   end,
+       vertical     = case when excluded.vertical     <> '' then excluded.vertical     else outreach_service.companies.vertical     end,
+       company_type = case when excluded.company_type <> '' then excluded.company_type else outreach_service.companies.company_type end,
        headline   = case when excluded.headline   <> '' then excluded.headline   else outreach_service.companies.headline   end,
        thesis     = case when excluded.thesis     <> '' then excluded.thesis     else outreach_service.companies.thesis     end,
        entry_path = case when excluded.entry_path <> '' then excluded.entry_path else outreach_service.companies.entry_path end,
@@ -189,7 +210,7 @@ async function upsertCompanyTx(client: any, incoming: IncomingCompany, user: str
       name, key, s(incoming.vertical), s(incoming.headline), s(incoming.thesis),
       s(incoming.entryPath), s(incoming.tier), s(incoming.priority), toScore(incoming.score),
       s(incoming.website), s(incoming.hq), s(incoming.confidence), s(incoming.sourceUrl),
-      JSON.stringify(facts), user,
+      JSON.stringify(facts), user, normaliseType(incoming.companyType),
     ],
   );
   return rows[0] ?? null;
@@ -199,7 +220,7 @@ async function upsertCompanyTx(client: any, incoming: IncomingCompany, user: str
 // PATCH (inline edit). Whitelisted; facts replaced wholesale when provided.
 // ---------------------------------------------------------------------
 const PATCHABLE = new Set([
-  'vertical', 'headline', 'thesis', 'entry_path', 'tier', 'priority',
+  'vertical', 'company_type', 'headline', 'thesis', 'entry_path', 'tier', 'priority',
   'score', 'website', 'hq', 'confidence', 'source_url',
 ]);
 
@@ -213,6 +234,7 @@ export async function updateCompany(
     if (k === 'facts') continue;                 // handled below
     if (!PATCHABLE.has(k)) continue;
     if (k === 'score') { params.push(toScore(v)); sets.push(`score = $${params.length}`); continue; }
+    if (k === 'company_type') { params.push(normaliseType(v)); sets.push(`company_type = $${params.length}`); continue; }
     params.push(s(v));
     sets.push(`${k} = $${params.length}`);
   }

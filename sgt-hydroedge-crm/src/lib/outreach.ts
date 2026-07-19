@@ -84,6 +84,7 @@ export type ImportResult = {
 // The statuses used across the module (edit here to change everywhere)
 // Known verticals. Free text on the wire, so an unexpected one still imports.
 export const VERTICALS = ['DG', 'Mining', 'Marine', 'Vehicles', 'Small DG'] as const;
+export const COMPANY_TYPES = ['Dealer', 'OEM / Direct', 'O&M'] as const;
 
 export type VerticalStat = { vertical: string; contacts: number; companies: number };
 
@@ -277,6 +278,7 @@ export type Company = {
   name: string;
   name_key: string;
   vertical: string;
+  company_type: string;
   headline: string;
   thesis: string;
   entry_path: string;
@@ -295,7 +297,7 @@ export type Company = {
 };
 
 export type IncomingCompany = {
-  company?: string; vertical?: string; headline?: string; thesis?: string;
+  company?: string; vertical?: string; companyType?: string; headline?: string; thesis?: string;
   entryPath?: string; tier?: string; priority?: string; score?: string | number;
   website?: string; hq?: string; confidence?: string; sourceUrl?: string;
   facts?: Fact[];
@@ -307,6 +309,7 @@ export type IncomingCompany = {
 const COMPANY_FIELD_ALIASES: [keyof IncomingCompany, string[]][] = [
   ['company',    ['company', 'companyname', 'partner', 'account']],
   ['vertical',   ['vertical', 'segment2', 'pipeline', 'division']],
+  ['companyType',['companytype', 'type', 'dealertype', 'counterparty', 'kind']],
   ['headline',   ['headline', 'oneliner', 'snapshot', 'summary', 'keyoperationsassets', 'keyoperations', 'keyassets']],
   ['thesis',     ['thesis', 'whythem', 'whygreenxfits', 'whyrelevanthook', 'whyrelevanthookoutreachopener', 'whyrelevant', 'hook']],
   ['entryPath',  ['entrypath', 'wayin', 'entrypathnotes', 'nextstep', 'engagementstrategy', 'recommendedengagementstrategy']],

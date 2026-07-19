@@ -25,6 +25,7 @@ import {
   fetchContactActivity,
   OUTREACH_STATUSES,
   VERTICALS,
+  COMPANY_TYPES,
   type OutreachContact,
   type OutreachStats,
   type VerticalStat,
@@ -71,6 +72,15 @@ function statusStyle(status: string): { bg: string; fg: string } {
 
 const isSigner = (layer: string) => /signer|decision-maker/i.test(layer || '');
 
+function companyTypeStyle(t: string): { bg: string; fg: string } {
+  switch (t) {
+    case 'Dealer': return { bg: C.greenSoft, fg: C.green };
+    case 'OEM / Direct': return { bg: C.purpleSoft, fg: C.purple };
+    case 'O&M': return { bg: C.amberSoft, fg: C.amber };
+    default: return { bg: C.tone, fg: C.faint };
+  }
+}
+
 function verticalStyle(v: string): { bg: string; fg: string } {
   switch (v) {
     case 'DG': return { bg: C.blueSoft, fg: C.blue };
@@ -113,6 +123,7 @@ export default function OutreachDesk() {
   const [status, setStatus] = useState('all');
   const [view, setView] = useState<'active' | 'promoted'>('active');
   const [vertical, setVertical] = useState('all');
+  const [companyType, setCompanyType] = useState('all');
   const [followUp, setFollowUp] = useState(false);
   const [grouped, setGrouped] = useState(true);
 
@@ -158,6 +169,34 @@ export default function OutreachDesk() {
       signers: cs.filter((c) => isSigner(c.layer)).length,
     })).sort((a, b) => a.company.localeCompare(b.company));
   }, [contacts]);
+
+  // Company type per group, looked up from the intel map (company-level, not
+  // stamped per contact). Drives the sub-pills under a selected vertical.
+  const typeOf = useCallback((company: string): string => {
+    const c = companyMap[company.toLowerCase().trim()];
+    return (c && c.company_type) ? c.company_type : '';
+  }, [companyMap]);
+
+  // Sub-pill buckets: only meaningful inside one vertical. Count companies per
+  // type among the currently-shown groups; 'Untyped' collects the rest.
+  const typeBuckets = useMemo(() => {
+    if (vertical === 'all') return [] as { type: string; companies: number }[];
+    const m = new Map<string, number>();
+    for (const g of groups) {
+      const t = typeOf(g.company) || 'Untyped';
+      m.set(t, (m.get(t) ?? 0) + 1);
+    }
+    // stable order: known types first, Untyped last
+    const order = [...COMPANY_TYPES, 'Untyped'];
+    return Array.from(m, ([type, companies]) => ({ type, companies }))
+      .sort((a, b) => order.indexOf(a.type) - order.indexOf(b.type));
+  }, [groups, vertical, typeOf]);
+
+  // Apply the sub-type filter to the visible groups (client-side, instant).
+  const shownGroups = useMemo(() => {
+    if (companyType === 'all') return groups;
+    return groups.filter((g) => (typeOf(g.company) || 'Untyped') === companyType);
+  }, [groups, companyType, typeOf]);
 
   // While filtering, open everything — hits shouldn't be hidden behind a chevron.
   const filtering = search.trim().length > 0 || status !== 'all';
@@ -287,11 +326,25 @@ export default function OutreachDesk() {
         {verticals.length > 1 && (
           <div style={{ display: 'flex', gap: 6, marginTop: 14, flexWrap: 'wrap' }}>
             <Pill label="All" count={verticals.reduce((n, v) => n + v.contacts, 0)}
-              active={vertical === 'all'} onClick={() => setVertical('all')} />
+              active={vertical === 'all'} onClick={() => { setVertical('all'); setCompanyType('all'); }} />
             {verticals.map((v) => (
               <Pill key={v.vertical} label={v.vertical} count={v.contacts} sub={`${v.companies} co`}
-                active={vertical === v.vertical} onClick={() => setVertical(v.vertical)}
+                active={vertical === v.vertical} onClick={() => { setVertical(v.vertical); setCompanyType('all'); }}
                 tone={verticalStyle(v.vertical)} />
+            ))}
+          </div>
+        )}
+
+        {/* Sub-pills: split the selected vertical by company type (Dealer / OEM /
+            O&M). Company-level, so this reads companies, not contacts. */}
+        {vertical !== 'all' && typeBuckets.length > 1 && (
+          <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+            <Pill label={`All ${vertical}`} count={groups.length} sub="co"
+              active={companyType === 'all'} onClick={() => setCompanyType('all')} />
+            {typeBuckets.map((b) => (
+              <Pill key={b.type} label={b.type} count={b.companies} sub="co"
+                active={companyType === b.type} onClick={() => setCompanyType(b.type)}
+                tone={b.type === 'Untyped' ? { bg: C.tone, fg: C.faint } : companyTypeStyle(b.type)} />
             ))}
           </div>
         )}
@@ -377,12 +430,14 @@ export default function OutreachDesk() {
                     : 'No contacts yet. Drop your contact sheet above to get started.'} />
             ) : grouped ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {groups.map((g) => (
+                {shownGroups.map((g) => (
                   <CompanyGroup
                     key={g.company} g={g} narrow={narrow} showVertical={vertical === 'all'}
                     open={isOpen(g.company)} onToggle={() => toggle(g.company)}
                     hasIntel={!!companyMap[g.company.toLowerCase().trim()]?.headline
                               || !!companyMap[g.company.toLowerCase().trim()]?.thesis}
+                    companyType={typeOf(g.company)}
+                    showType={vertical !== 'all'}
                     onOpenCompany={() => openCompanyPanel(g.company, g.vertical)}
                     onContact={setSelected} onStatus={changeStatus} onDelete={removeContact}
                   />
@@ -420,8 +475,9 @@ export default function OutreachDesk() {
 }
 
 // ── company group ─────────────────────────────────────────────────────
-function CompanyGroup({ g, narrow, open, showVertical, hasIntel, onToggle, onOpenCompany, onContact, onStatus, onDelete }: {
+function CompanyGroup({ g, narrow, open, showVertical, hasIntel, companyType, showType, onToggle, onOpenCompany, onContact, onStatus, onDelete }: {
   g: Group; narrow: boolean; open: boolean; showVertical: boolean; hasIntel: boolean;
+  companyType: string; showType: boolean;
   onToggle: () => void; onOpenCompany: () => void;
   onContact: (c: OutreachContact) => void;
   onStatus: (c: OutreachContact, s: string) => void;
@@ -443,6 +499,7 @@ function CompanyGroup({ g, narrow, open, showVertical, hasIntel, onToggle, onOpe
               <Info size={13} style={{ color: hasIntel ? C.teal : C.faint, flexShrink: 0 }} />
             </button>
             {showVertical && g.vertical && <Chip text={g.vertical} style={verticalStyle(g.vertical)} />}
+            {showType && companyType && <Chip text={companyType} style={companyTypeStyle(companyType)} />}
           </div>
           <div onClick={onToggle} style={{ fontSize: 12, color: C.sub, marginTop: 2, cursor: 'pointer' }}>
             {g.contacts.length} contact{g.contacts.length > 1 ? 's' : ''}
@@ -786,11 +843,25 @@ function CompanyPanel({ name, company, onClose, onSave }: {
           <button onClick={onClose} style={{ background: 'none', border: 'none', color: C.sub, cursor: 'pointer', display: 'flex' }}><X size={20} /></button>
         </div>
 
-        {c && (c.vertical || priorityChip) && (
-          <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
+        {c && (c.vertical || priorityChip || c.company_type) && (
+          <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap', alignItems: 'center' }}>
             {c.vertical && <Chip text={c.vertical} style={verticalStyle(c.vertical)} />}
+            {c.company_type && <Chip text={c.company_type} style={companyTypeStyle(c.company_type)} />}
             {priorityChip && <Chip text={priorityChip} style={{ bg: C.redSoft, fg: C.red }} />}
           </div>
+        )}
+
+        {c && (
+          <Field label="Type">
+            <select value={c.company_type || ''} onChange={(e) => onSave(c.id, { company_type: e.target.value })}
+              style={{ background: companyTypeStyle(c.company_type).bg, color: companyTypeStyle(c.company_type).fg,
+                border: `1px solid ${C.border}`, borderRadius: 999, padding: '4px 10px', fontSize: 12, fontWeight: 600, cursor: 'pointer', outline: 'none' }}>
+              <option value="" style={{ background: C.card, color: C.text }}>— untyped —</option>
+              {(COMPANY_TYPES as readonly string[]).concat(
+                c.company_type && !(COMPANY_TYPES as readonly string[]).includes(c.company_type) ? [c.company_type] : []
+              ).map((t) => <option key={t} value={t} style={{ background: C.card, color: C.text }}>{t}</option>)}
+            </select>
+          </Field>
         )}
 
         {!hasAny ? (
