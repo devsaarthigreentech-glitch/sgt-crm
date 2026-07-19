@@ -437,7 +437,6 @@ export default function OutreachDesk() {
                     hasIntel={!!companyMap[g.company.toLowerCase().trim()]?.headline
                               || !!companyMap[g.company.toLowerCase().trim()]?.thesis}
                     companyType={typeOf(g.company)}
-                    showType={vertical !== 'all'}
                     onOpenCompany={() => openCompanyPanel(g.company, g.vertical)}
                     onContact={setSelected} onStatus={changeStatus} onDelete={removeContact}
                   />
@@ -475,9 +474,9 @@ export default function OutreachDesk() {
 }
 
 // ── company group ─────────────────────────────────────────────────────
-function CompanyGroup({ g, narrow, open, showVertical, hasIntel, companyType, showType, onToggle, onOpenCompany, onContact, onStatus, onDelete }: {
+function CompanyGroup({ g, narrow, open, showVertical, hasIntel, companyType, onToggle, onOpenCompany, onContact, onStatus, onDelete }: {
   g: Group; narrow: boolean; open: boolean; showVertical: boolean; hasIntel: boolean;
-  companyType: string; showType: boolean;
+  companyType: string;
   onToggle: () => void; onOpenCompany: () => void;
   onContact: (c: OutreachContact) => void;
   onStatus: (c: OutreachContact, s: string) => void;
@@ -499,7 +498,7 @@ function CompanyGroup({ g, narrow, open, showVertical, hasIntel, companyType, sh
               <Info size={13} style={{ color: hasIntel ? C.teal : C.faint, flexShrink: 0 }} />
             </button>
             {showVertical && g.vertical && <Chip text={g.vertical} style={verticalStyle(g.vertical)} />}
-            {showType && companyType && <Chip text={companyType} style={companyTypeStyle(companyType)} />}
+            {companyType && <Chip text={companyType} style={companyTypeStyle(companyType)} />}
           </div>
           <div onClick={onToggle} style={{ fontSize: 12, color: C.sub, marginTop: 2, cursor: 'pointer' }}>
             {g.contacts.length} contact{g.contacts.length > 1 ? 's' : ''}
