@@ -1,5 +1,5 @@
 import { useIsMobile } from '../hooks/useIsMobile'
-import { LayoutGrid, Inbox, Plus, BarChart3, LayoutDashboard, User, Handshake, LogOut, Building2, Send } from 'lucide-react'
+import { LayoutGrid, Inbox, Plus, BarChart3, LayoutDashboard, User, LogOut, Building2, Send } from 'lucide-react'
 
 type Page = 'home' | 'my-dashboard' | 'pipeline' | 'triage' | 'capture' | 'customers' | 'outreach'
 
@@ -9,7 +9,6 @@ interface Props {
   role: string
   userName: string
   onLogout: () => void
-  onPartnerPortal: () => void
 }
 
 interface NavItem {
@@ -45,7 +44,7 @@ function roleLabel(role: string): string {
   return role.charAt(0).toUpperCase() + role.slice(1)
 }
 
-export default function Sidebar({ current, navigate, role, userName, onLogout, onPartnerPortal }: Props) {
+export default function Sidebar({ current, navigate, role, userName, onLogout }: Props) {
   const isMobile = useIsMobile()
 
   // Only show nav items this role is allowed to see
@@ -98,25 +97,6 @@ export default function Sidebar({ current, navigate, role, userName, onLogout, o
           )
         })}
 
-        {/* Partner Portal — separate mode, not a page */}
-        <button
-          onClick={onPartnerPortal}
-          style={{
-            flex: 1,
-            display: 'flex', flexDirection: 'column',
-            alignItems: 'center', gap: 3,
-            padding: '10px 2px 8px',
-            background: 'none', border: 'none',
-            cursor: 'pointer',
-            color: '#6F2F0E',
-            position: 'relative',
-          }}
-        >
-          <Handshake size={20} strokeWidth={1.75} />
-          <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.01em' }}>
-            Partner
-          </span>
-        </button>
       </nav>
     )
   }
@@ -175,28 +155,6 @@ export default function Sidebar({ current, navigate, role, userName, onLogout, o
             </button>
           )
         })}
-
-        <button
-          onClick={onPartnerPortal}
-          style={{
-            margin: '8px 0', padding: '10px 12px',
-            backgroundColor: '#fff', border: '1px solid #DDD7C6',
-            borderRadius: 6, cursor: 'pointer',
-            display: 'flex', alignItems: 'center', gap: 10, width: '100%',
-            textAlign: 'left',
-          }}
-        >
-          <div style={{
-            width: 28, height: 28, borderRadius: 6,
-            backgroundColor: '#F5E0CC', color: '#6F2F0E',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 14,
-          }}>↗</div>
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 600, color: '#161614' }}>Partner Portal</div>
-            <div style={{ fontSize: 10.5, color: '#6A675F', marginTop: 1 }}>See partner-side view</div>
-          </div>
-        </button>
 
         <p style={{ fontSize: 10, color: '#A39F94', padding: '20px 10px 6px', letterSpacing: '0.1em', textTransform: 'uppercase', fontWeight: 700 }}>
           Phase 2

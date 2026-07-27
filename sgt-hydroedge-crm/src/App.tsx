@@ -4,7 +4,6 @@ import type { Lead } from './types'
 import Sidebar from './components/Sidebar'
 import LeadDetail from './components/lead/LeadDetail'
 import CaptureForm from './components/capture/CaptureForm'
-import PartnerPortal from './components/partner/PartnerPortal'
 import { api } from './lib/api'
 import { useIsMobile } from './hooks/useIsMobile'
 import TriageQueue from './components/triage/TriageQueue'
@@ -22,7 +21,6 @@ export default function App() {
   const [leads, setLeads] = useState<Lead[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [partnerMode, setPartnerMode] = useState(false)
 
   const navigate = (p: Page) => { setPage(p); setSelectedLead(null) }
 
@@ -66,14 +64,6 @@ export default function App() {
     if (fresh) setSelectedLead(fresh)
   }
 
-  if (partnerMode) {
-    return (
-      <div style={{ height: '100vh', display: 'flex', overflow: 'hidden' }}>
-        <PartnerPortal onExit={() => setPartnerMode(false)} />
-      </div>
-    )
-  }
-
   if (!authChecked) return <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6A675F' }}>Loading…</div>
   if (!user) return <Login onSuccess={u => { setUser(u); setPage(u.role === 'director' ? 'home' : 'my-dashboard') }} />
 
@@ -89,7 +79,6 @@ export default function App() {
         role={user.role}
         userName={user.name}
         onLogout={() => { clearToken(); setUser(null) }}
-        onPartnerPortal={() => setPartnerMode(true)}
       />
       <main style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
