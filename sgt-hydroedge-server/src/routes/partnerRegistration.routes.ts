@@ -26,6 +26,7 @@ import { query, pool } from '../db/pool.js'
 import { requireRole } from '../auth/guard.js'
 import { validateForSubmit, type RegistrationInput } from '../domain/partnerValidation.js'
 import { inspectGstin } from '../domain/gstin.js'
+import { allotCode } from '../domain/partnerCode.js'
 
 const director = requireRole('director')
 
@@ -222,6 +223,232 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
     return reply.send({
       data: { ...rows[0], documents: docs.rows, contacts: contacts.rows },
     })
+  })
+
+  // =========================================================================
+  // Approval (P6). Everything below happens in ONE transaction or none of it.
+  //
+  //   1. lock the code_series row
+  //   2. mint the code, bump the counter
+  //   3. stamp the registration approved
+  //   4. insert the quote_service.org row
+  //   5. back-fill created_org_id
+  //   6. write the allotted_code ledger entry
+  //   7. append a registration_event
+  //
+  // Status is checked INSIDE the transaction and the row is locked, so a
+  // double-click cannot approve twice and mint two codes.
+  //
+  // No ERPNext record is created here. Approval is a CRM event; the finance
+  // record appears when the partner first transacts, via ensureErpCustomer().
+  // =========================================================================
+  app.post('/registrations/:id/approve', { preHandler: director }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const body = (req.body ?? {}) as { attach_org_id?: number }
+    const who = actor(req)
+
+    const client = await pool.connect()
+    try {
+      await client.query('begin')
+
+      const { rows } = await client.query(
+        `select * from partner_service.registration where id = $1 for update`, [id])
+      if (!rows.length) {
+        await client.query('rollback')
+        return reply.code(404).send({ error: { code: 'not_found', message: 'Registration not found' } })
+      }
+      const reg = rows[0]
+
+      // Guard inside the transaction, not before it.
+      if (reg.status === 'approved') {
+        await client.query('rollback')
+        return reply.code(409).send({
+          error: {
+            code: 'already_approved',
+            message: `Already approved as ${reg.allotted_code ?? 'an existing partner'}`,
+          },
+        })
+      }
+      if (reg.status !== 'submitted' && reg.status !== 'under_review') {
+        await client.query('rollback')
+        return reply.code(409).send({
+          error: { code: 'not_approvable', message: `Cannot approve a '${reg.status}' registration` },
+        })
+      }
+
+      // ---- Path A: attach to an org that already exists ------------------
+      // For grandfathered partners like EDINGX001, who hold a code but never
+      // had an application. Mints nothing — reusing the existing identity is
+      // the whole point.
+      if (body.attach_org_id) {
+        const { rows: orgs } = await client.query(
+          `select id, code, legal_name from quote_service.org where id = $1 for update`,
+          [body.attach_org_id])
+        if (!orgs.length) {
+          await client.query('rollback')
+          return reply.code(400).send({
+            error: { code: 'bad_request', message: 'No such organisation to attach to' },
+          })
+        }
+        const org = orgs[0]
+        const { rows: [updated] } = await client.query(
+          `update partner_service.registration
+              set status = 'approved', approved_at = now(), approved_by = $2,
+                  reviewed_at = now(), reviewed_by = $2,
+                  created_org_id = $3, allotted_code = $4, updated_at = now()
+            where id = $1 returning *`,
+          [id, who.name ?? who.id, org.id, org.code])
+        await client.query(
+          `insert into partner_service.registration_event
+             (registration_id, event_type, from_status, to_status, actor, actor_name, payload)
+           values ($1, 'approved_attached', $2, 'approved', $3, $4, $5)`,
+          [id, reg.status, who.id, who.name,
+           JSON.stringify({ attached_org: org.code, note: 'no new code minted' })])
+        await client.query('commit')
+        return reply.send({
+          data: updated,
+          attached: { org_id: org.id, code: org.code, legal_name: org.legal_name },
+        })
+      }
+
+      // ---- Path B: mint a new code and create the org --------------------
+
+      // Refuse to create a second partner for a GSTIN that already exists.
+      // Mirrors the GSTIN-first dedup ensureErpCustomer() already uses.
+      if (reg.gstin && String(reg.gstin).trim()) {
+        const { rows: dupe } = await client.query(
+          `select id, code, legal_name from quote_service.org
+            where upper(gstin) = upper($1) limit 1`, [String(reg.gstin).trim()])
+        if (dupe.length) {
+          await client.query('rollback')
+          return reply.code(409).send({
+            error: {
+              code: 'gstin_exists',
+              message: `${dupe[0].legal_name} (${dupe[0].code}) already holds this GSTIN. Attach to them instead of creating a second partner.`,
+            },
+            existing: dupe[0],
+          })
+        }
+      }
+
+      let parentId: number | null = null
+      let parentCode: string | null = null
+      if (reg.partner_type === 'dealer') {
+        if (!reg.parent_org_id) {
+          await client.query('rollback')
+          return reply.code(400).send({
+            error: { code: 'bad_request', message: 'Dealer has no distributor set' },
+          })
+        }
+        const { rows: p } = await client.query(
+          `select id, code from quote_service.org where id = $1`, [reg.parent_org_id])
+        if (!p.length) {
+          await client.query('rollback')
+          return reply.code(400).send({
+            error: { code: 'bad_request', message: 'The distributor on this registration no longer exists' },
+          })
+        }
+        parentId = p[0].id
+        parentCode = p[0].code
+      } else {
+        // A distributor hangs off SGT.
+        const { rows: sgt } = await client.query(
+          `select id from quote_service.org where code = 'SGT'`)
+        parentId = sgt[0]?.id ?? null
+      }
+
+      const { code, seriesKey, serial } = await allotCode(client, {
+        partnerType: reg.partner_type,
+        dealerType: reg.dealer_type,
+        parentCode,
+      })
+
+      const { rows: [org] } = await client.query(
+        `insert into quote_service.org
+           (code, legal_name, trade_name, org_type, dealer_type, parent_id, territory, gstin, is_active)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, true)
+         returning id, code, legal_name`,
+        [code, reg.legal_name, reg.trade_name, reg.partner_type, reg.dealer_type,
+         parentId, reg.proposed_territory, reg.gstin])
+
+      const { rows: [updated] } = await client.query(
+        `update partner_service.registration
+            set status = 'approved', approved_at = now(), approved_by = $2,
+                reviewed_at = now(), reviewed_by = $2,
+                allotted_code = $3, created_org_id = $4, updated_at = now()
+          where id = $1 returning *`,
+        [id, who.name ?? who.id, code, org.id])
+
+      // The ledger is what makes reuse impossible — a retired code leaves no
+      // org row behind, so this is the only durable record that it existed.
+      await client.query(
+        `insert into partner_service.allotted_code
+           (code, org_id, registration_id, series_key)
+         values ($1, $2, $3, $4)`,
+        [code, org.id, id, seriesKey])
+
+      await client.query(
+        `insert into partner_service.registration_event
+           (registration_id, event_type, from_status, to_status, actor, actor_name, payload)
+         values ($1, 'approved', $2, 'approved', $3, $4, $5)`,
+        [id, reg.status, who.id, who.name,
+         JSON.stringify({ code, series: seriesKey, serial, org_id: org.id })])
+
+      await client.query('commit')
+      return reply.send({ data: updated, org, code })
+    } catch (err) {
+      await client.query('rollback')
+      throw err
+    } finally {
+      client.release()
+    }
+  })
+
+  // ---- Reject — requires a reason ----------------------------------------
+  app.post('/registrations/:id/reject', { preHandler: director }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const { reason } = (req.body ?? {}) as { reason?: string }
+    const who = actor(req)
+    if (!reason || !String(reason).trim()) {
+      return reply.code(400).send({
+        error: { code: 'bad_request', message: 'A reason is required to reject' },
+      })
+    }
+
+    const client = await pool.connect()
+    try {
+      await client.query('begin')
+      const { rows } = await client.query(
+        `select status from partner_service.registration where id = $1 for update`, [id])
+      if (!rows.length) {
+        await client.query('rollback')
+        return reply.code(404).send({ error: { code: 'not_found', message: 'Registration not found' } })
+      }
+      if (rows[0].status === 'approved') {
+        await client.query('rollback')
+        return reply.code(409).send({
+          error: { code: 'already_approved', message: 'Cannot reject an approved registration' },
+        })
+      }
+      const { rows: [updated] } = await client.query(
+        `update partner_service.registration
+            set status = 'rejected', rejection_reason = $2,
+                reviewed_at = now(), reviewed_by = $3, updated_at = now()
+          where id = $1 returning *`,
+        [id, String(reason).trim(), who.name ?? who.id])
+      await client.query(
+        `insert into partner_service.registration_event
+           (registration_id, event_type, from_status, to_status, actor, actor_name, payload)
+         values ($1, 'rejected', $2, 'rejected', $3, $4, $5)`,
+        [id, rows[0].status, who.id, who.name, JSON.stringify({ reason: String(reason).trim() })])
+      await client.query('commit')
+      return reply.send({ data: updated })
+    } catch (err) {
+      await client.query('rollback')
+      throw err
+    } finally {
+      client.release()
+    }
   })
 
   // ---- Additional contacts ----------------------------------------------

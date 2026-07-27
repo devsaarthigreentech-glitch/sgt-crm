@@ -826,6 +826,125 @@ export default function PartnerOnboarding() {
           )}
         </fieldset>
 
+        {/* Director review — only once it has actually been submitted. */}
+        {(form.status === 'submitted' || form.status === 'under_review') && (
+          <div style={{
+            backgroundColor: '#fff', border: `1px solid ${LINE}`, borderRadius: 10,
+            padding: '15px 15px 16px', marginBottom: 14,
+          }}>
+            <h3 style={{ margin: '0 0 2px', fontSize: 14, fontWeight: 700, color: INK }}>Review</h3>
+            <p style={{ margin: '0 0 13px', fontSize: 11.5, color: FAINT }}>
+              Approving mints the partner code and creates the organisation, in one transaction.
+            </p>
+
+            {(() => {
+              const dupe = looksLikeExisting(form as Registration)
+              return dupe ? (
+                <div style={{
+                  padding: '10px 11px', marginBottom: 12, borderRadius: 7, fontSize: 12,
+                  backgroundColor: '#FBF0DA', color: '#6F2F0E',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 8 }}>
+                    <AlertCircle size={13} />
+                    <span><strong>{dupe.legal_name}</strong> ({dupe.code}) already exists.</span>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      if (openId === null) return
+                      if (!window.confirm(
+                        `Link this registration to ${dupe.legal_name} (${dupe.code})?\n\nNo new code is minted — their existing one is kept.`)) return
+                      try {
+                        const r = await onboardingApi.approve(openId, dupe.id)
+                        setForm({ ...r.data, profile: r.data.profile ?? {} })
+                        setList(await onboardingApi.list())
+                        setOrgs(await onboardingApi.orgs())
+                        setBanner(null)
+                      } catch (e: any) { setBanner(e.message) }
+                    }}
+                    style={{
+                      padding: '7px 12px', fontSize: 12.5, fontWeight: 600, fontFamily: 'inherit',
+                      border: `1px solid #6F2F0E`, borderRadius: 6, cursor: 'pointer',
+                      background: 'none', color: '#6F2F0E',
+                    }}
+                  >
+                    Attach to {dupe.code} instead
+                  </button>
+                </div>
+              ) : null
+            })()}
+
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button
+                onClick={async () => {
+                  if (openId === null) return
+                  if (!window.confirm('Approve and mint a partner code? This cannot be undone.')) return
+                  try {
+                    const r = await onboardingApi.approve(openId)
+                    setForm({ ...r.data, profile: r.data.profile ?? {} })
+                    setList(await onboardingApi.list())
+                    setOrgs(await onboardingApi.orgs())
+                    setBanner(null)
+                  } catch (e: any) { setBanner(e.message) }
+                }}
+                style={{
+                  flex: '1 1 160px', padding: '11px', fontSize: 13.5, fontWeight: 700,
+                  fontFamily: 'inherit', border: 'none', borderRadius: 7, cursor: 'pointer',
+                  backgroundColor: '#1F4E3D', color: '#fff',
+                }}
+              >
+                Approve &amp; allot code
+              </button>
+              <button
+                onClick={async () => {
+                  if (openId === null) return
+                  const reason = window.prompt('Why is this being rejected?\n\nThe partner will see this.')
+                  if (!reason?.trim()) return
+                  try {
+                    const r = await onboardingApi.reject(openId, reason.trim())
+                    setForm({ ...r.data, profile: r.data.profile ?? {} })
+                    setList(await onboardingApi.list())
+                    setBanner(null)
+                  } catch (e: any) { setBanner(e.message) }
+                }}
+                style={{
+                  flex: '1 1 110px', padding: '11px', fontSize: 13.5, fontWeight: 600,
+                  fontFamily: 'inherit', border: `1px solid ${LINE}`, borderRadius: 7,
+                  cursor: 'pointer', background: '#fff', color: DANGER,
+                }}
+              >
+                Reject
+              </button>
+            </div>
+          </div>
+        )}
+
+        {form.status === 'approved' && form.allotted_code && (
+          <div style={{
+            padding: '13px 15px', marginBottom: 14, borderRadius: 10,
+            backgroundColor: '#DCEBE1', color: OK,
+            display: 'flex', alignItems: 'center', gap: 9,
+          }}>
+            <Check size={17} />
+            <div>
+              <div style={{ fontSize: 13.5, fontWeight: 700 }}>
+                Approved · {form.allotted_code}
+              </div>
+              <div style={{ fontSize: 11.5, opacity: 0.85 }}>
+                {form.approved_by ? `by ${form.approved_by}` : ''} — now live in the partner network
+              </div>
+            </div>
+          </div>
+        )}
+
+        {form.status === 'rejected' && form.rejection_reason && (
+          <div style={{
+            padding: '12px 14px', marginBottom: 14, borderRadius: 10,
+            backgroundColor: '#F3DAD5', color: DANGER, fontSize: 12.5,
+          }}>
+            <strong>Rejected.</strong> {form.rejection_reason}
+          </div>
+        )}
+
         {editable && (
           <button
             onClick={submit}

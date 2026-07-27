@@ -153,6 +153,25 @@ export const onboardingApi = {
       body: JSON.stringify(patch),
     }).then(r => r.data),
 
+  /**
+   * Approve. Without `attachOrgId` this mints a new code and creates the org.
+   * With it, the registration is linked to an org that already exists and
+   * NO code is minted — for grandfathered partners like EDINGX001.
+   * Throws on 409 when the GSTIN already belongs to someone.
+   */
+  approve: (id: number, attachOrgId?: number) =>
+    request<{ data: Registration; org?: any; code?: string; attached?: any }>(
+      `/partners/registrations/${id}/approve`,
+      attachOrgId
+        ? { method: 'POST', body: JSON.stringify({ attach_org_id: attachOrgId }) }
+        : { method: 'POST' },
+    ),
+
+  reject: (id: number, reason: string) =>
+    request<{ data: Registration }>(`/partners/registrations/${id}/reject`, {
+      method: 'POST', body: JSON.stringify({ reason }),
+    }),
+
   /** Throws ValidationError with a field map on 422. */
   submit: (id: number) =>
     request<{ data: Registration }>(`/partners/registrations/${id}/submit`, {
