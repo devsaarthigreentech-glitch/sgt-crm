@@ -601,7 +601,7 @@ export default function PartnerOnboarding() {
             <Text label="Legal name" required value={form.legal_name} onChange={v => set('legal_name', v)} error={errors.legal_name} />
             <Text label="Trade name" value={form.trade_name} onChange={v => set('trade_name', v)} />
             <Select
-              label="Constitution" required value={form.constitution}
+              label="Constitution" value={form.constitution}
               onChange={v => set('constitution', v)} error={errors.constitution}
               options={(ref?.constitutions ?? []).map(c => ({ value: c, label: c }))}
             />
@@ -610,7 +610,7 @@ export default function PartnerOnboarding() {
           </Section>
 
           <Section title="Tax identity" hint="The GSTIN's own checksum is verified as you type — no external lookup, nothing metered.">
-            <Text label="GSTIN" required value={form.gstin} placeholder="08AABCC1234D1ZB"
+            <Text label="GSTIN" value={form.gstin} placeholder="08AABCC1234D1ZB"
                   onChange={onGstinChange} error={errors.gstin} />
             {gstin && (
               <div style={{
@@ -631,18 +631,18 @@ export default function PartnerOnboarding() {
                 )}
               </div>
             )}
-            <Text label="PAN" required value={form.pan} placeholder="AABCC1234D"
+            <Text label="PAN" value={form.pan} placeholder="AABCC1234D"
                   onChange={v => set('pan', v.toUpperCase())} error={errors.pan} />
             <Text label="Udyam number" value={form.udyam_number} onChange={v => set('udyam_number', v)} />
           </Section>
 
           <Section title="Registered address">
-            <Text label="Address" required value={form.address_line1} onChange={v => set('address_line1', v)} error={errors.address_line1} />
+            <Text label="Address" value={form.address_line1} onChange={v => set('address_line1', v)} error={errors.address_line1} />
             <Text label="Address line 2" value={form.address_line2} onChange={v => set('address_line2', v)} />
-            <Text label="City" required value={form.city} onChange={v => set('city', v)} error={errors.city} />
-            <Select label="State" required value={form.state} onChange={v => set('state', v)}
+            <Text label="City" value={form.city} onChange={v => set('city', v)} error={errors.city} />
+            <Select label="State" value={form.state} onChange={v => set('state', v)}
                     error={errors.state} options={stateOptions} />
-            <Text label="PIN code" required value={form.pincode} onChange={v => set('pincode', v)} error={errors.pincode} />
+            <Text label="PIN code" value={form.pincode} onChange={v => set('pincode', v)} error={errors.pincode} />
           </Section>
 
           <Section title="Primary contact">
@@ -650,7 +650,7 @@ export default function PartnerOnboarding() {
             <Text label="Designation" value={form.contact_designation} onChange={v => set('contact_designation', v)} />
             <Text label="Mobile" required value={form.contact_mobile} placeholder="9876543210"
                   onChange={v => set('contact_mobile', v)} error={errors.contact_mobile} />
-            <Text label="Email" required type="email" value={form.contact_email}
+            <Text label="Email" type="email" value={form.contact_email}
                   onChange={v => set('contact_email', v)} error={errors.contact_email} />
           </Section>
 
@@ -770,26 +770,26 @@ export default function PartnerOnboarding() {
           </Section>
 
           <Section title="Banking" hint="Must match the cancelled cheque uploaded later.">
-            <Text label="Account holder name" required value={form.bank_account_name} onChange={v => set('bank_account_name', v)} error={errors.bank_account_name} />
-            <Text label="Account number" required value={form.bank_account_number} onChange={v => set('bank_account_number', v)} error={errors.bank_account_number} />
-            <Text label="IFSC" required value={form.bank_ifsc} placeholder="HDFC0001234"
+            <Text label="Account holder name" value={form.bank_account_name} onChange={v => set('bank_account_name', v)} error={errors.bank_account_name} />
+            <Text label="Account number" value={form.bank_account_number} onChange={v => set('bank_account_number', v)} error={errors.bank_account_number} />
+            <Text label="IFSC" value={form.bank_ifsc} placeholder="HDFC0001234"
                   onChange={v => set('bank_ifsc', v.toUpperCase())} error={errors.bank_ifsc} />
-            <Text label="Bank name" required value={form.bank_name} onChange={v => set('bank_name', v)} error={errors.bank_name} />
+            <Text label="Bank name" value={form.bank_name} onChange={v => set('bank_name', v)} error={errors.bank_name} />
             <Text label="Branch" value={form.bank_branch} onChange={v => set('bank_branch', v)} />
           </Section>
 
           <Section title="Commercial">
-            <Chips label="Product lines" required values={form.product_lines ?? []}
+            <Chips label="Product lines" values={form.product_lines ?? []}
                    onChange={v => set('product_lines', v)} options={ref?.productLines ?? []}
                    error={errors.product_lines} />
             {sells && (
               <>
-                <Text label="Proposed territory" required value={form.proposed_territory}
+                <Text label="Proposed territory" value={form.proposed_territory}
                       onChange={v => set('proposed_territory', v)} error={errors.proposed_territory} />
-                <Chips label="Customer segments" required values={form.customer_segments ?? []}
+                <Chips label="Industries of operation" required values={form.customer_segments ?? []}
                        onChange={v => set('customer_segments', v)} error={errors.customer_segments}
                        options={['Industrial', 'Commercial', 'Infrastructure', 'Mining', 'Marine', 'Hospitality', 'Healthcare', 'Data centre']} />
-                <Text label="Sales team size" required type="number" value={form.profile?.sales_team_size}
+                <Text label="Sales team size" type="number" value={form.profile?.sales_team_size}
                       onChange={v => setProfile('sales_team_size', v === '' ? null : Number(v))}
                       error={errors['profile.sales_team_size']} />
                 <Text label="Expected annual units" type="number" value={form.expected_annual_units}
@@ -801,17 +801,17 @@ export default function PartnerOnboarding() {
 
           {services && (
             <Section title="Service capability" hint="Required for Sales & Service (SS) dealers.">
-              <Text label="Number of service engineers" required type="number"
+              <Text label="Number of service engineers" type="number"
                     value={form.profile?.service_engineers_count}
                     onChange={v => setProfile('service_engineers_count', v === '' ? null : Number(v))}
                     error={errors['profile.service_engineers_count']} />
-              <Text label="Workshop and tooling" required value={form.profile?.workshop_details}
+              <Text label="Workshop and tooling" value={form.profile?.workshop_details}
                     onChange={v => setProfile('workshop_details', v)}
                     error={errors['profile.workshop_details']} />
-              <Text label="Service area coverage" required value={form.profile?.service_area_coverage}
+              <Text label="Service area coverage" value={form.profile?.service_area_coverage}
                     onChange={v => setProfile('service_area_coverage', v)}
                     error={errors['profile.service_area_coverage']} />
-              <Text label="DG / electrical experience" required value={form.profile?.dg_experience}
+              <Text label="DG / electrical experience" value={form.profile?.dg_experience}
                     onChange={v => setProfile('dg_experience', v)}
                     error={errors['profile.dg_experience']} />
             </Section>
@@ -819,7 +819,7 @@ export default function PartnerOnboarding() {
 
           {!isDealer && (
             <Section title="Warehouse" hint="Distributors hold stock, so a warehouse address is required.">
-              <Text label="Warehouse address" required value={form.profile?.warehouse_address}
+              <Text label="Warehouse address" value={form.profile?.warehouse_address}
                     onChange={v => setProfile('warehouse_address', v)}
                     error={errors['profile.warehouse_address']} />
             </Section>

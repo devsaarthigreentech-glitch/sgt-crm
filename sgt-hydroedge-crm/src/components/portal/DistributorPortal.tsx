@@ -10,8 +10,19 @@
 // distributor token would still reach nothing.
 
 import { useEffect, useState } from 'react'
-import { LogOut, Users, MapPin, RefreshCw } from 'lucide-react'
+import { LogOut, Users, MapPin, RefreshCw, LayoutDashboard, Handshake } from 'lucide-react'
 import { portalApi, type PortalMe, type PortalDealer } from './portalApi'
+import DealerRegistration from './DealerRegistration'
+
+type PortalPage = 'overview' | 'dealers'
+
+// Nav for the partner shell. Kept flat and short on purpose: a distributor
+// has a handful of jobs, not a CRM. Quotations and Leads slot in here as
+// they land, rather than becoming a second side panel to maintain.
+const PORTAL_NAV: { id: PortalPage; label: string; icon: typeof Users }[] = [
+  { id: 'overview', label: 'My view', icon: LayoutDashboard },
+  { id: 'dealers', label: 'My dealers', icon: Handshake },
+]
 
 const PAPER = '#ECE8DA'
 const INK = '#161614'
@@ -30,6 +41,7 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
   const [dealers, setDealers] = useState<PortalDealer[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [page, setPage] = useState<PortalPage>('overview')
 
   const load = () => {
     setLoading(true)
@@ -98,6 +110,29 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
         </button>
       </div>
 
+      {/* Nav */}
+      <div style={{
+        display: 'flex', gap: 2, padding: '0 20px', borderBottom: `1px solid ${LINE}`,
+        backgroundColor: PAPER, position: 'sticky', top: 62, zIndex: 1,
+      }}>
+        {PORTAL_NAV.map(n => {
+          const Icon = n.icon
+          const on = page === n.id
+          return (
+            <button key={n.id} onClick={() => setPage(n.id)} style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '10px 12px', fontSize: 13, fontFamily: 'inherit', cursor: 'pointer',
+              background: 'none', border: 'none', marginBottom: -1,
+              fontWeight: on ? 700 : 500, color: on ? INK : MUTED,
+              borderBottom: `2px solid ${on ? INK : 'transparent'}`,
+            }}>
+              <Icon size={15} /> {n.label}
+            </button>
+          )
+        })}
+      </div>
+
+      {page === 'dealers' ? <DealerRegistration /> : (
       <div style={{ padding: '20px 20px 60px', maxWidth: 760, margin: '0 auto' }}>
         <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 700, color: INK }}>My view</h1>
         <p style={{ margin: '0 0 18px', fontSize: 12.5, color: MUTED }}>
@@ -184,6 +219,7 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
           SGT HydroEdge partner portal
         </p>
       </div>
+      )}
     </div>
   )
 }

@@ -31,10 +31,15 @@ export class ValidationError extends Error {
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const token = getToken()
+  // Only declare a JSON content-type when there IS a body. Fastify rejects
+  // `Content-Type: application/json` with an empty body as 400
+  // FST_ERR_CTP_EMPTY_JSON_BODY, which broke submit and delete-contact —
+  // both send no body.
+  const hasBody = options?.body !== undefined && options?.body !== null
   const res = await fetch(`${BASE_URL}${path}`, {
     ...options,
     headers: {
-      'Content-Type': 'application/json',
+      ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(options?.headers ?? {}),
     },

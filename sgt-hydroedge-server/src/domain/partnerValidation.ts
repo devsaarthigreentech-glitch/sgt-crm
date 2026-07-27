@@ -122,84 +122,42 @@ export function validateForSubmit(input: RegistrationInput): FieldErrors {
     errs.dealer_type = 'A distributor cannot have a dealer type';
   }
 
-  // ---- Business identity (all types) ---------------------------------
+  // ---- The three genuinely required things ---------------------------
+  // Owner's instruction, 2026-07-27: only name, contact details and
+  // industry of operations are mandatory. A small dealer may not be GST-
+  // registered, may not have a company bank account, and may not have a
+  // constitution worth naming yet. Blocking them at submit means they
+  // never get onboarded at all.
   req(errs, 'legal_name', input.legal_name, 'Legal name');
-  req(errs, 'constitution', input.constitution, 'Constitution');
+  req(errs, 'contact_name', input.contact_name, 'Contact name');
+  req(errs, 'contact_mobile', input.contact_mobile, 'Contact mobile');
+  if (emptyList(input.customer_segments)) {
+    errs.customer_segments = 'Select at least one industry of operation';
+  }
 
-  // ---- Tax identity (all types) --------------------------------------
-  req(errs, 'gstin', input.gstin, 'GSTIN');
+  // ---- Everything else is optional, but must be VALID if supplied ----
+  // Optional is not the same as "accept anything". A wrong GSTIN or IFSC
+  // is worse than a blank one, because it looks like data.
   if (!blank(input.gstin)) {
     // Structure AND checksum — the arithmetic lives only in gstin.ts.
     const g = inspectGstin(String(input.gstin));
     if (!g.valid) errs.gstin = g.message ?? 'GSTIN is not valid';
   }
-  req(errs, 'pan', input.pan, 'PAN');
   if (!blank(input.pan) && !PAN_SHAPE.test(String(input.pan).toUpperCase().trim())) {
     errs.pan = 'PAN should look like AAAAA9999A';
   }
-
-  // ---- Address (all types) -------------------------------------------
-  req(errs, 'address_line1', input.address_line1, 'Address');
-  req(errs, 'city', input.city, 'City');
-  req(errs, 'state', input.state, 'State');
-  req(errs, 'pincode', input.pincode, 'PIN code');
   if (!blank(input.pincode) && !PINCODE_SHAPE.test(String(input.pincode).trim())) {
     errs.pincode = 'PIN code must be 6 digits';
   }
-
-  // ---- Contact (all types) -------------------------------------------
-  req(errs, 'contact_name', input.contact_name, 'Contact name');
-  req(errs, 'contact_mobile', input.contact_mobile, 'Contact mobile');
   if (!blank(input.contact_mobile) &&
       !MOBILE_SHAPE.test(String(input.contact_mobile).replace(/\D/g, '').slice(-10))) {
     errs.contact_mobile = 'Enter a valid 10-digit Indian mobile number';
   }
-  req(errs, 'contact_email', input.contact_email, 'Contact email');
   if (!blank(input.contact_email) && !EMAIL_SHAPE.test(String(input.contact_email).trim())) {
     errs.contact_email = 'Enter a valid email address';
   }
-
-  // ---- Banking (all types) -------------------------------------------
-  req(errs, 'bank_account_name', input.bank_account_name, 'Account holder name');
-  req(errs, 'bank_account_number', input.bank_account_number, 'Account number');
-  req(errs, 'bank_name', input.bank_name, 'Bank name');
-  req(errs, 'bank_ifsc', input.bank_ifsc, 'IFSC');
   if (!blank(input.bank_ifsc) && !IFSC_SHAPE.test(String(input.bank_ifsc).toUpperCase().trim())) {
     errs.bank_ifsc = 'IFSC should look like HDFC0001234';
-  }
-
-  // ---- Commercial ----------------------------------------------------
-  if (emptyList(input.product_lines)) {
-    errs.product_lines = 'Select at least one product line';
-  }
-
-  const profile = input.profile ?? {};
-  const sells = partnerType === 'distributor' || canSell(dealerType);
-  const services = partnerType === 'dealer' && canService(dealerType);
-
-  if (sells) {
-    req(errs, 'proposed_territory', input.proposed_territory, 'Proposed territory');
-    if (emptyList(input.customer_segments)) {
-      errs.customer_segments = 'Select at least one customer segment';
-    }
-    req(errs, 'profile.sales_team_size', profile.sales_team_size, 'Sales team size');
-  }
-
-  if (services) {
-    req(errs, 'profile.service_engineers_count', profile.service_engineers_count,
-        'Number of service engineers');
-    req(errs, 'profile.workshop_details', profile.workshop_details,
-        'Workshop and tooling details');
-    req(errs, 'profile.service_area_coverage', profile.service_area_coverage,
-        'Service area coverage');
-    req(errs, 'profile.dg_experience', profile.dg_experience,
-        'DG / electrical experience');
-  }
-
-  // Distributors hold stock; dealers do not.
-  if (partnerType === 'distributor') {
-    req(errs, 'profile.warehouse_address', profile.warehouse_address,
-        'Warehouse address');
   }
 
   return errs;

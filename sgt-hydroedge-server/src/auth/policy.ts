@@ -35,6 +35,10 @@
 // =====================================================================
 
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
+// Pulls in the module augmentation that puts jwtVerify() and `user` on
+// FastifyRequest. guard.ts declares it, but importing it here keeps this
+// file type-correct on its own rather than only when compiled alongside.
+import '@fastify/jwt'
 
 /** SGT staff. Existing behaviour preserved exactly. */
 export const INTERNAL_ROLES = new Set([
@@ -63,6 +67,19 @@ const PUBLIC_PREFIXES = [
   '/health',
 ]
 
+/**
+ * Reachable by ANY authenticated caller, internal or external.
+ *
+ * /auth/me returns only the caller's own identity, so there is nothing to
+ * leak. It also has to work for external roles: the frontend calls it on
+ * every page load to establish the session, and blocking it logs a
+ * distributor straight back out on refresh. Found exactly that way.
+ */
+const ANY_AUTHENTICATED_PREFIXES = [
+  '/api/v1/auth/me',
+  '/api/v1/auth/logout',
+]
+
 function pathOf(url: string): string {
   const q = url.indexOf('?')
   return q === -1 ? url : url.slice(0, q)
@@ -79,6 +96,7 @@ export function registerRoutePolicy(app: FastifyInstance) {
   app.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
     const path = pathOf(req.url)
     if (allowed(path, PUBLIC_PREFIXES)) return
+    if (allowed(path, ANY_AUTHENTICATED_PREFIXES)) return
 
     // Decode the token if there is one. A missing or invalid token is NOT
     // this hook's problem — the per-route requireAuth still returns 401.
