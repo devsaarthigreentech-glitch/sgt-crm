@@ -3,6 +3,7 @@ import cors from '@fastify/cors'
 import helmet from '@fastify/helmet'
 import dotenv from 'dotenv'
 import { leadsRoutes } from './routes/leads'
+import partnerRegistrationRoutes from './routes/partnerRegistration.routes.js'
 import erpRoutes from './routes/erp';
 import jwt from '@fastify/jwt'
 import authRoutes from './routes/auth.js'
@@ -44,6 +45,7 @@ async function start() {
 
   // Routes
   await app.register(leadsRoutes, { prefix: '/api/v1' })
+  await app.register(partnerRegistrationRoutes, { prefix: '/api/v1/partners' })
   app.register(erpRoutes, { prefix: '/api/v1' });
   await app.register(authRoutes,   { prefix: '/api/v1' })
   await app.register(usersRoutes, { prefix: '/api/v1' })

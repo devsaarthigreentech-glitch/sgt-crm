@@ -1,7 +1,7 @@
 import { useIsMobile } from '../hooks/useIsMobile'
-import { LayoutGrid, Inbox, Plus, BarChart3, LayoutDashboard, User, LogOut, Building2, Send } from 'lucide-react'
+import { LayoutGrid, Inbox, Plus, BarChart3, LayoutDashboard, User, LogOut, Building2, Send, Handshake } from 'lucide-react'
 
-type Page = 'home' | 'my-dashboard' | 'pipeline' | 'triage' | 'capture' | 'customers' | 'outreach'
+type Page = 'home' | 'my-dashboard' | 'pipeline' | 'triage' | 'capture' | 'customers' | 'outreach' | 'onboarding'
 
 interface Props {
   current: Page
@@ -29,6 +29,8 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'triage', label: 'Triage queue', short: 'Triage', icon: Inbox, roles: ['director', 'sales'] },
   { id: 'capture', label: 'Capture lead', short: 'Capture', icon: Plus, roles: ['director', 'sales'] },
   { id: 'outreach', label: 'Outreach', short: 'Outreach', icon: Send, roles: ['director', 'sales'] },
+  // Director-only until the partner_ops role and its route whitelist land.
+  { id: 'onboarding', label: 'Partner onboarding', short: 'Partners', icon: Handshake, roles: ['director'] },
 ]
 
 function initials(name: string): string {

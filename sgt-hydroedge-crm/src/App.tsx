@@ -12,8 +12,9 @@ import { me, clearToken, type User } from './lib/auth'
 import Login from './components/auth/Login'
 import CustomerList from './components/customer/CustomerList'
 import OutreachDesk from './components/outreach/OutreachDesk';
+import PartnerOnboarding from './components/onboarding/PartnerOnboarding'
 
-type Page = 'home' | 'my-dashboard' | 'pipeline' | 'customers' | 'triage' | 'capture' | 'outreach'
+type Page = 'home' | 'my-dashboard' | 'pipeline' | 'customers' | 'triage' | 'capture' | 'outreach' | 'onboarding'
 
 export default function App() {
   const [page, setPage] = useState<Page>('home')
@@ -82,7 +83,9 @@ export default function App() {
       />
       <main style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-        {effectivePage === 'outreach' ? (
+        {effectivePage === 'onboarding' ? (
+            <PartnerOnboarding />
+        ) : effectivePage === 'outreach' ? (
             <OutreachDesk />
         ) : effectivePage === 'home' || effectivePage === 'my-dashboard' ? (
           <HomeDashboard
