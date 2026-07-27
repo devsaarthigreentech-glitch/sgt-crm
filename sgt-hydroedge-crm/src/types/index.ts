@@ -1,6 +1,6 @@
 export type LeadType = 'Prospect' | 'KOL' | 'Partner Prospect' | 'Distributor Prospect' | 'Strategic Contact'
 
-export type Vertical = 'Industry' | 'Marine' | 'Vehicles' | 'Small DG' | 'Cross-vertical'
+export type Vertical = 'Industry' | 'Mining' | 'Marine' | 'Vehicles' | 'Small DG' | 'Cross-vertical'
 export type CommercialModel = 'DaaS' | 'OEM' | 'CapEx' | 'Consulting'
 export type LeadOrigin = 'Inbound' | 'Outbound' | 'Partner-originated'
 export type LeadStage = 'New' | 'Allocated' | 'Qualifying' | 'Discovery' | 'Proposal' | 'Negotiation'

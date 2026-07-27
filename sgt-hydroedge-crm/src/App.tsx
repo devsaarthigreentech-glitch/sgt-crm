@@ -119,6 +119,7 @@ export default function App() {
                   phone: data.phone,
                 },
                 leadType: 'Prospect',
+                vertical: data.vertical || undefined,
                 captureSource: 'INTERNAL',
                 initialNotes: data.notes || undefined,
                 ownerName: undefined,

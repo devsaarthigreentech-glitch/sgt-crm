@@ -2,7 +2,12 @@ import { useState } from 'react'
 import { Camera, Send } from 'lucide-react'
 import CardScanner from './CardScanner'
 import type { ExtractedCard } from '../../lib/gemini'
+import type { Vertical } from '../../types'
 import { useIsMobile } from '../../hooks/useIsMobile'
+
+const VERTICALS: Vertical[] = [
+  'Industry', 'Mining', 'Marine', 'Vehicles', 'Small DG', 'Cross-vertical',
+]
 
 interface FormData {
   companyName: string
@@ -10,6 +15,7 @@ interface FormData {
   phone: string
   email: string
   location: string
+  vertical: string   // '' = not yet classified; triage will set it
   notes: string
 }
 
@@ -19,6 +25,7 @@ const EMPTY: FormData = {
   phone: '',
   email: '',
   location: '',
+  vertical: '',
   notes: '',
 }
 
@@ -218,6 +225,20 @@ export default function CaptureForm({ onCancel, onSubmit }: Props) {
                 placeholder="City, State"
                 style={inputStyle}
               />
+            </Field>
+
+            {/* Optional here by design — capture stays fast. But it must be set
+                before the lead can leave triage, so offering it now saves a
+                trip back when the person already knows the answer. */}
+            <Field label="Vertical">
+              <select
+                value={form.vertical}
+                onChange={e => set('vertical', e.target.value)}
+                style={inputStyle}
+              >
+                <option value="">Not sure yet — set in triage</option>
+                {VERTICALS.map(v => <option key={v} value={v}>{v}</option>)}
+              </select>
             </Field>
 
             <Field label="Quick notes">

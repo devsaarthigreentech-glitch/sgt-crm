@@ -22,6 +22,7 @@ export function daysAgo(dateStr: string): string {
 export function getVerticalColor(vertical: string): string {
   const map: Record<string, string> = {
     'Industry': '#1E3A6B',
+    'Mining': '#6B4A2F',
     'Marine': '#0E5550',
     'Vehicles': '#B8541E',
     'Small DG': '#4A7920',
@@ -33,6 +34,7 @@ export function getVerticalColor(vertical: string): string {
 export function getVerticalSoft(vertical: string): string {
   const map: Record<string, string> = {
     'Industry': '#D4DEED',
+    'Mining': '#E6DACD',
     'Marine': '#D5E5E3',
     'Vehicles': '#F2DCC6',
     'Small DG': '#DDE9C9',

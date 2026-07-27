@@ -138,7 +138,33 @@ export function defaultDivision(vertical: string): string {
     'Marine':         'MARINE',
     'Vehicles':       'GREENX',
     'Small DG':       'GREENX',
+    'Mining':         'GREENEDGE',
     'Cross-vertical': 'GREENEDGE',
   }
   return map[vertical] ?? 'GREENEDGE'
+}
+
+/**
+ * The Outreach desk and the leads side grew separate vertical vocabularies:
+ *   outreach: DG | Mining | Marine | Vehicles | Small DG
+ *   leads:    Industry | Mining | Marine | Vehicles | Small DG | Cross-vertical
+ *
+ * DG and Industry are the same thing under two names. Mining existed only on
+ * the outreach side until it was added here, which is why promoted mining
+ * contacts had nowhere to land.
+ *
+ * Returns undefined for an unrecognised or empty value rather than guessing —
+ * an untagged lead is visible to directors and can be classified by hand,
+ * whereas a wrongly-tagged one silently lands in someone else's pipeline.
+ */
+export function outreachVerticalToLead(outreachVertical: string | null | undefined): string | undefined {
+  const map: Record<string, string> = {
+    'dg':       'Industry',
+    'industry': 'Industry',
+    'mining':   'Mining',
+    'marine':   'Marine',
+    'vehicles': 'Vehicles',
+    'small dg': 'Small DG',
+  }
+  return map[(outreachVertical ?? '').trim().toLowerCase()]
 }

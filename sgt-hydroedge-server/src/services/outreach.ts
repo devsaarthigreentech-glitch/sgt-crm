@@ -10,6 +10,7 @@
 
 import { pool } from '../db/pool';
 import { createLeadInTx } from './leadCreate';
+import { outreachVerticalToLead } from '../domain/leads';
 
 export type OutreachContact = {
   id: number;
@@ -424,15 +425,27 @@ export async function promoteContact(id: number, actor: string | null): Promise<
       c.source_file ? `Source: ${c.source_file}` : null,
     ].filter(Boolean).join('\n') || undefined;
 
+    // Carry the vertical across, translating outreach's vocabulary to the
+    // leads one (DG → Industry). Without this the lead lands untagged and is
+    // invisible to the pipeline owner for that vertical.
+    const leadVertical = outreachVerticalToLead(c.vertical);
+
     const lead = await createLeadInTx(client, {
       account: { name: c.company, location: c.city || undefined },
       primaryContact: { name: c.name, role: c.title || undefined, email, phone: c.phone || undefined },
       leadType: 'Prospect',
+      vertical: leadVertical,
       captureSource: 'INTERNAL',
       initialNotes: notes,
       ownerName: undefined,   // unassigned → lands in triage
       ownerId: undefined,
-      metadata: { promotedFromOutreachContactId: c.id, outreachLayer: c.layer || null },
+      metadata: {
+        promotedFromOutreachContactId: c.id,
+        outreachLayer: c.layer || null,
+        // Keep the original when it maps to nothing, so an unrecognised
+        // vertical can be traced back rather than silently vanishing.
+        ...(leadVertical ? {} : { unmappedOutreachVertical: c.vertical || null }),
+      },
     }, actor);                // created_by = promoter
 
     await client.query(

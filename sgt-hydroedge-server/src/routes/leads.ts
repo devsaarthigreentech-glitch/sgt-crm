@@ -93,7 +93,11 @@ const CreateLeadSchema = z.object({
     phone: z.string().optional(),
   }).optional(),
   leadType: z.enum(['Prospect', 'KOL', 'Partner Prospect', 'Distributor Prospect', 'Strategic Contact']).default('Prospect'),
-  vertical: z.enum(['Industry', 'Marine', 'Vehicles', 'Small DG', 'Cross-vertical']).optional(),
+  // Stays optional: capture is deliberately "grab it now, classify in triage".
+  // The vertical is instead enforced on the way OUT of New — see the advance
+  // handler — so nothing reaches Allocated or beyond untagged.
+  // 'Mining' added to match the outreach vocabulary.
+  vertical: z.enum(['Industry', 'Mining', 'Marine', 'Vehicles', 'Small DG', 'Cross-vertical']).optional(),
   commercialModel: z.enum(['DaaS', 'OEM', 'CapEx', 'Consulting']).optional(),
   origin: z.enum(['Inbound', 'Outbound', 'Partner-originated']).optional(),
   estimatedValue: z.number().positive().optional(),
@@ -544,7 +548,7 @@ export async function leadsRoutes(fastify: FastifyInstance) {
     const { id } = request.params
 
     const lead = await query(
-      `SELECT id, stage, version FROM lead_service.leads
+      `SELECT id, stage, version, vertical FROM lead_service.leads
        WHERE id = $1 AND deleted_at IS NULL`,
       [id]
     )
@@ -558,6 +562,19 @@ export async function leadsRoutes(fastify: FastifyInstance) {
     if (!canTransition(current.stage, body.toStage)) {
       return reply.status(422).send({
         error: `Cannot transition from ${current.stage} to ${body.toStage}`,
+      })
+    }
+
+    // A lead may be captured untagged — "capture now, classify in triage" — but
+    // it must not leave New without a vertical. Visibility for a pipeline owner
+    // is scoped by vertical, so an untagged lead past triage is invisible to the
+    // person meant to be managing it. Closing a dead lead is exempt: there's no
+    // pipeline to manage and forcing a classification would be busywork.
+    const leavingTriage = current.stage === 'New' && body.toStage !== 'Closed Lost'
+    if (leavingTriage && !current.vertical?.trim()) {
+      return reply.status(422).send({
+        error: 'Set the vertical before moving this lead out of New — ' +
+               'it decides who can see and manage the lead.',
       })
     }
 
