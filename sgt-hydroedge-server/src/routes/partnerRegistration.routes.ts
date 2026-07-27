@@ -206,14 +206,73 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
         error: { code: 'not_found', message: 'Registration not found' },
       })
     }
-    const docs = await query(
-      `select id, doc_type, original_filename, mime_type, size_bytes,
-              uploaded_at, verified
-         from partner_service.registration_document
-        where registration_id = $1 and deleted_at is null
-        order by uploaded_at`, [id])
-    return reply.send({ data: { ...rows[0], documents: docs.rows } })
+    const [docs, contacts] = await Promise.all([
+      query(
+        `select id, doc_type, original_filename, mime_type, size_bytes,
+                uploaded_at, verified
+           from partner_service.registration_document
+          where registration_id = $1 and deleted_at is null
+          order by uploaded_at`, [id]),
+      query(
+        `select id, name, designation, mobile, email, notes
+           from partner_service.registration_contact
+          where registration_id = $1
+          order by id`, [id]),
+    ])
+    return reply.send({
+      data: { ...rows[0], documents: docs.rows, contacts: contacts.rows },
+    })
   })
+
+  // ---- Additional contacts ----------------------------------------------
+  // Name only is enough. A forwarded card often gives a name and a number
+  // long before a designation or an email, and a partly-known contact is
+  // still worth recording. The PRIMARY contact stays strictly validated.
+  app.post('/registrations/:id/contacts', { preHandler: director }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const b = (req.body ?? {}) as Record<string, string>
+    const name = String(b.name ?? '').trim()
+    if (!name) {
+      return reply.code(400).send({
+        error: { code: 'bad_request', message: 'Contact name is required' },
+      })
+    }
+    const { rows: reg } = await query(
+      `select status from partner_service.registration where id = $1`, [id])
+    if (!reg.length) {
+      return reply.code(404).send({
+        error: { code: 'not_found', message: 'Registration not found' },
+      })
+    }
+    if (reg[0].status !== 'draft') {
+      return reply.code(409).send({
+        error: { code: 'not_editable', message: 'Registration is no longer editable' },
+      })
+    }
+    const { rows } = await query(
+      `insert into partner_service.registration_contact
+         (registration_id, name, designation, mobile, email, notes)
+       values ($1, $2, $3, $4, $5, $6)
+       returning id, name, designation, mobile, email, notes`,
+      [id, name, b.designation ?? null, b.mobile ?? null, b.email ?? null, b.notes ?? null])
+    return reply.code(201).send({ data: rows[0] })
+  })
+
+  app.delete('/registrations/:id/contacts/:contactId', { preHandler: director },
+    async (req, reply) => {
+      const { id, contactId } = req.params as { id: string; contactId: string }
+      // Scoped by registration_id too, so a contact cannot be deleted by
+      // guessing its id from under a different registration.
+      const { rowCount } = await query(
+        `delete from partner_service.registration_contact
+          where id = $1 and registration_id = $2`, [contactId, id])
+      if (!rowCount) {
+        return reply.code(404).send({
+          error: { code: 'not_found', message: 'Contact not found' },
+        })
+      }
+      return reply.send({ data: { deleted: true } })
+    })
 
   // ---- Save draft — NO validation ---------------------------------------
   app.patch('/registrations/:id', { preHandler: director }, async (req, reply) => {

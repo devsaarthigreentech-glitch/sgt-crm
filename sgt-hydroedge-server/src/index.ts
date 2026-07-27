@@ -4,6 +4,8 @@ import helmet from '@fastify/helmet'
 import dotenv from 'dotenv'
 import { leadsRoutes } from './routes/leads'
 import partnerRegistrationRoutes from './routes/partnerRegistration.routes.js'
+import portalRoutes from './routes/portal.routes.js'
+import { registerRoutePolicy } from './auth/policy.js'
 import erpRoutes from './routes/erp';
 import jwt from '@fastify/jwt'
 import authRoutes from './routes/auth.js'
@@ -43,9 +45,15 @@ async function start() {
   }))
   app.register(jwt, { secret: process.env.JWT_SECRET! })
 
+  // Deny-by-default access for EXTERNAL roles (distributors, partners).
+  // Must be registered before the route plugins so it runs ahead of every
+  // handler — including any route added later that forgets its own guard.
+  registerRoutePolicy(app)
+
   // Routes
   await app.register(leadsRoutes, { prefix: '/api/v1' })
   await app.register(partnerRegistrationRoutes, { prefix: '/api/v1/partners' })
+  await app.register(portalRoutes, { prefix: '/api/v1/portal' })
   app.register(erpRoutes, { prefix: '/api/v1' });
   await app.register(authRoutes,   { prefix: '/api/v1' })
   await app.register(usersRoutes, { prefix: '/api/v1' })

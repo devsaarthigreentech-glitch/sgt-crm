@@ -93,7 +93,27 @@ export interface PartnerOrg {
   parent_name: string | null
 }
 
+export interface RegContact {
+  id: number
+  name: string
+  designation: string | null
+  mobile: string | null
+  email: string | null
+  notes: string | null
+}
+
 export const onboardingApi = {
+  addContact: (id: number, body: Partial<RegContact> & { name: string }) =>
+    request<{ data: RegContact }>(`/partners/registrations/${id}/contacts`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }).then(r => r.data),
+
+  deleteContact: (id: number, contactId: number) =>
+    request<{ data: unknown }>(`/partners/registrations/${id}/contacts/${contactId}`, {
+      method: 'DELETE',
+    }),
+
   /** The live partner network. Distinct from registrations. */
   orgs: () => request<{ data: PartnerOrg[] }>('/partners/orgs').then(r => r.data),
 

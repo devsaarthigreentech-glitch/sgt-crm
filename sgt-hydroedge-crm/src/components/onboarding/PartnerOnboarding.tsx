@@ -13,10 +13,11 @@
 // Inline styles only, per house convention.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Plus, Check, AlertCircle } from 'lucide-react'
+import { ArrowLeft, Plus, Check, AlertCircle, Trash2 } from 'lucide-react'
 import {
   onboardingApi, ValidationError,
   type Reference, type Registration, type GstinInspection, type PartnerOrg,
+  type RegContact,
 } from './onboardingApi'
 
 const PAPER = '#ECE8DA'
@@ -216,6 +217,8 @@ export default function PartnerOnboarding() {
   const [loading, setLoading] = useState(true)
 
   const [gstin, setGstin] = useState<GstinInspection | null>(null)
+  const [contacts, setContacts] = useState<RegContact[]>([])
+  const [newContact, setNewContact] = useState({ name: '', designation: '', mobile: '', email: '' })
 
   const dirty = useRef(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -321,6 +324,9 @@ export default function PartnerOnboarding() {
     try {
       const r = await onboardingApi.get(id)
       setForm({ ...r, profile: r.profile ?? {} })
+      setContacts(r.contacts ?? [])
+      setGstin(null)
+      setNewContact({ name: '', designation: '', mobile: '', email: '' })
       setOpenId(id)
     } catch (e: any) { setBanner(e.message) }
   }
@@ -335,6 +341,9 @@ export default function PartnerOnboarding() {
       setList(l => [r, ...l])
       dirty.current = false
       setForm({ ...r, profile: {} })
+      setContacts([])
+      setGstin(null)
+      setNewContact({ name: '', designation: '', mobile: '', email: '' })
       setOpenId(r.id)
       setErrors({}); setBanner(null)
     } catch (e: any) { setBanner(e.message) }
@@ -643,6 +652,121 @@ export default function PartnerOnboarding() {
                   onChange={v => set('contact_mobile', v)} error={errors.contact_mobile} />
             <Text label="Email" required type="email" value={form.contact_email}
                   onChange={v => set('contact_email', v)} error={errors.contact_email} />
+          </Section>
+
+          <Section
+            title={`Other contacts${contacts.length ? ` (${contacts.length})` : ''}`}
+            hint="Anyone else at the partner — service head, accounts, a second principal. A name is enough; fill the rest in when you have it."
+          >
+            {contacts.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
+                {contacts.map(c => (
+                  <div key={c.id} style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    padding: '9px 11px', borderRadius: 7,
+                    backgroundColor: '#F7F4EA', border: `1px solid ${LINE}`,
+                  }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: INK }}>
+                        {c.name}
+                        {c.designation && (
+                          <span style={{ fontWeight: 500, color: MUTED }}> · {c.designation}</span>
+                        )}
+                      </div>
+                      {(c.mobile || c.email) && (
+                        <div style={{ fontSize: 11.5, color: MUTED, marginTop: 2 }}>
+                          {[c.mobile, c.email].filter(Boolean).join(' · ')}
+                        </div>
+                      )}
+                    </div>
+                    {editable && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (openId === null) return
+                          try {
+                            await onboardingApi.deleteContact(openId, c.id)
+                            setContacts(cs => cs.filter(x => x.id !== c.id))
+                          } catch (e: any) { setBanner(e.message) }
+                        }}
+                        style={{
+                          background: 'none', border: 'none', cursor: 'pointer',
+                          color: FAINT, padding: 4, display: 'flex', alignItems: 'center',
+                        }}
+                        aria-label={`Remove ${c.name}`}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {editable && (
+              <div style={{
+                padding: 11, borderRadius: 8,
+                border: `1px dashed ${LINE}`, backgroundColor: '#FCFBF7',
+              }}>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <div style={{ flex: '1 1 150px' }}>
+                    <input
+                      placeholder="Name *" value={newContact.name}
+                      onChange={e => setNewContact(c => ({ ...c, name: e.target.value }))}
+                      style={inputStyle()}
+                    />
+                  </div>
+                  <div style={{ flex: '1 1 130px' }}>
+                    <input
+                      placeholder="Designation" value={newContact.designation}
+                      onChange={e => setNewContact(c => ({ ...c, designation: e.target.value }))}
+                      style={inputStyle()}
+                    />
+                  </div>
+                  <div style={{ flex: '1 1 120px' }}>
+                    <input
+                      placeholder="Mobile" value={newContact.mobile}
+                      onChange={e => setNewContact(c => ({ ...c, mobile: e.target.value }))}
+                      style={inputStyle()}
+                    />
+                  </div>
+                  <div style={{ flex: '1 1 160px' }}>
+                    <input
+                      placeholder="Email" value={newContact.email}
+                      onChange={e => setNewContact(c => ({ ...c, email: e.target.value }))}
+                      style={inputStyle()}
+                    />
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={!newContact.name.trim()}
+                  onClick={async () => {
+                    if (openId === null || !newContact.name.trim()) return
+                    try {
+                      const added = await onboardingApi.addContact(openId, {
+                        name: newContact.name.trim(),
+                        designation: newContact.designation.trim() || null,
+                        mobile: newContact.mobile.trim() || null,
+                        email: newContact.email.trim() || null,
+                      })
+                      setContacts(cs => [...cs, added])
+                      setNewContact({ name: '', designation: '', mobile: '', email: '' })
+                    } catch (e: any) { setBanner(e.message) }
+                  }}
+                  style={{
+                    marginTop: 9, display: 'flex', alignItems: 'center', gap: 5,
+                    padding: '7px 12px', fontSize: 12.5, fontWeight: 600, fontFamily: 'inherit',
+                    border: 'none', borderRadius: 6,
+                    cursor: newContact.name.trim() ? 'pointer' : 'not-allowed',
+                    backgroundColor: newContact.name.trim() ? INK : '#D8D3C4',
+                    color: newContact.name.trim() ? '#fff' : '#8C887E',
+                  }}
+                >
+                  <Plus size={14} /> Add contact
+                </button>
+              </div>
+            )}
           </Section>
 
           <Section title="Banking" hint="Must match the cancelled cheque uploaded later.">

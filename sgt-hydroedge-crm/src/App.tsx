@@ -13,6 +13,12 @@ import Login from './components/auth/Login'
 import CustomerList from './components/customer/CustomerList'
 import OutreachDesk from './components/outreach/OutreachDesk';
 import PartnerOnboarding from './components/onboarding/PartnerOnboarding'
+import DistributorPortal from './components/portal/DistributorPortal'
+
+// Roles belonging to partners rather than SGT staff. These get their own
+// shell entirely — see the branch below. Kept in sync with
+// EXTERNAL_ROLE_ALLOW in the server's src/auth/policy.ts.
+const EXTERNAL_ROLES = ['distributor']
 
 type Page = 'home' | 'my-dashboard' | 'pipeline' | 'customers' | 'triage' | 'capture' | 'outreach' | 'onboarding'
 
@@ -67,6 +73,17 @@ export default function App() {
 
   if (!authChecked) return <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6A675F' }}>Loading…</div>
   if (!user) return <Login onSuccess={u => { setUser(u); setPage(u.role === 'director' ? 'home' : 'my-dashboard') }} />
+
+  // External partners get a completely separate shell. Branching here — before
+  // the sidebar and CRM pages are constructed — means none of the director UI
+  // is ever mounted for them, and no CRM data is fetched on their behalf.
+  //
+  // This is convenience, not the boundary. The server denies an external role
+  // everything outside /api/v1/portal (src/auth/policy.ts), so bypassing this
+  // branch would still get them nothing.
+  if (EXTERNAL_ROLES.includes(user.role)) {
+    return <DistributorPortal onLogout={() => { clearToken(); setUser(null) }} />
+  }
 
   // Role guard: only directors get the director view. Anyone else who lands on
   // 'home' (stale state, deep link, etc.) sees their own dashboard instead.
