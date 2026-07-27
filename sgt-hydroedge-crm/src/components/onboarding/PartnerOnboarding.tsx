@@ -14,6 +14,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Plus, Check, AlertCircle, Trash2 } from 'lucide-react'
+import OrgDetailScreen from './OrgDetailScreen'
 import {
   onboardingApi, ValidationError,
   type Reference, type Registration, type GstinInspection, type PartnerOrg,
