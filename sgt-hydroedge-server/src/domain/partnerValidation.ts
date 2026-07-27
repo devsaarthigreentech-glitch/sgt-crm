@@ -31,6 +31,8 @@
 // matrix can grow without a migration.
 // =====================================================================
 
+import { inspectGstin } from './gstin.js';
+
 export type PartnerType = 'distributor' | 'dealer';
 export type DealerType = 'SS' | 'SM';
 
@@ -78,15 +80,6 @@ const blank = (v: unknown): boolean =>
 const emptyList = (v: unknown): boolean =>
   !Array.isArray(v) || v.length === 0;
 
-/**
- * Structural GSTIN shape only — 2 digits, 10-char PAN, entity digit, a
- * letter (normally Z), then the check character.
- *
- * The CHECKSUM is deliberately not verified here. That lands in
- * src/domain/gstin.ts (P2) and this function will call it, so that the
- * arithmetic lives in exactly one place.
- */
-const GSTIN_SHAPE = /^\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z]\d$|^\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z][A-Z0-9]$/;
 const PAN_SHAPE = /^[A-Z]{5}\d{4}[A-Z]$/;
 const IFSC_SHAPE = /^[A-Z]{4}0[A-Z0-9]{6}$/;
 const PINCODE_SHAPE = /^\d{6}$/;
@@ -136,9 +129,9 @@ export function validateForSubmit(input: RegistrationInput): FieldErrors {
   // ---- Tax identity (all types) --------------------------------------
   req(errs, 'gstin', input.gstin, 'GSTIN');
   if (!blank(input.gstin)) {
-    const g = String(input.gstin).toUpperCase().trim();
-    if (g.length !== 15) errs.gstin = 'GSTIN must be exactly 15 characters';
-    else if (!GSTIN_SHAPE.test(g)) errs.gstin = 'GSTIN format looks wrong';
+    // Structure AND checksum — the arithmetic lives only in gstin.ts.
+    const g = inspectGstin(String(input.gstin));
+    if (!g.valid) errs.gstin = g.message ?? 'GSTIN is not valid';
   }
   req(errs, 'pan', input.pan, 'PAN');
   if (!blank(input.pan) && !PAN_SHAPE.test(String(input.pan).toUpperCase().trim())) {

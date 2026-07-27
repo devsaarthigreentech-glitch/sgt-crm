@@ -25,6 +25,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { query, pool } from '../db/pool.js'
 import { requireRole } from '../auth/guard.js'
 import { validateForSubmit, type RegistrationInput } from '../domain/partnerValidation.js'
+import { inspectGstin } from '../domain/gstin.js'
 
 const director = requireRole('director')
 
@@ -91,6 +92,29 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
         distributors: distributors.rows,
       },
     })
+  })
+
+  // ---- GSTIN Phase A: structure + checksum + derivation -----------------
+  // Entirely offline — no external call, nothing metered. Resolves the
+  // state name from the derived code so the form can prefill it.
+  app.post('/gstin/inspect', { preHandler: director }, async (req, reply) => {
+    const { gstin } = (req.body ?? {}) as { gstin?: string }
+    const result = inspectGstin(String(gstin ?? ''))
+
+    // The state name is a nicety; the checksum and derivation are the point
+    // and need no database. A DB problem must not take the whole inspection
+    // down, or Phase A stops being the dependency-free check it exists to be.
+    let stateName: string | null = null
+    if (result.stateCode) {
+      try {
+        const { rows } = await query(
+          `select name from partner_service.state_code where code = $1`, [result.stateCode])
+        stateName = rows[0]?.name ?? null
+      } catch (err) {
+        req.log.warn({ err }, 'gstin/inspect: state_code lookup failed; returning derivation only')
+      }
+    }
+    return reply.send({ data: { ...result, stateName } })
   })
 
   // ---- Create a draft ---------------------------------------------------

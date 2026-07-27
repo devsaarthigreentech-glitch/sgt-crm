@@ -16,7 +16,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Plus, Check, AlertCircle } from 'lucide-react'
 import {
   onboardingApi, ValidationError,
-  type Reference, type Registration,
+  type Reference, type Registration, type GstinInspection,
 } from './onboardingApi'
 
 const PAPER = '#ECE8DA'
@@ -186,8 +186,11 @@ export default function PartnerOnboarding() {
   const [banner, setBanner] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
+  const [gstin, setGstin] = useState<GstinInspection | null>(null)
+
   const dirty = useRef(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const gstinTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     Promise.all([onboardingApi.reference(), onboardingApi.list()])
@@ -218,6 +221,37 @@ export default function PartnerOnboarding() {
     dirty.current = true
     setForm(f => ({ ...f, [key]: value }))
     setErrors(e => { if (!e[key]) return e; const n = { ...e }; delete n[key]; return n })
+  }
+
+  /**
+   * GSTIN is self-describing, so once 15 characters are in we derive state,
+   * PAN and constitution from it rather than making the user retype them.
+   * Debounced, and only fires at full length — no call per keystroke.
+   * Derived fields are only filled when currently empty, so a deliberate
+   * override is never silently undone.
+   */
+  const onGstinChange = (raw: string) => {
+    const v = raw.toUpperCase().replace(/\s/g, '')
+    set('gstin', v)
+    setGstin(null)
+    if (gstinTimer.current) clearTimeout(gstinTimer.current)
+    if (v.length !== 15) return
+    gstinTimer.current = setTimeout(async () => {
+      try {
+        const r = await onboardingApi.inspectGstin(v)
+        setGstin(r)
+        if (!r.valid) return
+        setForm(f => {
+          const next = { ...f }
+          if (r.pan && !f.pan) next.pan = r.pan
+          if (r.stateName && !f.state) next.state = r.stateName
+          if (r.stateCode && !f.state_code) next.state_code = r.stateCode
+          if (r.constitutionHint && !f.constitution) next.constitution = r.constitutionHint
+          return next
+        })
+        dirty.current = true
+      } catch { /* inspection is a convenience; submit still validates */ }
+    }, 450)
   }
 
   const setProfile = (key: string, value: any) => {
@@ -434,9 +468,28 @@ export default function PartnerOnboarding() {
                   onChange={v => set('years_in_business', v === '' ? null : Number(v))} />
           </Section>
 
-          <Section title="Tax identity" hint="GSTIN is checked for format now; the full checksum check arrives with the GSTIN module.">
-            <Text label="GSTIN" required value={form.gstin} placeholder="08AABCC1234D1Z5"
-                  onChange={v => set('gstin', v.toUpperCase())} error={errors.gstin} />
+          <Section title="Tax identity" hint="The GSTIN's own checksum is verified as you type — no external lookup, nothing metered.">
+            <Text label="GSTIN" required value={form.gstin} placeholder="08AABCC1234D1ZB"
+                  onChange={onGstinChange} error={errors.gstin} />
+            {gstin && (
+              <div style={{
+                marginTop: -8, marginBottom: 14, padding: '8px 10px', borderRadius: 6, fontSize: 12,
+                backgroundColor: gstin.valid ? '#DCEBE1' : '#F3DAD5',
+                color: gstin.valid ? OK : DANGER,
+              }}>
+                {gstin.valid ? (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                    <Check size={13} />
+                    Checksum valid · {gstin.stateName ?? gstin.stateCode} · PAN {gstin.pan}
+                    {gstin.entityType ? ` · ${gstin.entityType}` : ''}
+                  </span>
+                ) : (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                    <AlertCircle size={13} /> {gstin.message}
+                  </span>
+                )}
+              </div>
+            )}
             <Text label="PAN" required value={form.pan} placeholder="AABCC1234D"
                   onChange={v => set('pan', v.toUpperCase())} error={errors.pan} />
             <Text label="Udyam number" value={form.udyam_number} onChange={v => set('udyam_number', v)} />

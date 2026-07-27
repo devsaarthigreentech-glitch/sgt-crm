@@ -68,7 +68,24 @@ export interface Registration {
   [key: string]: any
 }
 
+export interface GstinInspection {
+  valid: boolean
+  message?: string
+  stateCode?: string
+  stateName?: string | null
+  pan?: string
+  entityType?: string
+  constitutionHint?: string | null
+}
+
 export const onboardingApi = {
+  /** Offline structure + checksum check. No external API, nothing metered. */
+  inspectGstin: (gstin: string) =>
+    request<{ data: GstinInspection }>('/partners/gstin/inspect', {
+      method: 'POST',
+      body: JSON.stringify({ gstin }),
+    }).then(r => r.data),
+
   reference: () =>
     request<{ data: Reference }>('/partners/reference').then(r => r.data),
 
