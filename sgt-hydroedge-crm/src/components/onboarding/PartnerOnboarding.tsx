@@ -16,7 +16,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Plus, Check, AlertCircle } from 'lucide-react'
 import {
   onboardingApi, ValidationError,
-  type Reference, type Registration, type GstinInspection,
+  type Reference, type Registration, type GstinInspection, type PartnerOrg,
 } from './onboardingApi'
 
 const PAPER = '#ECE8DA'
@@ -162,6 +162,33 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
   )
 }
 
+// Levenshtein distance, two-row DP. Used only for the duplicate-partner
+// warning, against a handful of orgs — no need for anything cleverer.
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0
+  const m = a.length, n = b.length
+  if (!m) return n
+  if (!n) return m
+  let prev: number[] = Array.from({ length: n + 1 }, (_, i) => i)
+  let cur: number[] = new Array(n + 1)
+  for (let i = 1; i <= m; i++) {
+    cur[0] = i
+    for (let j = 1; j <= n; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+    }
+    ;[prev, cur] = [cur, prev]
+  }
+  return prev[n]
+}
+
+function nearMatch(a: string, b: string): boolean {
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+  const x = norm(a), y = norm(b)
+  if (!x || !y) return false
+  const tolerance = Math.max(2, Math.floor(Math.max(x.length, y.length) * 0.1))
+  return levenshtein(x, y) <= tolerance
+}
+
 function StatusChip({ status }: { status: string }) {
   const c = STATUS_COLOURS[status] ?? STATUS_COLOURS.draft
   return (
@@ -179,6 +206,8 @@ function StatusChip({ status }: { status: string }) {
 export default function PartnerOnboarding() {
   const [ref, setRef] = useState<Reference | null>(null)
   const [list, setList] = useState<Registration[]>([])
+  const [orgs, setOrgs] = useState<PartnerOrg[]>([])
+  const [tab, setTab] = useState<'network' | 'applications'>('network')
   const [openId, setOpenId] = useState<number | null>(null)
   const [form, setForm] = useState<Form>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -193,11 +222,33 @@ export default function PartnerOnboarding() {
   const gstinTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
-    Promise.all([onboardingApi.reference(), onboardingApi.list()])
-      .then(([r, l]) => { setRef(r); setList(l) })
+    Promise.all([onboardingApi.reference(), onboardingApi.list(), onboardingApi.orgs()])
+      .then(([r, l, o]) => { setRef(r); setList(l); setOrgs(o) })
       .catch(e => setBanner(e.message))
       .finally(() => setLoading(false))
   }, [])
+
+  /**
+   * A draft that looks like a partner who already exists.
+   *
+   * GSTIN first — it is authoritative. Falling back to the legal name needs
+   * real edit distance rather than a prefix or substring test: the case this
+   * exists for is "Contiental" vs "Continental", a single dropped letter in
+   * the middle, which no prefix comparison catches.
+   *
+   * Tolerance scales with length (10%, floor 2), which separates the typo
+   * (distance 1) from a genuinely different company like "Oriental Power
+   * System" (distance 4). This only ever raises a warning — it never blocks.
+   */
+  const looksLikeExisting = (r: Registration): PartnerOrg | undefined => {
+    if (r.gstin) {
+      const byGstin = orgs.find(
+        o => o.gstin && o.gstin.toUpperCase() === String(r.gstin).toUpperCase())
+      if (byGstin) return byGstin
+    }
+    if (!r.legal_name) return undefined
+    return orgs.find(o => nearMatch(o.legal_name, r.legal_name))
+  }
 
   // ---- Autosave. Debounced; never runs on the initial load of a record. ----
   useEffect(() => {
@@ -354,35 +405,112 @@ export default function PartnerOnboarding() {
           ))}
         </div>
 
-        {list.length === 0 ? (
-          <p style={{ fontSize: 13, color: FAINT }}>No registrations yet.</p>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {list.map(r => (
-              <button
-                key={r.id} onClick={() => openRecord(r.id)}
-                style={{
-                  textAlign: 'left', width: '100%', cursor: 'pointer', fontFamily: 'inherit',
-                  backgroundColor: '#fff', border: `1px solid ${LINE}`, borderRadius: 9, padding: '12px 14px',
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 14, fontWeight: 600, color: INK, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {r.legal_name}
-                    </div>
-                    <div style={{ fontSize: 11.5, color: MUTED, marginTop: 2 }}>
-                      {r.partner_type === 'dealer'
-                        ? `Dealer${r.dealer_type ? ` · ${r.dealer_type}` : ''}`
-                        : 'Distributor'}
-                      {r.city ? ` · ${r.city}` : ''}
-                      {r.allotted_code ? ` · ${r.allotted_code}` : ''}
+        <div style={{ display: 'flex', gap: 4, marginBottom: 14, borderBottom: `1px solid ${LINE}` }}>
+          {([
+            ['network', `Partner network (${orgs.length})`],
+            ['applications', `Applications (${list.length})`],
+          ] as const).map(([id, label]) => (
+            <button
+              key={id} onClick={() => setTab(id)}
+              style={{
+                padding: '8px 12px', fontSize: 13, fontFamily: 'inherit', cursor: 'pointer',
+                background: 'none', border: 'none', marginBottom: -1,
+                fontWeight: tab === id ? 700 : 500,
+                color: tab === id ? INK : MUTED,
+                borderBottom: `2px solid ${tab === id ? INK : 'transparent'}`,
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {tab === 'network' ? (
+          orgs.length === 0 ? (
+            <p style={{ fontSize: 13, color: FAINT }}>No partners yet.</p>
+          ) : (
+            <>
+              <p style={{ fontSize: 11.5, color: FAINT, margin: '0 0 10px' }}>
+                Partners who already hold a code. These exist independently of the
+                application queue — onboard someone here only if they are not on this list.
+              </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {orgs.map(o => (
+                  <div
+                    key={o.id}
+                    style={{
+                      backgroundColor: '#fff', border: `1px solid ${LINE}`, borderRadius: 9,
+                      padding: '12px 14px',
+                      marginLeft: o.org_type === 'distributor' ? 0 : 18,
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: INK }}>{o.legal_name}</div>
+                        <div style={{ fontSize: 11.5, color: MUTED, marginTop: 2 }}>
+                          {o.org_type === 'distributor'
+                            ? 'Distributor'
+                            : `Dealer${o.dealer_type ? ` · ${o.dealer_type}` : ''}${o.parent_code ? ` · under ${o.parent_code}` : ''}`}
+                          {o.territory ? ` · ${o.territory}` : ''}
+                        </div>
+                      </div>
+                      <span style={{
+                        fontFamily: 'ui-monospace, monospace', fontSize: 11.5, fontWeight: 700,
+                        padding: '3px 8px', borderRadius: 5,
+                        backgroundColor: '#EFEADC', color: INK, whiteSpace: 'nowrap',
+                      }}>
+                        {o.code}
+                      </span>
                     </div>
                   </div>
-                  <StatusChip status={r.status} />
-                </div>
-              </button>
-            ))}
+                ))}
+              </div>
+            </>
+          )
+        ) : list.length === 0 ? (
+          <p style={{ fontSize: 13, color: FAINT }}>No applications yet.</p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {list.map(r => {
+              const dupe = looksLikeExisting(r)
+              return (
+                <button
+                  key={r.id} onClick={() => openRecord(r.id)}
+                  style={{
+                    textAlign: 'left', width: '100%', cursor: 'pointer', fontFamily: 'inherit',
+                    backgroundColor: '#fff', border: `1px solid ${dupe ? '#E0A94F' : LINE}`,
+                    borderRadius: 9, padding: '12px 14px',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: INK, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {r.legal_name}
+                      </div>
+                      <div style={{ fontSize: 11.5, color: MUTED, marginTop: 2 }}>
+                        {r.partner_type === 'dealer'
+                          ? `Dealer${r.dealer_type ? ` · ${r.dealer_type}` : ''}`
+                          : 'Distributor'}
+                        {r.city ? ` · ${r.city}` : ''}
+                        {r.allotted_code ? ` · ${r.allotted_code}` : ''}
+                      </div>
+                    </div>
+                    <StatusChip status={r.status} />
+                  </div>
+                  {dupe && (
+                    <div style={{
+                      marginTop: 8, padding: '7px 9px', borderRadius: 6, fontSize: 11.5,
+                      backgroundColor: '#FBF0DA', color: '#6F2F0E',
+                      display: 'flex', alignItems: 'center', gap: 5,
+                    }}>
+                      <AlertCircle size={13} />
+                      Looks like <strong>{dupe.legal_name}</strong> ({dupe.code}), who already
+                      holds a code. Approving this would create a second record.
+                    </div>
+                  )}
+                </button>
+              )
+            })}
           </div>
         )}
       </div>
@@ -398,7 +526,11 @@ export default function PartnerOnboarding() {
         display: 'flex', alignItems: 'center', gap: 10,
       }}>
         <button
-          onClick={() => { setOpenId(null); onboardingApi.list().then(setList).catch(() => {}) }}
+          onClick={() => {
+            setOpenId(null)
+            onboardingApi.list().then(setList).catch(() => {})
+            onboardingApi.orgs().then(setOrgs).catch(() => {})
+          }}
           style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'none', border: 'none', cursor: 'pointer', color: MUTED, fontSize: 13, fontFamily: 'inherit', padding: 0 }}
         >
           <ArrowLeft size={16} /> All

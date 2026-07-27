@@ -78,7 +78,25 @@ export interface GstinInspection {
   constitutionHint?: string | null
 }
 
+/** A partner who actually exists — a row in quote_service.org, not an application. */
+export interface PartnerOrg {
+  id: number
+  code: string
+  legal_name: string
+  trade_name: string | null
+  org_type: 'distributor' | 'dealer' | 'sub_dealer'
+  dealer_type: 'SS' | 'SM' | null
+  territory: string | null
+  gstin: string | null
+  is_active: boolean
+  parent_code: string | null
+  parent_name: string | null
+}
+
 export const onboardingApi = {
+  /** The live partner network. Distinct from registrations. */
+  orgs: () => request<{ data: PartnerOrg[] }>('/partners/orgs').then(r => r.data),
+
   /** Offline structure + checksum check. No external API, nothing metered. */
   inspectGstin: (gstin: string) =>
     request<{ data: GstinInspection }>('/partners/gstin/inspect', {

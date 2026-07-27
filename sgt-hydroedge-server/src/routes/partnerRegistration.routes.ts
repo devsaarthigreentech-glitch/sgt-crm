@@ -94,6 +94,27 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
     })
   })
 
+  // ---- The live partner network -----------------------------------------
+  // quote_service.org, NOT partner_service.registration. These are two
+  // different things and conflating them is how a duplicate gets created:
+  // registrations are applications, orgs are partners who actually exist.
+  // EDINGX001 was seeded by migrate_quote_01 and never had an application,
+  // so it appears here and nowhere in the registration list.
+  app.get('/orgs', { preHandler: director }, async (_req, reply) => {
+    const { rows } = await query(/* sql */ `
+      select o.id, o.code, o.legal_name, o.trade_name, o.org_type, o.dealer_type,
+             o.territory, o.gstin, o.is_active, o.created_at,
+             p.code as parent_code, p.legal_name as parent_name
+        from quote_service.org o
+        left join quote_service.org p on p.id = o.parent_id
+       where o.org_type <> 'sgt'
+       order by coalesce(p.code, o.code),
+                case when o.org_type = 'distributor' then 0 else 1 end,
+                o.code
+    `)
+    return reply.send({ data: rows })
+  })
+
   // ---- GSTIN Phase A: structure + checksum + derivation -----------------
   // Entirely offline — no external call, nothing metered. Resolves the
   // state name from the derived code so the form can prefill it.
