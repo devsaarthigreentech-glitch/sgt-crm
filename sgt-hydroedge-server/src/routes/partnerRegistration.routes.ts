@@ -116,6 +116,274 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
     return reply.send({ data: rows })
   })
 
+  // =========================================================================
+  // Editing a LIVE partner (the org), as opposed to their application.
+  //
+  // The registration is frozen at submit and stays that way — it records
+  // what was applied for. Everything that changes over a partner's life is
+  // edited here instead.
+  // =========================================================================
+
+  const ORG_WRITABLE = [
+    'legal_name', 'trade_name', 'territory', 'gstin', 'pan',
+    'address_line1', 'address_line2', 'city', 'state', 'state_code', 'pincode', 'country',
+    'contact_name', 'contact_designation', 'contact_mobile', 'contact_email',
+    'bank_account_name', 'bank_account_number', 'bank_ifsc', 'bank_name', 'bank_branch',
+    'notes',
+  ] as const
+  // Absent on purpose: code and dealer_type (changing either re-mints a code —
+  // see /dealer-type below), org_type, parent_id, is_active and status
+  // (see /status), created_at.
+
+  const IFSC = /^[A-Z]{4}0[A-Z0-9]{6}$/
+  const PAN_RE = /^[A-Z]{5}\d{4}[A-Z]$/
+  const PIN = /^\d{6}$/
+  const MAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+  /** Same standard as the registration form: optional, but valid if given. */
+  function validateOrgPatch(p: Record<string, unknown>): Record<string, string> {
+    const e: Record<string, string> = {}
+    const s = (k: string) => (p[k] == null ? '' : String(p[k]).trim())
+    if ('legal_name' in p && !s('legal_name')) e.legal_name = 'Legal name cannot be blank'
+    if (s('gstin')) {
+      const g = inspectGstin(s('gstin'))
+      if (!g.valid) e.gstin = g.message ?? 'GSTIN is not valid'
+    }
+    if (s('pan') && !PAN_RE.test(s('pan').toUpperCase())) e.pan = 'PAN should look like AAAAA9999A'
+    if (s('bank_ifsc') && !IFSC.test(s('bank_ifsc').toUpperCase())) e.bank_ifsc = 'IFSC should look like HDFC0001234'
+    if (s('pincode') && !PIN.test(s('pincode'))) e.pincode = 'PIN code must be 6 digits'
+    if (s('contact_email') && !MAIL.test(s('contact_email'))) e.contact_email = 'Enter a valid email address'
+    return e
+  }
+
+  app.get('/orgs/:id', { preHandler: director }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const { rows } = await query(
+      `select o.*, p.code as parent_code, p.legal_name as parent_name
+         from quote_service.org o
+         left join quote_service.org p on p.id = o.parent_id
+        where o.id = $1`, [id])
+    if (!rows.length) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Organisation not found' } })
+    }
+    const events = await query(
+      `select event_type, actor_name, changes, note, created_at
+         from quote_service.org_event where org_id = $1
+        order by created_at desc limit 50`, [id])
+    const codes = await query(
+      `select code, allotted_at, retired_at, retired_reason
+         from partner_service.allotted_code where org_id = $1 order by allotted_at`, [id])
+    return reply.send({ data: { ...rows[0], events: events.rows, codes: codes.rows } })
+  })
+
+  app.patch('/orgs/:id', { preHandler: director }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const body = (req.body ?? {}) as Record<string, unknown>
+    const who = actor(req)
+
+    const errors = validateOrgPatch(body)
+    if (Object.keys(errors).length) {
+      return reply.code(422).send({
+        error: { code: 'validation_failed', message: 'Some fields need attention' },
+        fields: errors,
+      })
+    }
+
+    const client = await pool.connect()
+    try {
+      await client.query('begin')
+      const { rows: before } = await client.query(
+        `select * from quote_service.org where id = $1 for update`, [id])
+      if (!before.length) {
+        await client.query('rollback')
+        return reply.code(404).send({ error: { code: 'not_found', message: 'Organisation not found' } })
+      }
+
+      // Another partner must not already hold this GSTIN.
+      const gstin = body.gstin == null ? '' : String(body.gstin).trim()
+      if (gstin) {
+        const { rows: dupe } = await client.query(
+          `select code, legal_name from quote_service.org
+            where upper(gstin) = upper($1) and id <> $2 limit 1`, [gstin, id])
+        if (dupe.length) {
+          await client.query('rollback')
+          return reply.code(409).send({
+            error: {
+              code: 'gstin_exists',
+              message: `${dupe[0].legal_name} (${dupe[0].code}) already holds this GSTIN.`,
+            },
+          })
+        }
+      }
+
+      const sets: string[] = []
+      const values: unknown[] = []
+      const changes: Record<string, { from: unknown; to: unknown }> = {}
+      for (const col of ORG_WRITABLE) {
+        if (!(col in body)) continue
+        const next = body[col]
+        if (before[0][col] === next) continue          // record real changes only
+        changes[col] = { from: before[0][col], to: next }
+        values.push(next)
+        sets.push(`${col} = $${values.length}`)
+      }
+      if (!sets.length) {
+        await client.query('rollback')
+        return reply.send({ data: before[0], unchanged: true })
+      }
+
+      values.push(id)
+      const { rows } = await client.query(
+        `update quote_service.org set ${sets.join(', ')}, updated_at = now()
+          where id = $${values.length} returning *`, values)
+
+      await client.query(
+        `insert into quote_service.org_event (org_id, event_type, actor, actor_name, changes)
+         values ($1, 'updated', $2, $3, $4)`,
+        [id, who.id, who.name, JSON.stringify(changes)])
+
+      await client.query('commit')
+      return reply.send({ data: rows[0], changed: Object.keys(changes) })
+    } catch (err) {
+      await client.query('rollback')
+      throw err
+    } finally {
+      client.release()
+    }
+  })
+
+  // ---- Suspend / terminate / reactivate ----------------------------------
+  // status and is_active move together; the schema constraint rejects any
+  // write that sets one without the other.
+  app.post('/orgs/:id/status', { preHandler: director }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const { status, reason } = (req.body ?? {}) as { status?: string; reason?: string }
+    const who = actor(req)
+
+    if (!['active', 'suspended', 'terminated'].includes(String(status))) {
+      return reply.code(400).send({
+        error: { code: 'bad_request', message: 'status must be active, suspended or terminated' },
+      })
+    }
+    if (status !== 'active' && !String(reason ?? '').trim()) {
+      return reply.code(400).send({
+        error: { code: 'bad_request', message: 'A reason is required to suspend or terminate' },
+      })
+    }
+
+    const client = await pool.connect()
+    try {
+      await client.query('begin')
+      const { rows: before } = await client.query(
+        `select status from quote_service.org where id = $1 for update`, [id])
+      if (!before.length) {
+        await client.query('rollback')
+        return reply.code(404).send({ error: { code: 'not_found', message: 'Organisation not found' } })
+      }
+      const { rows } = await client.query(
+        `update quote_service.org set status = $2, is_active = $3, updated_at = now()
+          where id = $1 returning *`, [id, status, status === 'active'])
+      await client.query(
+        `insert into quote_service.org_event (org_id, event_type, actor, actor_name, changes, note)
+         values ($1, 'status_changed', $2, $3, $4, $5)`,
+        [id, who.id, who.name,
+         JSON.stringify({ status: { from: before[0].status, to: status } }),
+         String(reason ?? '').trim() || null])
+      await client.query('commit')
+      return reply.send({ data: rows[0] })
+    } catch (err) {
+      await client.query('rollback')
+      throw err
+    } finally {
+      client.release()
+    }
+  })
+
+  // ---- Dealer type change — NOT an edit ----------------------------------
+  // The owner's rule: a type change mints a NEW code and retires the old,
+  // which is never reused. The org keeps its id, so every price book,
+  // quotation and user attached to it follows automatically — this is
+  // exactly why nothing foreign-keys to org.code.
+  app.post('/orgs/:id/dealer-type', { preHandler: director }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const { dealer_type, reason } = (req.body ?? {}) as { dealer_type?: string; reason?: string }
+    const who = actor(req)
+
+    if (dealer_type !== 'SS' && dealer_type !== 'SM') {
+      return reply.code(400).send({
+        error: { code: 'bad_request', message: 'dealer_type must be SS or SM' },
+      })
+    }
+
+    const client = await pool.connect()
+    try {
+      await client.query('begin')
+      const { rows: orgs } = await client.query(
+        `select o.*, p.code as parent_code
+           from quote_service.org o
+           left join quote_service.org p on p.id = o.parent_id
+          where o.id = $1 for update of o`, [id])
+      if (!orgs.length) {
+        await client.query('rollback')
+        return reply.code(404).send({ error: { code: 'not_found', message: 'Organisation not found' } })
+      }
+      const org = orgs[0]
+      if (org.org_type !== 'dealer') {
+        await client.query('rollback')
+        return reply.code(400).send({
+          error: { code: 'bad_request', message: 'Only a dealer has a dealer type' },
+        })
+      }
+      if (org.dealer_type === dealer_type) {
+        await client.query('rollback')
+        return reply.code(409).send({
+          error: { code: 'no_change', message: `Already ${dealer_type}` },
+        })
+      }
+
+      const oldCode = org.code
+      const { code: newCode, seriesKey } = await allotCode(client, {
+        partnerType: 'dealer',
+        dealerType: dealer_type,
+        parentCode: org.parent_code,
+      })
+
+      await client.query(
+        `update quote_service.org set code = $2, dealer_type = $3, updated_at = now()
+          where id = $1`, [id, newCode, dealer_type])
+
+      // Retire the old code in the ledger. It stays there forever, which is
+      // what makes reissuing it impossible.
+      await client.query(
+        `update partner_service.allotted_code
+            set retired_at = now(), retired_reason = $2
+          where code = $1 and retired_at is null`,
+        [oldCode, `type changed ${org.dealer_type} -> ${dealer_type}${reason ? `: ${reason}` : ''}`])
+
+      await client.query(
+        `insert into partner_service.allotted_code (code, org_id, series_key)
+         values ($1, $2, $3)`, [newCode, id, seriesKey])
+
+      await client.query(
+        `insert into quote_service.org_event (org_id, event_type, actor, actor_name, changes, note)
+         values ($1, 'dealer_type_changed', $2, $3, $4, $5)`,
+        [id, who.id, who.name,
+         JSON.stringify({
+           dealer_type: { from: org.dealer_type, to: dealer_type },
+           code: { from: oldCode, to: newCode },
+         }),
+         String(reason ?? '').trim() || null])
+
+      await client.query('commit')
+      return reply.send({ data: { id, old_code: oldCode, code: newCode, dealer_type } })
+    } catch (err) {
+      await client.query('rollback')
+      throw err
+    } finally {
+      client.release()
+    }
+  })
+
   // ---- GSTIN Phase A: structure + checksum + derivation -----------------
   // Entirely offline — no external call, nothing metered. Resolves the
   // state name from the derived code so the form can prefill it.

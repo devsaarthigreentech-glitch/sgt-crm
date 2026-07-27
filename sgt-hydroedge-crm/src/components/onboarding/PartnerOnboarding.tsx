@@ -210,6 +210,7 @@ export default function PartnerOnboarding() {
   const [orgs, setOrgs] = useState<PartnerOrg[]>([])
   const [tab, setTab] = useState<'network' | 'applications'>('network')
   const [openId, setOpenId] = useState<number | null>(null)
+  const [openOrgId, setOpenOrgId] = useState<number | null>(null)
   const [form, setForm] = useState<Form>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState<'idle' | 'saving' | 'saved'>('idle')
@@ -384,6 +385,20 @@ export default function PartnerOnboarding() {
     return <div style={{ padding: 40, color: MUTED, backgroundColor: PAPER, height: '100%' }}>Loading…</div>
   }
 
+  // A live partner record — separate screen, because it edits the org rather
+  // than the application.
+  if (openOrgId !== null) {
+    return (
+      <OrgDetailScreen
+        orgId={openOrgId}
+        onBack={() => {
+          setOpenOrgId(null)
+          onboardingApi.orgs().then(setOrgs).catch(() => {})
+        }}
+      />
+    )
+  }
+
   // ---- List view ----------------------------------------------------------
   if (openId === null) {
     return (
@@ -445,12 +460,15 @@ export default function PartnerOnboarding() {
               </p>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {orgs.map(o => (
-                  <div
+                  <button
                     key={o.id}
+                    onClick={() => setOpenOrgId(o.id)}
                     style={{
                       backgroundColor: '#fff', border: `1px solid ${LINE}`, borderRadius: 9,
-                      padding: '12px 14px',
+                      padding: '12px 14px', textAlign: 'left', width: '100%',
+                      cursor: 'pointer', fontFamily: 'inherit',
                       marginLeft: o.org_type === 'distributor' ? 0 : 18,
+                      opacity: o.is_active ? 1 : 0.6,
                     }}
                   >
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
@@ -471,7 +489,7 @@ export default function PartnerOnboarding() {
                         {o.code}
                       </span>
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
             </>

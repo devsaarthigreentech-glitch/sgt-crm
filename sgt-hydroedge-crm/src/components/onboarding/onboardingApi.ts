@@ -107,6 +107,19 @@ export interface RegContact {
   notes: string | null
 }
 
+export interface OrgDetail extends PartnerOrg {
+  status: 'active' | 'suspended' | 'terminated'
+  address_line1: string | null; city: string | null; state: string | null; pincode: string | null
+  contact_name: string | null; contact_designation: string | null
+  contact_mobile: string | null; contact_email: string | null
+  pan: string | null; bank_name: string | null; bank_ifsc: string | null
+  bank_account_name: string | null; bank_account_number: string | null; bank_branch: string | null
+  notes: string | null
+  parent_name: string | null
+  events: { event_type: string; actor_name: string | null; changes: any; note: string | null; created_at: string }[]
+  codes: { code: string; allotted_at: string; retired_at: string | null; retired_reason: string | null }[]
+}
+
 export const onboardingApi = {
   addContact: (id: number, body: Partial<RegContact> & { name: string }) =>
     request<{ data: RegContact }>(`/partners/registrations/${id}/contacts`, {
@@ -121,6 +134,26 @@ export const onboardingApi = {
 
   /** The live partner network. Distinct from registrations. */
   orgs: () => request<{ data: PartnerOrg[] }>('/partners/orgs').then(r => r.data),
+
+  org: (id: number) => request<{ data: OrgDetail }>(`/partners/orgs/${id}`).then(r => r.data),
+
+  /** Throws ValidationError on 422; Error on 409 if the GSTIN is taken. */
+  saveOrg: (id: number, patch: Record<string, unknown>) =>
+    request<{ data: OrgDetail; changed?: string[] }>(`/partners/orgs/${id}`, {
+      method: 'PATCH', body: JSON.stringify(patch),
+    }),
+
+  setOrgStatus: (id: number, status: string, reason?: string) =>
+    request<{ data: OrgDetail }>(`/partners/orgs/${id}/status`, {
+      method: 'POST', body: JSON.stringify({ status, reason }),
+    }),
+
+  /** Mints a NEW code and retires the old one. Not an edit. */
+  changeDealerType: (id: number, dealer_type: 'SS' | 'SM', reason?: string) =>
+    request<{ data: { old_code: string; code: string; dealer_type: string } }>(
+      `/partners/orgs/${id}/dealer-type`,
+      { method: 'POST', body: JSON.stringify({ dealer_type, reason }) },
+    ),
 
   /** Offline structure + checksum check. No external API, nothing metered. */
   inspectGstin: (gstin: string) =>
