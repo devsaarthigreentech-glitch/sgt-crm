@@ -67,16 +67,37 @@ async function getDoc(doctype: string, name: string): Promise<any> {
 }
 
 /**
+ * Keep only the fields that DEFINE a tax; let ERPNext compute the rest.
+ *
+ * get_taxes_and_charges also returns tax_amount, total, base_* and
+ * dont_recompute_tax — all zero, because nothing has been calculated yet.
+ * Sending those back risks ERPNext treating the zeros as final rather
+ * than recalculating them against the line. `gst_tax_type` is kept: it is
+ * india_compliance's own field and drives the CGST/SGST/IGST split.
+ */
+function normaliseTaxRow(t: any) {
+  return {
+    charge_type: t.charge_type,
+    account_head: t.account_head,
+    description: t.description,
+    rate: t.rate,
+    cost_center: t.cost_center,
+    included_in_print_rate: t.included_in_print_rate ?? 0,
+    ...(t.row_id != null ? { row_id: t.row_id } : {}),
+    ...(t.gst_tax_type ? { gst_tax_type: t.gst_tax_type } : {}),
+  };
+}
+
+/**
  * Expand a tax template into rows.
  *
  * Frappe's own `get_taxes_and_charges` is the canonical expansion — it is
- * what the UI calls when you pick a template — so try that first and only
- * fall back to copying the template document by hand.
+ * what the ERPNext UI calls when you pick a template — so try that first
+ * and only fall back to reading the template document by hand.
  *
- * Returns [] when both fail, and the caller reports that loudly. An
- * earlier version swallowed the failure, which produced quotations with
- * `taxes: []` that ERPNext then treated as Nil-Rated: zero GST on a
- * document that looked complete. Silence is the wrong default here.
+ * An earlier version swallowed failures here, which produced quotations
+ * with `taxes: []` that india_compliance then treated as Nil-Rated: zero
+ * GST on a document that looked complete. Failures now propagate.
  */
 export async function expandTaxTemplate(template: string): Promise<any[]> {
   const url =
@@ -87,21 +108,13 @@ export async function expandTaxTemplate(template: string): Promise<any[]> {
     const res = await erpFetch(url, { headers: authHeaders() });
     if (res.ok) {
       const rows = (await res.json()).message;
-      if (Array.isArray(rows) && rows.length) return rows;
+      if (Array.isArray(rows) && rows.length) return rows.map(normaliseTaxRow);
     }
   } catch { /* fall through to the manual copy */ }
 
   const doc = await getDoc('Sales Taxes and Charges Template', template);
   const rows = Array.isArray(doc?.taxes) ? doc.taxes : [];
-  return rows.map((t: any) => ({
-    charge_type: t.charge_type,
-    account_head: t.account_head,
-    description: t.description,
-    rate: t.rate,
-    cost_center: t.cost_center,
-    included_in_print_rate: t.included_in_print_rate,
-    row_id: t.row_id,
-  }));
+  return rows.map(normaliseTaxRow);
 }
 
 async function post(doctype: string, doc: Record<string, unknown>): Promise<any> {
