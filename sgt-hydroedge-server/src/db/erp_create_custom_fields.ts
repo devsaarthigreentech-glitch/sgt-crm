@@ -1,0 +1,157 @@
+/// <reference types="node" />
+// =====================================================================
+// erp_create_custom_fields.ts
+// Adds attribution fields to the ERPNext Quotation.
+//
+// DRY RUN BY DEFAULT.
+//
+//   npx tsx src/db/erp_create_custom_fields.ts
+//   CONFIRM_CREATE=1 npx tsx src/db/erp_create_custom_fields.ts
+//
+// The problem these solve
+// -----------------------
+// Every quotation the CRM creates is owned by whoever the API key belongs
+// to, because that is the only identity ERPNext ever sees. So a quote a
+// dealer raised looks, in ERPNext, like the key owner raised it.
+//
+// The alternative — an ERPNext user per dealer — was rejected on purpose:
+// it would hand external partners ERPNext logins, which is exactly the
+// boundary src/auth/policy.ts exists to hold, and it consumes seats.
+//
+// Note `sales_partner` ALREADY answers "which partner org", and it is the
+// commercially meaningful one because commission is computed from it.
+// What is missing is the individual person, which is what these add.
+//
+// All three are read-only in the ERPNext UI: they are stamped by the CRM
+// and editing them there would make them lie.
+// =====================================================================
+
+import 'dotenv/config';
+
+const BASE = process.env.ERPNEXT_URL?.replace(/\/+$/, '');
+const KEY = process.env.ERPNEXT_API_KEY;
+const SECRET = process.env.ERPNEXT_API_SECRET;
+const CONFIRMED = process.env.CONFIRM_CREATE === '1';
+
+if (!BASE || !KEY || !SECRET) {
+  console.error('✗ ERPNEXT_URL / ERPNEXT_API_KEY / ERPNEXT_API_SECRET must be set');
+  process.exit(1);
+}
+const headers = {
+  Authorization: `token ${KEY}:${SECRET}`,
+  Accept: 'application/json',
+  'Content-Type': 'application/json',
+};
+
+interface FieldDef {
+  fieldname: string;
+  label: string;
+  fieldtype: string;
+  insert_after: string;
+  description: string;
+}
+
+const FIELDS: FieldDef[] = [
+  {
+    fieldname: 'custom_raised_by',
+    label: 'Raised By',
+    fieldtype: 'Data',
+    insert_after: 'sales_partner',
+    description: 'The person who created this quotation in the SGT CRM. Stamped automatically.',
+  },
+  {
+    fieldname: 'custom_raised_by_org',
+    label: 'Raised By (Partner Code)',
+    fieldtype: 'Data',
+    insert_after: 'custom_raised_by',
+    description: 'The partner organisation code, e.g. EDINGX001-SS01. Blank when SGT quoted directly.',
+  },
+  {
+    fieldname: 'custom_raised_via',
+    label: 'Raised Via',
+    fieldtype: 'Data',
+    insert_after: 'custom_raised_by_org',
+    description: 'Which surface it came from — the CRM, or the partner portal.',
+  },
+];
+
+const DOCTYPE = 'Quotation';
+
+async function call(method: string, path: string, body?: unknown) {
+  const res = await fetch(`${BASE}${path}`, {
+    method, headers, ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  const text = await res.text();
+  let json: any = null;
+  try { json = JSON.parse(text); } catch { /* non-JSON */ }
+  return { ok: res.ok, status: res.status, json, text };
+}
+
+async function main() {
+  console.log(CONFIRMED
+    ? `▶ Adding attribution fields to ${DOCTYPE} — ${BASE}\n`
+    : `▶ DRY RUN — nothing will be created. ${BASE}\n`);
+
+  const existing = await call('GET',
+    `/api/resource/${encodeURIComponent('Custom Field')}` +
+    `?filters=${encodeURIComponent(`[["dt","=","${DOCTYPE}"]]`)}` +
+    `&fields=${encodeURIComponent('["name","fieldname","label","fieldtype"]')}&limit_page_length=100`);
+  if (!existing.ok) {
+    console.error(`✗ cannot read Custom Field: HTTP ${existing.status} — ${existing.text.slice(0, 200)}`);
+    console.error('  The API key\'s role probably lacks System Manager.');
+    process.exit(1);
+  }
+  const have = new Map<string, any>(
+    (existing.json?.data ?? []).map((f: any) => [String(f.fieldname), f]));
+  console.log(`  ${have.size} custom field(s) already on ${DOCTYPE}` +
+              (have.size ? `: ${[...have.keys()].join(', ')}` : ''));
+
+  const todo = FIELDS.filter(f => !have.has(f.fieldname));
+  if (!todo.length) {
+    console.log(`\n✔ All ${FIELDS.length} attribution fields already exist — nothing to do.`);
+    return;
+  }
+
+  console.log(`\n  ${todo.length} to create:`);
+  for (const f of todo) {
+    console.log(`    · ${f.fieldname}  "${f.label}"  ${f.fieldtype}  after ${f.insert_after}`);
+  }
+
+  if (!CONFIRMED) {
+    console.log('\n  DRY RUN — nothing created.');
+    console.log('  Re-run with CONFIRM_CREATE=1 to add them.');
+    return;
+  }
+
+  console.log('\n  creating…');
+  let made = 0;
+  for (const f of todo) {
+    const r = await call('POST', `/api/resource/${encodeURIComponent('Custom Field')}`, {
+      doctype: 'Custom Field',
+      dt: DOCTYPE,
+      fieldname: f.fieldname,
+      label: f.label,
+      fieldtype: f.fieldtype,
+      insert_after: f.insert_after,
+      description: f.description,
+      // Stamped by the CRM — editing it in ERPNext would make it false.
+      read_only: 1,
+      allow_on_submit: 0,
+      no_copy: 1,
+      print_hide: 1,
+      translatable: 0,
+    });
+    if (r.ok) { made++; console.log(`    ✓ ${f.fieldname}`); }
+    else {
+      const why = r.json?.exception ?? r.text.slice(0, 220);
+      console.log(`    ✗ ${f.fieldname}: ${String(why).replace(/\s+/g, ' ').slice(0, 220)}`);
+    }
+  }
+  console.log(`\n✔ created ${made} of ${todo.length} field(s)`);
+  if (made) {
+    console.log('  They appear on the Quotation form under the sales partner section,');
+    console.log('  read-only, and hidden from print by default.');
+  }
+}
+
+main().catch(e => { console.error(e); process.exit(1); });

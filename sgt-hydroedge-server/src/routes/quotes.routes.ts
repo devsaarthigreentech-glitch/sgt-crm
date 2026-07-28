@@ -106,6 +106,9 @@ export async function performQuotation(
     validDays: body.validDays,
     termsTemplate: body.termsTemplate ?? null,
     termsHtml: body.termsHtml ?? null,
+    raisedBy: who.name ? `${who.name}${who.id ? ` (user ${who.id})` : ''}` : null,
+    raisedByOrg: salesPartner,
+    raisedVia: opts.via === 'portal' ? 'Partner portal' : 'SGT CRM',
   }
 
   const created = await createQuotation(input)
@@ -246,6 +249,9 @@ export default async function quotesRoutes(app: FastifyInstance) {
         .header('Content-Disposition', `inline; filename="${erpName}.pdf"`)
         .send(Buffer.from(buf))
     } catch (e: any) {
+      // Log the whole thing: the browser only ever sees the status code, and
+      // a bare 502 tells nobody why ERPNext could not render.
+      req.log.error({ err: e, erpName }, 'quotation PDF render failed')
       return reply.code(502).send({
         error: { code: 'pdf_failed', message: String(e?.message ?? e).slice(0, 300) },
       })

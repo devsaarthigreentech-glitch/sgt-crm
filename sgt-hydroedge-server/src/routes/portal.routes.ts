@@ -215,6 +215,7 @@ export default async function portalRoutes(app: FastifyInstance) {
         .header('Content-Disposition', `inline; filename="${erpName}.pdf"`)
         .send(Buffer.from(buf))
     } catch (e: any) {
+      req.log.error({ err: e, erpName }, 'portal quotation PDF render failed')
       return reply.code(502).send({
         error: { code: 'pdf_failed', message: String(e?.message ?? e).slice(0, 300) },
       })

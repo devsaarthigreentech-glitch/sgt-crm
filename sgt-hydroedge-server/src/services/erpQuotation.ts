@@ -400,6 +400,14 @@ export interface CreateQuotationInput {
   salesPartner?: string | null;
   commissionRate?: number | null;
   validDays?: number;
+  /**
+   * Who actually raised this, for the custom attribution fields.
+   * ERPNext's own `owner` is always the API key's user, so it cannot
+   * distinguish a dealer's quote from SGT's.
+   */
+  raisedBy?: string | null;
+  raisedByOrg?: string | null;
+  raisedVia?: string | null;
   /** Terms template name. Falls back to the configured default. */
   termsTemplate?: string | null;
   /** Overrides the template's text for this quotation only. */
@@ -459,6 +467,12 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
     doc.sales_partner = input.salesPartner;
     if (input.commissionRate != null) doc.commission_rate = input.commissionRate;
   }
+
+  // Attribution. Harmless if the custom fields do not exist yet — Frappe
+  // ignores unknown keys — so this ships before the fields do.
+  if (input.raisedBy) doc.custom_raised_by = input.raisedBy;
+  if (input.raisedByOrg) doc.custom_raised_by_org = input.raisedByOrg;
+  if (input.raisedVia) doc.custom_raised_via = input.raisedVia;
 
   // Naming the template is not enough over REST: the client-side fetch that
   // expands it into rows only runs in the UI. The rows must be sent.
