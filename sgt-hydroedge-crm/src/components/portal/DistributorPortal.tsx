@@ -13,6 +13,7 @@ import { useEffect, useState } from 'react'
 import { LogOut, Users, MapPin, RefreshCw, LayoutDashboard, Handshake } from 'lucide-react'
 import { portalApi, type PortalMe, type PortalDealer } from './portalApi'
 import DealerRegistration from './DealerRegistration'
+import DealerEdit from './DealerEdit'
 
 type PortalPage = 'overview' | 'dealers'
 
@@ -42,6 +43,7 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState<PortalPage>('overview')
+  const [editDealerId, setEditDealerId] = useState<number | null>(null)
 
   const load = () => {
     setLoading(true)
@@ -132,7 +134,9 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
         })}
       </div>
 
-      {page === 'dealers' ? <DealerRegistration /> : (
+      {editDealerId !== null ? (
+        <DealerEdit dealerId={editDealerId} onBack={() => { setEditDealerId(null); load() }} />
+      ) : page === 'dealers' ? <DealerRegistration /> : (
       <div style={{ padding: '20px 20px 60px', maxWidth: 760, margin: '0 auto' }}>
         <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 700, color: INK }}>My view</h1>
         <p style={{ margin: '0 0 18px', fontSize: 12.5, color: MUTED }}>
@@ -184,10 +188,11 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {dealers.map(d => (
-              <div key={d.id} style={{
+              <button key={d.id} onClick={() => setEditDealerId(d.id)} style={{
                 backgroundColor: '#fff', border: `1px solid ${LINE}`, borderRadius: 10,
                 padding: '12px 14px', opacity: d.is_active ? 1 : 0.55,
                 marginLeft: d.org_type === 'sub_dealer' ? 18 : 0,
+                textAlign: 'left', width: '100%', cursor: 'pointer', fontFamily: 'inherit',
               }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
                   <div style={{ minWidth: 0 }}>
@@ -210,7 +215,7 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
                     {d.code}
                   </span>
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         )}

@@ -132,6 +132,137 @@ export default async function portalRoutes(app: FastifyInstance) {
     return reply.send({ data: rows })
   })
 
+  // ---- Edit a dealer they manage -----------------------------------------
+  // Same master-data fields the director gets, with two deliberate omissions:
+  //
+  //   status      — suspending or terminating a partner is SGT's call.
+  //   dealer_type — changing it mints a new code, and codes are SGT's to
+  //                 allot. The distributor asks; SGT does it.
+  //
+  // Scope is enforced twice: the org must be inside visible_org_ids (their
+  // subtree) AND must not be the caller's own org, so a distributor cannot
+  // edit themselves through this route.
+  const DEALER_WRITABLE = [
+    'legal_name', 'trade_name', 'territory', 'gstin', 'pan',
+    'address_line1', 'address_line2', 'city', 'state', 'state_code', 'pincode',
+    'contact_name', 'contact_designation', 'contact_mobile', 'contact_email',
+    'bank_account_name', 'bank_account_number', 'bank_ifsc', 'bank_name', 'bank_branch',
+  ] as const
+
+  const D_IFSC = /^[A-Z]{4}0[A-Z0-9]{6}$/
+  const D_PAN = /^[A-Z]{5}\d{4}[A-Z]$/
+  const D_PIN = /^\d{6}$/
+  const D_MAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+  function validateDealerPatch(p: Record<string, unknown>): Record<string, string> {
+    const e: Record<string, string> = {}
+    const s = (k: string) => (p[k] == null ? '' : String(p[k]).trim())
+    if ('legal_name' in p && !s('legal_name')) e.legal_name = 'Name cannot be blank'
+    if (s('gstin')) {
+      const g = inspectGstin(s('gstin'))
+      if (!g.valid) e.gstin = g.message ?? 'GSTIN is not valid'
+    }
+    if (s('pan') && !D_PAN.test(s('pan').toUpperCase())) e.pan = 'PAN should look like AAAAA9999A'
+    if (s('bank_ifsc') && !D_IFSC.test(s('bank_ifsc').toUpperCase())) e.bank_ifsc = 'IFSC should look like HDFC0001234'
+    if (s('pincode') && !D_PIN.test(s('pincode'))) e.pincode = 'PIN code must be 6 digits'
+    if (s('contact_email') && !D_MAIL.test(s('contact_email'))) e.contact_email = 'Enter a valid email address'
+    return e
+  }
+
+  app.get('/dealers/:id', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { id } = req.params as { id: string }
+    const { rows } = await query(
+      `select o.*, p.code as parent_code
+         from quote_service.org o
+         left join quote_service.org p on p.id = o.parent_id
+        where o.id = $1
+          and o.id in (select org_id from quote_service.visible_org_ids($2))
+          and o.id <> $2`, [id, me.orgId])
+    if (!rows.length) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } })
+    }
+    return reply.send({ data: rows[0] })
+  })
+
+  app.patch('/dealers/:id', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { id } = req.params as { id: string }
+    const body = (req.body ?? {}) as Record<string, unknown>
+
+    const errors = validateDealerPatch(body)
+    if (Object.keys(errors).length) {
+      return reply.code(422).send({
+        error: { code: 'validation_failed', message: 'Some fields need attention' },
+        fields: errors,
+      })
+    }
+
+    const client = await pool.connect()
+    try {
+      await client.query('begin')
+      const { rows: before } = await client.query(
+        `select * from quote_service.org
+          where id = $1
+            and id in (select org_id from quote_service.visible_org_ids($2))
+            and id <> $2
+          for update`, [id, me.orgId])
+      if (!before.length) {
+        await client.query('rollback')
+        return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } })
+      }
+
+      const gstin = body.gstin == null ? '' : String(body.gstin).trim()
+      if (gstin) {
+        const { rows: dupe } = await client.query(
+          `select code from quote_service.org
+            where upper(gstin) = upper($1) and id <> $2 limit 1`, [gstin, id])
+        if (dupe.length) {
+          await client.query('rollback')
+          return reply.code(409).send({
+            error: { code: 'gstin_exists', message: 'Another partner already holds this GSTIN.' },
+          })
+        }
+      }
+
+      const sets: string[] = []
+      const values: unknown[] = []
+      const changes: Record<string, { from: unknown; to: unknown }> = {}
+      for (const col of DEALER_WRITABLE) {
+        if (!(col in body)) continue
+        if (before[0][col] === body[col]) continue
+        changes[col] = { from: before[0][col], to: body[col] }
+        values.push(body[col])
+        sets.push(`${col} = $${values.length}`)
+      }
+      if (!sets.length) {
+        await client.query('rollback')
+        return reply.send({ data: before[0], unchanged: true })
+      }
+      values.push(id)
+      const { rows } = await client.query(
+        `update quote_service.org set ${sets.join(', ')}, updated_at = now()
+          where id = $${values.length} returning *`, values)
+
+      // Attributed to the distributor, so SGT can see who changed what.
+      await client.query(
+        `insert into quote_service.org_event (org_id, event_type, actor, actor_name, changes, note)
+         values ($1, 'updated', $2, $3, $4, $5)`,
+        [id, me.userId, (req.user as any)?.name ?? null, JSON.stringify(changes),
+         `via distributor portal (${me.orgCode})`])
+
+      await client.query('commit')
+      return reply.send({ data: rows[0], changed: Object.keys(changes) })
+    } catch (err) {
+      await client.query('rollback')
+      throw err
+    } finally {
+      client.release()
+    }
+  })
+
   // =========================================================================
   // Dealer registrations the distributor raises for their OWN network.
   //

@@ -192,6 +192,15 @@ export const onboardingApi = {
    * NO code is minted — for grandfathered partners like EDINGX001.
    * Throws on 409 when the GSTIN already belongs to someone.
    */
+  /**
+   * Draft/rejected/withdrawn are deleted outright; submitted becomes
+   * withdrawn; approved is refused — see the route for why.
+   */
+  removeRegistration: (id: number) =>
+    request<{ data: any; withdrawn?: boolean }>(`/partners/registrations/${id}`, {
+      method: 'DELETE',
+    }),
+
   approve: (id: number, attachOrgId?: number) =>
     request<{ data: Registration; org?: any; code?: string; attached?: any }>(
       `/partners/registrations/${id}/approve`,

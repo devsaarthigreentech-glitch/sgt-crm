@@ -109,8 +109,16 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
         from quote_service.org o
         left join quote_service.org p on p.id = o.parent_id
        where o.org_type <> 'sgt'
-       order by coalesce(p.code, o.code),
-                case when o.org_type = 'distributor' then 0 else 1 end,
+       -- Group each distributor with its own dealers. The grouping key must
+       -- be the DISTRIBUTOR's code: for a distributor that is its own code,
+       -- for a dealer it is the parent's. Using coalesce(p.code, o.code) for
+       -- both is wrong — a distributor's parent is SGT, so it grouped under
+       -- 'SGT' while its dealers grouped under 'EDINGX001', sorting the
+       -- dealers above their own distributor.
+       order by case when o.org_type = 'distributor' then o.code
+                     else coalesce(p.code, o.code) end,
+                case o.org_type when 'distributor' then 0
+                                when 'dealer' then 1 else 2 end,
                 o.code
     `)
     return reply.send({ data: rows })
@@ -768,6 +776,69 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
       }
       return reply.send({ data: { deleted: true } })
     })
+
+  // ---- Remove an application ---------------------------------------------
+  // What "remove" means depends on how far it got:
+  //
+  //   draft / rejected / withdrawn -> hard delete. Nothing was ever acted on,
+  //                                   so there is no history worth keeping.
+  //   submitted / under_review     -> withdrawn, not deleted. Someone sent it
+  //                                   to SGT; that it existed is a fact.
+  //   approved                     -> refused. It minted a code and created a
+  //                                   partner. Deleting it would destroy the
+  //                                   record of how that partner came to exist
+  //                                   while leaving the org standing.
+  app.delete('/registrations/:id', { preHandler: director }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const who = actor(req)
+
+    const client = await pool.connect()
+    try {
+      await client.query('begin')
+      const { rows } = await client.query(
+        `select status, legal_name, allotted_code
+           from partner_service.registration where id = $1 for update`, [id])
+      if (!rows.length) {
+        await client.query('rollback')
+        return reply.code(404).send({ error: { code: 'not_found', message: 'Registration not found' } })
+      }
+      const reg = rows[0]
+
+      if (reg.status === 'approved') {
+        await client.query('rollback')
+        return reply.code(409).send({
+          error: {
+            code: 'approved_not_deletable',
+            message: `${reg.legal_name} was approved as ${reg.allotted_code}. The application is the record of how they were onboarded and cannot be deleted. Suspend or terminate the partner instead.`,
+          },
+        })
+      }
+
+      if (reg.status === 'submitted' || reg.status === 'under_review') {
+        const { rows: [updated] } = await client.query(
+          `update partner_service.registration
+              set status = 'withdrawn', updated_at = now()
+            where id = $1 returning *`, [id])
+        await client.query(
+          `insert into partner_service.registration_event
+             (registration_id, event_type, from_status, to_status, actor, actor_name)
+           values ($1, 'withdrawn', $2, 'withdrawn', $3, $4)`,
+          [id, reg.status, who.id, who.name])
+        await client.query('commit')
+        return reply.send({ data: updated, withdrawn: true })
+      }
+
+      // Child rows cascade (contacts, documents, addresses, events).
+      await client.query(`delete from partner_service.registration where id = $1`, [id])
+      await client.query('commit')
+      return reply.send({ data: { deleted: true, id: Number(id) } })
+    } catch (err) {
+      await client.query('rollback')
+      throw err
+    } finally {
+      client.release()
+    }
+  })
 
   // ---- Save draft — NO validation ---------------------------------------
   app.patch('/registrations/:id', { preHandler: director }, async (req, reply) => {

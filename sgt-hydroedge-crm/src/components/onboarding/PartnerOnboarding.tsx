@@ -31,6 +31,11 @@ const OK = '#2F6B4F'
 
 type Form = Record<string, any>
 
+// Applications in these states need nothing further from a director. They
+// stay visible behind a toggle — an approved one is the record of how a
+// partner came to exist — but they should not clutter the queue.
+const CLOSED_STATUSES = ['approved', 'rejected', 'withdrawn']
+
 const STATUS_COLOURS: Record<string, { bg: string; fg: string }> = {
   draft: { bg: '#EFEADC', fg: '#6A675F' },
   submitted: { bg: '#DDE8F0', fg: '#1F4E6B' },
@@ -210,6 +215,7 @@ export default function PartnerOnboarding() {
   const [list, setList] = useState<Registration[]>([])
   const [orgs, setOrgs] = useState<PartnerOrg[]>([])
   const [tab, setTab] = useState<'network' | 'applications'>('network')
+  const [showClosed, setShowClosed] = useState(false)
   const [openId, setOpenId] = useState<number | null>(null)
   const [openOrgId, setOpenOrgId] = useState<number | null>(null)
   const [form, setForm] = useState<Form>({})
@@ -246,6 +252,10 @@ export default function PartnerOnboarding() {
    * System" (distance 4). This only ever raises a warning — it never blocks.
    */
   const looksLikeExisting = (r: Registration): PartnerOrg | undefined => {
+    // An approved registration CREATED an org, so of course it matches one.
+    // Warning about that is noise, and worse — it implies approving again
+    // would duplicate something, when the registration is already closed.
+    if (r.status === 'approved' || r.created_org_id) return undefined
     if (r.gstin) {
       const byGstin = orgs.find(
         o => o.gstin && o.gstin.toUpperCase() === String(r.gstin).toUpperCase())
@@ -377,6 +387,11 @@ export default function PartnerOnboarding() {
   const services = isDealer && form.dealer_type === 'SS'
   const editable = form.status === 'draft'
 
+  const openApplications = useMemo(
+    () => list.filter(r => !CLOSED_STATUSES.includes(r.status)), [list])
+  const closedApplications = useMemo(
+    () => list.filter(r => CLOSED_STATUSES.includes(r.status)), [list])
+
   const stateOptions = useMemo(
     () => (ref?.states ?? []).map(s => ({ value: s.name, label: `${s.name} (${s.code})` })),
     [ref],
@@ -499,44 +514,103 @@ export default function PartnerOnboarding() {
           <p style={{ fontSize: 13, color: FAINT }}>No applications yet.</p>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {list.map(r => {
+            {openApplications.length === 0 && !showClosed && (
+              <p style={{ fontSize: 13, color: FAINT, margin: '0 0 4px' }}>
+                Nothing waiting on you.
+              </p>
+            )}
+            {closedApplications.length > 0 && (
+              <button
+                onClick={() => setShowClosed(s => !s)}
+                style={{
+                  alignSelf: 'flex-start', background: 'none', border: 'none',
+                  cursor: 'pointer', color: MUTED, fontSize: 12.5,
+                  fontFamily: 'inherit', padding: '2px 0 6px',
+                }}
+              >
+                {showClosed ? 'Hide' : 'Show'} {closedApplications.length} closed (approved, rejected, withdrawn)
+              </button>
+            )}
+            {(showClosed ? [...openApplications, ...closedApplications] : openApplications).map(r => {
               const dupe = looksLikeExisting(r)
+              const closed = CLOSED_STATUSES.includes(r.status)
               return (
-                <button
-                  key={r.id} onClick={() => openRecord(r.id)}
-                  style={{
-                    textAlign: 'left', width: '100%', cursor: 'pointer', fontFamily: 'inherit',
-                    backgroundColor: '#fff', border: `1px solid ${dupe ? '#E0A94F' : LINE}`,
-                    borderRadius: 9, padding: '12px 14px',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 14, fontWeight: 600, color: INK, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {r.legal_name}
+                <div key={r.id} style={{
+                  backgroundColor: '#fff',
+                  border: `1px solid ${dupe ? '#E0A94F' : LINE}`,
+                  borderRadius: 9, overflow: 'hidden',
+                  opacity: closed && r.status !== 'approved' ? 0.72 : 1,
+                }}>
+                  <button
+                    onClick={() => openRecord(r.id)}
+                    style={{
+                      textAlign: 'left', width: '100%', cursor: 'pointer',
+                      fontFamily: 'inherit', background: 'none', border: 'none',
+                      padding: '12px 14px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: INK, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {r.legal_name}
+                        </div>
+                        <div style={{ fontSize: 11.5, color: MUTED, marginTop: 2 }}>
+                          {r.partner_type === 'dealer'
+                            ? `Dealer${r.dealer_type ? ` · ${r.dealer_type}` : ''}`
+                            : 'Distributor'}
+                          {r.city ? ` · ${r.city}` : ''}
+                          {r.allotted_code ? ` · ${r.allotted_code}` : ''}
+                        </div>
                       </div>
-                      <div style={{ fontSize: 11.5, color: MUTED, marginTop: 2 }}>
-                        {r.partner_type === 'dealer'
-                          ? `Dealer${r.dealer_type ? ` · ${r.dealer_type}` : ''}`
-                          : 'Distributor'}
-                        {r.city ? ` · ${r.city}` : ''}
-                        {r.allotted_code ? ` · ${r.allotted_code}` : ''}
-                      </div>
+                      <StatusChip status={r.status} />
                     </div>
-                    <StatusChip status={r.status} />
-                  </div>
-                  {dupe && (
+                    {dupe && (
+                      <div style={{
+                        marginTop: 8, padding: '7px 9px', borderRadius: 6, fontSize: 11.5,
+                        backgroundColor: '#FBF0DA', color: '#6F2F0E',
+                        display: 'flex', alignItems: 'center', gap: 5,
+                      }}>
+                        <AlertCircle size={13} />
+                        Looks like <strong>{dupe.legal_name}</strong> ({dupe.code}), who already
+                        holds a code. Approving this would create a second record.
+                      </div>
+                    )}
+                  </button>
+
+                  {/* An approved application records how a partner came to
+                      exist, so it cannot be removed — suspend the partner
+                      instead. Everything else can go. */}
+                  {r.status !== 'approved' && (
                     <div style={{
-                      marginTop: 8, padding: '7px 9px', borderRadius: 6, fontSize: 11.5,
-                      backgroundColor: '#FBF0DA', color: '#6F2F0E',
-                      display: 'flex', alignItems: 'center', gap: 5,
+                      borderTop: `1px solid ${LINE}`, padding: '7px 12px',
+                      display: 'flex', justifyContent: 'flex-end',
                     }}>
-                      <AlertCircle size={13} />
-                      Looks like <strong>{dupe.legal_name}</strong> ({dupe.code}), who already
-                      holds a code. Approving this would create a second record.
+                      <button
+                        onClick={async () => {
+                          const sent = r.status === 'submitted' || r.status === 'under_review'
+                          if (!window.confirm(
+                            `${sent ? 'Withdraw' : 'Delete'} "${r.legal_name}"?` +
+                            (sent
+                              ? '\n\nIt was sent to SGT, so it is marked withdrawn rather than removed.'
+                              : '\n\nThis permanently removes the draft.'))) return
+                          try {
+                            await onboardingApi.removeRegistration(r.id)
+                            setList(await onboardingApi.list())
+                            setBanner(null)
+                          } catch (e: any) { setBanner(e.message) }
+                        }}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 5,
+                          background: 'none', border: 'none', cursor: 'pointer',
+                          color: FAINT, fontSize: 11.5, fontFamily: 'inherit', padding: '2px 4px',
+                        }}
+                      >
+                        <Trash2 size={13} />
+                        {r.status === 'submitted' || r.status === 'under_review' ? 'Withdraw' : 'Delete'}
+                      </button>
                     </div>
                   )}
-                </button>
+                </div>
               )
             })}
           </div>

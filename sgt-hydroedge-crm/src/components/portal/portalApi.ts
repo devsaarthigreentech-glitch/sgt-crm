@@ -106,6 +106,16 @@ export const portalApi = {
   dealers: () => request<{ data: PortalDealer[] }>('/portal/dealers').then(r => r.data),
   reference: () => request<{ data: PortalReference }>('/portal/reference').then(r => r.data),
 
+  /** One dealer in their network. Scoped server-side to their subtree. */
+  dealer: (id: number) =>
+    request<{ data: any }>(`/portal/dealers/${id}`).then(r => r.data),
+
+  /** Master-data edit. Status and dealer type are SGT's, not theirs. */
+  saveDealer: (id: number, patch: Record<string, unknown>) =>
+    request<{ data: any; changed?: string[] }>(`/portal/dealers/${id}`, {
+      method: 'PATCH', body: JSON.stringify(patch),
+    }),
+
   registrations: () =>
     request<{ data: PortalRegistration[] }>('/portal/registrations').then(r => r.data),
   registration: (id: number) =>
