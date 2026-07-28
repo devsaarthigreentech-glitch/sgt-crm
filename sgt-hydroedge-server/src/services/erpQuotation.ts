@@ -62,8 +62,46 @@ async function getDoc(doctype: string, name: string): Promise<any> {
   const res = await erpFetch(
     `${BASE}/api/resource/${encodeURIComponent(doctype)}/${encodeURIComponent(name)}`,
     { headers: authHeaders() });
-  if (!res.ok) throw new Error(`ERPNext GET ${doctype}/${name} ${res.status}`);
+  if (!res.ok) throw new Error(`ERPNext GET ${doctype}/${name} ${res.status}: ${(await res.text()).slice(0, 200)}`);
   return (await res.json()).data;
+}
+
+/**
+ * Expand a tax template into rows.
+ *
+ * Frappe's own `get_taxes_and_charges` is the canonical expansion — it is
+ * what the UI calls when you pick a template — so try that first and only
+ * fall back to copying the template document by hand.
+ *
+ * Returns [] when both fail, and the caller reports that loudly. An
+ * earlier version swallowed the failure, which produced quotations with
+ * `taxes: []` that ERPNext then treated as Nil-Rated: zero GST on a
+ * document that looked complete. Silence is the wrong default here.
+ */
+export async function expandTaxTemplate(template: string): Promise<any[]> {
+  const url =
+    `${BASE}/api/method/erpnext.controllers.accounts_controller.get_taxes_and_charges` +
+    `?master_doctype=${encodeURIComponent('Sales Taxes and Charges Template')}` +
+    `&master_name=${encodeURIComponent(template)}`;
+  try {
+    const res = await erpFetch(url, { headers: authHeaders() });
+    if (res.ok) {
+      const rows = (await res.json()).message;
+      if (Array.isArray(rows) && rows.length) return rows;
+    }
+  } catch { /* fall through to the manual copy */ }
+
+  const doc = await getDoc('Sales Taxes and Charges Template', template);
+  const rows = Array.isArray(doc?.taxes) ? doc.taxes : [];
+  return rows.map((t: any) => ({
+    charge_type: t.charge_type,
+    account_head: t.account_head,
+    description: t.description,
+    rate: t.rate,
+    cost_center: t.cost_center,
+    included_in_print_rate: t.included_in_print_rate,
+    row_id: t.row_id,
+  }));
 }
 
 async function post(doctype: string, doc: Record<string, unknown>): Promise<any> {
@@ -193,6 +231,9 @@ export interface CreateQuotationResult {
   netTotal: string | null;
   grandTotal: string | null;
   taxTemplate: string | null;
+  totalTax: string | null;
+  /** Set when the quotation carries no GST. Show it — do not swallow it. */
+  taxWarning: string | null;
   commissionRate: number | null;
   totalCommission: string | null;
 }
@@ -220,6 +261,11 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
       item_code: input.itemCode,
       qty: input.qty,
       ...(input.rate != null && input.rate !== '' ? { rate: Number(input.rate) } : {}),
+      // india_compliance derives gst_treatment from the tax rows it finds.
+      // With none present it settles on "Nil-Rated" and zeroes the GST —
+      // which is how the first two quotations came out at 0% tax. GreenX is
+      // taxable at 18%, so say so rather than let it be inferred.
+      gst_treatment: 'Taxable',
     }],
   };
 
@@ -228,27 +274,34 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
     if (input.commissionRate != null) doc.commission_rate = input.commissionRate;
   }
 
-  // Copy the template's rows rather than referencing it — see the header.
+  // Naming the template is not enough over REST: the client-side fetch that
+  // expands it into rows only runs in the UI. The rows must be sent.
+  let taxWarning: string | null = null;
   if (taxTemplate) {
     doc.taxes_and_charges = taxTemplate;
     try {
-      const tmpl = await getDoc('Sales Taxes and Charges Template', taxTemplate);
-      if (Array.isArray(tmpl?.taxes) && tmpl.taxes.length) {
-        doc.taxes = tmpl.taxes.map((t: any) => ({
-          charge_type: t.charge_type,
-          account_head: t.account_head,
-          description: t.description,
-          rate: t.rate,
-          cost_center: t.cost_center,
-          included_in_print_rate: t.included_in_print_rate,
-        }));
-      }
-    } catch {
-      // Fall back to the template reference alone; ERPNext may still apply it.
+      const rows = await expandTaxTemplate(taxTemplate);
+      if (rows.length) doc.taxes = rows;
+      else taxWarning = `Tax template "${taxTemplate}" expanded to zero rows — the quotation will carry no GST.`;
+    } catch (e: any) {
+      taxWarning =
+        `Could not expand tax template "${taxTemplate}": ${String(e?.message ?? e).slice(0, 200)}. ` +
+        `The quotation will carry no GST.`;
     }
+  } else {
+    taxWarning = 'No GSTIN on the customer, so no tax template could be chosen.';
   }
 
   const created = await post('Quotation', doc);
+
+  // Verify against what ERPNext actually stored, not what we sent. A
+  // document that looks complete but carries zero tax is worse than an
+  // error, so surface it rather than let it reach a customer.
+  if (!taxWarning && Number(created.total_taxes_and_charges ?? 0) === 0) {
+    taxWarning =
+      `${created.name} was created with zero tax despite template "${taxTemplate}". ` +
+      `Check the item's GST treatment in ERPNext before sending it.`;
+  }
 
   return {
     erpName: created.name,
@@ -256,6 +309,9 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
     netTotal: created.net_total != null ? String(created.net_total) : null,
     grandTotal: created.grand_total != null ? String(created.grand_total) : null,
     taxTemplate,
+    totalTax: created.total_taxes_and_charges != null
+      ? String(created.total_taxes_and_charges) : null,
+    taxWarning,
     commissionRate: created.commission_rate ?? null,
     totalCommission: created.total_commission != null ? String(created.total_commission) : null,
   };

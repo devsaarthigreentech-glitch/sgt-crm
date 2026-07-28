@@ -136,6 +136,8 @@ export async function performQuotation(
         netTotal: created.netTotal,
         grandTotal: created.grandTotal,
         taxTemplate: created.taxTemplate,
+        totalTax: created.totalTax,
+        taxWarning: created.taxWarning,
         commissionRate: created.commissionRate,
         totalCommission: created.totalCommission,
         customer: created.customer,

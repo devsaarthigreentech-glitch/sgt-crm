@@ -162,10 +162,21 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
             <Check size={16} /> {made.erpName} created in ERPNext
           </div>
           <div style={{ fontSize: 11.5, opacity: 0.9, marginTop: 4 }}>
-            {made.model} × {made.qty} · net {rupees(made.netTotal)} · total {rupees(made.grandTotal)}
+            {made.model} × {made.qty} · net {rupees(made.netTotal)}
+            {' · GST '}{rupees(made.totalTax)} · total {rupees(made.grandTotal)}
             {made.totalCommission ? ` · commission ${rupees(made.totalCommission)}` : ''}
             {made.customer?.matchedOn === 'created' ? ' · new customer created' : ''}
           </div>
+          {made.taxWarning && (
+            <div style={{
+              marginTop: 8, padding: '8px 10px', borderRadius: 6, fontSize: 11.5,
+              backgroundColor: WARN_BG, color: WARN_FG,
+              display: 'flex', alignItems: 'flex-start', gap: 5,
+            }}>
+              <AlertCircle size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+              <span><strong>No GST on this quotation.</strong> {made.taxWarning}</span>
+            </div>
+          )}
           {made.mirrored === false && (
             <div style={{ fontSize: 11.5, marginTop: 5, color: WARN_FG }}>
               Saved in ERPNext but not mirrored locally — it may not appear in the list below.
