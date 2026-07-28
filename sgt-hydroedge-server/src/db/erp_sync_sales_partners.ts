@@ -37,6 +37,7 @@ const BASE = process.env.ERPNEXT_URL?.replace(/\/+$/, '');
 const KEY = process.env.ERPNEXT_API_KEY;
 const SECRET = process.env.ERPNEXT_API_SECRET;
 const DEFAULT_COMMISSION = Number(process.env.ERP_PARTNER_COMMISSION ?? '40.48');
+const FALLBACK_TERRITORY = process.env.ERP_TERRITORY ?? 'India';
 const CONFIRMED = process.env.CONFIRM_CREATE === '1';
 
 if (!BASE || !KEY || !SECRET) {
@@ -95,6 +96,33 @@ async function main() {
     return;
   }
 
+  // ---- Territory is mandatory on Sales Partner -----------------------
+  // Our org.territory is free text ("Rajasthan + sub-dealers across India");
+  // ERPNext needs the name of a real Territory record. Resolve properly
+  // rather than forcing everyone to the fallback: try the whole string,
+  // then the part before the first "+" or "," (which is nearly always the
+  // actual state), then fall back.
+  const territories = await erpGet('Territory', { fields: ['name'], limit_page_length: 500 });
+  const tByLower = new Map(territories.map(t => [String(t.name).toLowerCase(), String(t.name)]));
+  if (!tByLower.has(FALLBACK_TERRITORY.toLowerCase())) {
+    throw new Error(
+      `Fallback Territory "${FALLBACK_TERRITORY}" does not exist in ERPNext. ` +
+      `Available: ${territories.map(t => t.name).join(', ').slice(0, 300)}. ` +
+      `Set ERP_TERRITORY to one of them.`);
+  }
+
+  function resolveTerritory(raw: string | null): { name: string; exact: boolean } {
+    const tryers = [
+      (raw ?? '').trim(),
+      (raw ?? '').split(/[+,;/]/)[0].trim(),
+    ].filter(Boolean);
+    for (const t of tryers) {
+      const hit = tByLower.get(t.toLowerCase());
+      if (hit) return { name: hit, exact: true };
+    }
+    return { name: tByLower.get(FALLBACK_TERRITORY.toLowerCase())!, exact: false };
+  }
+
   const existing = await erpGet('Sales Partner', {
     fields: ['name', 'partner_name', 'commission_rate'], limit_page_length: 200,
   });
@@ -136,8 +164,10 @@ async function main() {
 
   console.log(`  ${toCreate.length} to create at ${DEFAULT_COMMISSION}% commission:`);
   for (const o of toCreate) {
+    const t = resolveTerritory(o.territory);
     console.log(`    · ${o.code.padEnd(18)} ${o.legal_name}` +
                 `  [${o.org_type}${o.dealer_type ? '/' + o.dealer_type : ''}]`);
+    console.log(`      territory: ${t.name}${t.exact ? '' : `  (fallback — "${o.territory ?? 'none'}" is not an ERPNext Territory)`}`);
   }
 
   if (!CONFIRMED) {
@@ -155,6 +185,7 @@ async function main() {
         doctype: 'Sales Partner',
         partner_name: o.code,
         commission_rate: DEFAULT_COMMISSION,
+        territory: resolveTerritory(o.territory).name,
         // Kept in the description so anyone reading the ERPNext record can
         // tell which CRM partner it is without cross-referencing codes.
         description: `${o.legal_name}${o.territory ? ` — ${o.territory}` : ''}` +
