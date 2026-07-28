@@ -49,6 +49,10 @@ export function makeQuoteApi(prefix: string, withPartners: boolean): QuoteApi {
 
     list: () => request<{ data: any[] }>(`${prefix}`).then(r => r.data),
 
+    limits: () =>
+      request<{ data: { discountCaps: Record<string, number>; maxDiscount?: number; amcPct: number } }>(
+        `${prefix}/limits`).then(r => r.data),
+
     termsList: () =>
       request<{ data: { templates: string[]; default: string } }>(`${prefix}/terms`)
         .then(r => r.data),

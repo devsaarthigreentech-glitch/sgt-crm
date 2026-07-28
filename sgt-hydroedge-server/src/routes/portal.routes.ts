@@ -36,6 +36,7 @@ import { requireAuth } from '../auth/guard.js'
 import { validateForSubmit, type RegistrationInput } from '../domain/partnerValidation.js'
 import { inspectGstin } from '../domain/gstin.js'
 import { resolveForKva } from '../domain/quotePricing.js'
+import { actorFor, DISCOUNT_CAPS, AMC_PCT, AMC_ITEM } from '../domain/quoteDiscount.js'
 import {
   itemPrice, listTermsTemplates, fetchTerms, searchCustomers, fetchQuotationPdf,
 } from '../services/erpQuotation.js'
@@ -179,6 +180,22 @@ export default async function portalRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: { code: 'not_found', message: 'No such terms template' } })
     }
     return reply.send({ data: { name, terms: html } })
+  })
+
+  app.get('/quotes/limits', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    // Only the cap that applies to THEM — a dealer has no business seeing
+    // what a distributor may discount.
+    const actor = actorFor(me.orgType)
+    return reply.send({
+      data: {
+        discountCaps: { [actor]: DISCOUNT_CAPS[actor] },
+        maxDiscount: DISCOUNT_CAPS[actor],
+        amcPct: AMC_PCT,
+        amcItem: AMC_ITEM,
+      },
+    })
   })
 
   app.get('/quotes/customers', { preHandler: requireAuth }, async (req, reply) => {

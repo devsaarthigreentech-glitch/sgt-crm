@@ -21,6 +21,9 @@ import { requireRole } from '../auth/guard.js'
 import { resolveForKva } from '../domain/quotePricing.js'
 import { inspectGstin } from '../domain/gstin.js'
 import {
+  checkDiscount, actorFor, DISCOUNT_CAPS, amcRate, AMC_ITEM, AMC_PCT,
+} from '../domain/quoteDiscount.js'
+import {
   createQuotation, itemPrice, fetchQuotation, listTermsTemplates, fetchTerms,
   searchCustomers, ensureQuotationCustomer, fetchQuotationPdf, fetchQuotationSummaries,
   type CreateQuotationInput,
@@ -43,6 +46,9 @@ export interface QuoteBody {
   validDays?: number
   termsTemplate?: string | null
   termsHtml?: string | null
+  discountPct?: number | string | null
+  /** Add an AMC line at 10% of the unit rate. */
+  amcYears?: number | null
 }
 
 /**
@@ -83,9 +89,10 @@ export async function performQuotation(
   // computes their commission. No org means SGT quoted directly.
   let salesPartner: string | null = null
   let commissionRate: number | null = null
+  let orgType: string | null = null
   if (orgId) {
     const { rows } = await query(
-      `select code from quote_service.org where id = $1 and is_active`, [orgId])
+      `select code, org_type from quote_service.org where id = $1 and is_active`, [orgId])
     if (!rows.length) {
       return {
         ok: false as const, code: 400,
@@ -93,7 +100,22 @@ export async function performQuotation(
       }
     }
     salesPartner = rows[0].code
+    orgType = rows[0].org_type
     commissionRate = Number(process.env.ERP_PARTNER_COMMISSION ?? '40.48')
+  }
+
+  // Discount authority follows the ORG raising the quote, not the login's
+  // role — a dealer's cap must hold whether they raise it themselves or an
+  // SGT user raises it on their behalf.
+  const discount = checkDiscount(body.discountPct, actorFor(orgType))
+  if (!discount.ok) {
+    return {
+      ok: false as const, code: 422,
+      payload: {
+        error: { code: 'discount_too_high', message: discount.message },
+        fields: { discountPct: discount.message },
+      },
+    }
   }
 
   const input: CreateQuotationInput = {
@@ -109,6 +131,14 @@ export async function performQuotation(
     raisedBy: who.name ? `${who.name}${who.id ? ` (user ${who.id})` : ''}` : null,
     raisedByOrg: salesPartner,
     raisedVia: opts.via === 'portal' ? 'Partner portal' : 'SGT CRM',
+    discountPct: discount.pct || null,
+    amc: body.amcYears && Number(body.amcYears) > 0
+      ? {
+          itemCode: AMC_ITEM,
+          rate: amcRate(resolution.rate ?? 0, Number(body.amcYears)),
+          qty,
+        }
+      : null,
   }
 
   const created = await createQuotation(input)
@@ -156,6 +186,9 @@ export async function performQuotation(
         rate: input.rate,
         netTotal: created.netTotal,
         grandTotal: created.grandTotal,
+        discountPct: discount.pct || null,
+        discountAmount: created.discountAmount,
+        amcYears: body.amcYears ?? null,
         taxTemplate: created.taxTemplate,
         termsTemplate: created.termsTemplate,
         termsWarning: created.termsWarning,
@@ -279,6 +312,13 @@ export default async function quotesRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: { code: 'not_found', message: 'No such terms template' } })
     }
     return reply.send({ data: { name, terms: html } })
+  })
+
+  // ---- Commercial limits the UI needs to label its controls -------------
+  app.get('/limits', { preHandler: staff }, async (_req, reply) => {
+    return reply.send({
+      data: { discountCaps: DISCOUNT_CAPS, amcPct: AMC_PCT, amcItem: AMC_ITEM },
+    })
   })
 
   // ---- Customers: search, and explicit creation ------------------------

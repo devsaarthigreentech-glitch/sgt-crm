@@ -445,6 +445,10 @@ export interface CreateQuotationInput {
   raisedBy?: string | null;
   raisedByOrg?: string | null;
   raisedVia?: string | null;
+  /** 0-100, already checked against the caller's cap by the route. */
+  discountPct?: number | null;
+  /** An extra AMC line at this rate, when the customer opted in. */
+  amc?: { itemCode: string; rate: number; qty: number } | null;
   /** Terms template name. Falls back to the configured default. */
   termsTemplate?: string | null;
   /** Overrides the template's text for this quotation only. */
@@ -456,6 +460,7 @@ export interface CreateQuotationResult {
   customer: CustomerResult;
   netTotal: string | null;
   grandTotal: string | null;
+  discountAmount: string | null;
   taxTemplate: string | null;
   termsTemplate: string | null;
   termsWarning: string | null;
@@ -488,17 +493,35 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
     selling_price_list: SELLING_PRICE_LIST,
     transaction_date: today,
     valid_till: validTill,
-    items: [{
-      item_code: input.itemCode,
-      qty: input.qty,
-      ...(input.rate != null && input.rate !== '' ? { rate: Number(input.rate) } : {}),
-      // india_compliance derives gst_treatment from the tax rows it finds.
-      // With none present it settles on "Nil-Rated" and zeroes the GST —
-      // which is how the first two quotations came out at 0% tax. GreenX is
-      // taxable at 18%, so say so rather than let it be inferred.
-      gst_treatment: 'Taxable',
-    }],
+    items: [
+      {
+        item_code: input.itemCode,
+        qty: input.qty,
+        ...(input.rate != null && input.rate !== '' ? { rate: Number(input.rate) } : {}),
+        // india_compliance derives gst_treatment from the tax rows it finds.
+        // With none present it settles on "Nil-Rated" and zeroes the GST —
+        // which is how the first two quotations came out at 0% tax. GreenX is
+        // taxable at 18%, so say so rather than let it be inferred.
+        gst_treatment: 'Taxable',
+      },
+      ...(input.amc
+        ? [{
+            item_code: input.amc.itemCode,
+            qty: input.amc.qty,
+            rate: input.amc.rate,
+            gst_treatment: 'Taxable',
+          }]
+        : []),
+    ],
   };
+
+  // Applied to the NET total, so GST is charged on the discounted value.
+  // ERPNext's default is 'Grand Total', which would tax the full amount and
+  // then discount the tax-inclusive figure — wrong for a pre-tax discount.
+  if (input.discountPct && input.discountPct > 0) {
+    doc.apply_discount_on = 'Net Total';
+    doc.additional_discount_percentage = input.discountPct;
+  }
 
   if (input.salesPartner) {
     doc.sales_partner = input.salesPartner;
@@ -568,6 +591,7 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
     customer,
     netTotal: created.net_total != null ? String(created.net_total) : null,
     grandTotal: created.grand_total != null ? String(created.grand_total) : null,
+    discountAmount: created.discount_amount != null ? String(created.discount_amount) : null,
     taxTemplate,
     termsTemplate: doc.tc_name ? String(doc.tc_name) : null,
     termsWarning,

@@ -162,7 +162,7 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
             ...(org.org_type === 'distributor'
               ? [{ label: 'Dealers', value: activeDealers.filter(d => d.org_type === 'dealer').length, icon: Users }]
               : []),
-            { label: 'Sub-dealers', value: activeDealers.filter(d => d.org_type === 'sub_dealer').length, icon: Users },
+            { label: 'Referrals', value: activeDealers.filter(d => d.org_type === 'sub_dealer').length, icon: Users },
             { label: 'Territory', value: org.territory ?? '—', icon: MapPin, wide: true },
           ].map(s => (
             <div key={s.label} style={{
@@ -181,7 +181,7 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
 
         {/* Dealers */}
         <h2 style={{ margin: '0 0 10px', fontSize: 15, fontWeight: 700, color: INK }}>
-          {org.org_type === 'distributor' ? 'Dealers I manage' : 'Sub-dealers'}
+          {org.org_type === 'distributor' ? 'Dealers I manage' : 'Referrals'}
         </h2>
 
         {dealers.length === 0 ? (
@@ -189,9 +189,13 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
             backgroundColor: '#fff', border: `1px dashed ${LINE}`, borderRadius: 10,
             padding: '26px 18px', textAlign: 'center',
           }}>
-            <p style={{ margin: 0, fontSize: 13, color: MUTED }}>No dealers yet.</p>
+            <p style={{ margin: 0, fontSize: 13, color: MUTED }}>
+              {org.org_type === 'distributor' ? 'No dealers yet.' : 'No referrals yet.'}
+            </p>
             <p style={{ margin: '5px 0 0', fontSize: 11.5, color: FAINT }}>
-              Dealers appear here once SGT approves their registration and allots a code.
+              {org.org_type === 'distributor'
+                ? 'Dealers appear here once SGT approves their registration and allots a code.'
+                : 'Referrals are issued by SGT. They appear here once SGT sets one up — they cannot be added from this portal.'}
             </p>
           </div>
         ) : (
@@ -211,7 +215,7 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
                     <div style={{ fontSize: 11.5, color: MUTED, marginTop: 2 }}>
                       {d.org_type === 'dealer'
                         ? `Dealer${d.dealer_type === 'SS' ? ' · Sales & Service' : d.dealer_type === 'SM' ? ' · Sales & Marketing' : ''}`
-                        : `Sub-dealer${d.parent_code ? ` · under ${d.parent_code}` : ''}`}
+                        : `Referral${d.parent_code ? ` · under ${d.parent_code}` : ''}`}
                       {d.territory ? ` · ${d.territory}` : ''}
                       {!d.is_active ? ' · inactive' : ''}
                     </div>

@@ -50,6 +50,8 @@ export interface QuoteApi {
   create(body: {
     kva: string; qty: number; rate?: string | null
     customerErpName: string
+    discountPct?: number | null
+    amcYears?: number | null
     orgId?: number | null
     termsTemplate?: string | null
     termsHtml?: string | null
@@ -57,6 +59,7 @@ export interface QuoteApi {
   searchCustomers(q: string): Promise<ErpCustomer[]>
   createCustomer(body: Record<string, string>): Promise<{ erpName: string; matchedOn: string }>
   pdfUrl(erpName: string): Promise<string>
+  limits(): Promise<{ discountCaps: Record<string, number>; maxDiscount?: number; amcPct: number }>
   termsList(): Promise<{ templates: string[]; default: string }>
   termsBody(name: string): Promise<string>
   list(): Promise<any[]>
@@ -112,6 +115,9 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
   const [newCust, setNewCust] = useState({ name: '', gstin: '', state: '', city: '' })
   const [custErrors, setCustErrors] = useState<Record<string, string>>({})
   const [pdfFor, setPdfFor] = useState<{ name: string; url: string } | null>(null)
+  const [discountPct, setDiscountPct] = useState('')
+  const [amcYears, setAmcYears] = useState(0)
+  const [limits, setLimits] = useState<{ discountCaps: Record<string, number>; maxDiscount?: number; amcPct: number } | null>(null)
   const [orgId, setOrgId] = useState<number | null>(null)
   const [partners, setPartners] = useState<{ id: number; code: string; legal_name: string }[]>([])
   const [list, setList] = useState<any[]>([])
@@ -130,6 +136,7 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
   useEffect(() => {
     refresh()
     if (showPartnerPicker && api.partners) api.partners().then(setPartners).catch(() => {})
+    api.limits().then(setLimits).catch(() => {})
     api.termsList()
       .then(t => {
         setTerms(t)
@@ -193,7 +200,18 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
     }
   }
 
-  const canCreate = !!res?.resolved && !!picked && !busy
+  const maxDiscount = limits?.maxDiscount
+    ?? Math.max(0, ...Object.values(limits?.discountCaps ?? {}))
+  const discNum = Number(discountPct) || 0
+  const overCap = discNum > maxDiscount
+  const machineAmt = (Number(res?.rate) || 0) * qty
+  const amcAmt = amcYears > 0 && limits
+    ? Math.round((Number(res?.rate) || 0) * limits.amcPct / 100) * amcYears * qty
+    : 0
+  const discountAmt = Math.round((machineAmt + amcAmt) * discNum / 100)
+  const netEstimate = machineAmt + amcAmt - discountAmt
+
+  const canCreate = !!res?.resolved && !!picked && !busy && !overCap
 
   const create = async () => {
     if (!canCreate) return
@@ -204,12 +222,15 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
         rate: res?.rate ?? null,
         customerErpName: picked!.name,
         ...(showPartnerPicker ? { orgId } : {}),
+        discountPct: discountPct.trim() ? Number(discountPct) : null,
+        amcYears: amcYears > 0 ? amcYears : null,
         termsTemplate: termsName || null,
         termsHtml: termsEdited && termsHtml.trim() ? termsHtml : null,
       })
       setMade(r.data ?? r)
       setKva(''); setRes(null); setQty(1)
       setPicked(null); setCustQuery(''); setCustHits([])
+      setDiscountPct(''); setAmcYears(0)
       setTermsEdited(false)
       refresh()
     } catch (e: any) { setBanner(e.message) } finally { setBusy(false) }
@@ -458,6 +479,66 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
             </div>
           </Card>
         )}
+
+        <Card title="Commercials">
+          <div style={{ display: 'flex', gap: 10 }}>
+            <div style={{ flex: 1 }}>
+              <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: MUTED, marginBottom: 5 }}>
+                Discount %
+              </label>
+              <input type="number" value={discountPct} min={0} max={maxDiscount} step="0.5"
+                onChange={e => setDiscountPct(e.target.value)}
+                placeholder="0" style={inputStyle(overCap)} />
+              <div style={{ fontSize: 11, color: overCap ? DANGER : FAINT, marginTop: 3 }}>
+                {overCap
+                  ? `Above your ${maxDiscount}% limit — SGT must approve anything deeper.`
+                  : `Up to ${maxDiscount}%. Applied before GST.`}
+              </div>
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: MUTED, marginBottom: 5 }}>
+                AMC
+              </label>
+              <select value={amcYears} onChange={e => setAmcYears(Number(e.target.value))}
+                style={{ ...inputStyle(), appearance: 'auto' }}>
+                <option value={0}>Not included</option>
+                <option value={1}>1 year</option>
+                <option value={2}>2 years</option>
+                <option value={3}>3 years</option>
+              </select>
+              <div style={{ fontSize: 11, color: FAINT, marginTop: 3 }}>
+                {limits ? `${limits.amcPct}% of unit price per year` : 'Optional'}
+              </div>
+            </div>
+          </div>
+
+          {(discountAmt > 0 || amcAmt > 0) && res?.resolved && (
+            <div style={{
+              marginTop: 13, marginBottom: 13, padding: '10px 12px', borderRadius: 7,
+              backgroundColor: '#F7F4EA', border: `1px solid ${LINE}`, fontSize: 12, color: INK,
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span>{res.modelCode} × {qty}</span><span>{rupees(machineAmt)}</span>
+              </div>
+              {amcAmt > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 3 }}>
+                  <span>AMC × {amcYears} yr</span><span>{rupees(amcAmt)}</span>
+                </div>
+              )}
+              {discountAmt > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 3, color: WARN_FG }}>
+                  <span>Discount {discountPct}%</span><span>− {rupees(discountAmt)}</span>
+                </div>
+              )}
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, paddingTop: 6, borderTop: `1px solid ${LINE}`, fontWeight: 700 }}>
+                <span>Net, before GST</span><span>{rupees(netEstimate)}</span>
+              </div>
+              <div style={{ fontSize: 10.5, color: FAINT, marginTop: 4 }}>
+                Estimate — ERPNext computes the binding figures.
+              </div>
+            </div>
+          )}
+        </Card>
 
         <Card title="Terms and conditions">
           <div style={{ marginBottom: 13 }}>
