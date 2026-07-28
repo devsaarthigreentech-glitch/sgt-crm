@@ -85,9 +85,26 @@ async function main() {
     process.exit(1);
   }
 
+  // india_compliance makes HSN/SAC mandatory on every Item, so there is no
+  // "create it now, classify it later". Fail here with something useful
+  // rather than letting Frappe throw a MandatoryError.
+  if (!SAC) {
+    console.error('✗ A SAC code is required — india_compliance will not accept an Item without one.');
+    console.error('');
+    console.error('  AMC is a SERVICE, so it cannot reuse the machine HSN 85433000.');
+    console.error('  The code usually applied to maintenance of machinery is:');
+    console.error('');
+    console.error('     998719  — Maintenance and repair services of other machinery and equipment');
+    console.error('');
+    console.error('  That is the common choice, not advice: confirm it with your CA, then:');
+    console.error('');
+    console.error(`     ERP_AMC_SAC=998719 CONFIRM_CREATE=1 npx tsx src/db/erp_create_amc_item.ts`);
+    process.exit(1);
+  }
+
   console.log(`  Would create "${CODE}":`);
   console.log(`    group=${ITEM_GROUP} · non-stock service · sales only`);
-  console.log(`    SAC=${SAC || '(blank — set it in ERPNext before invoicing)'}`);
+  console.log(`    SAC=${SAC}`);
   console.log(`    no Item Price: the rate is 10% of the machine it accompanies,`);
   console.log(`    so it is set per quotation line.`);
 
@@ -124,10 +141,7 @@ async function main() {
     return;
   }
   console.log(`\n✔ created "${r.json.data.name}"`);
-  if (!SAC) {
-    console.log('  ⚠ No SAC code set. Add one on the Item in ERPNext before you');
-    console.log('    invoice against it — a service under a machine HSN is wrong.');
-  }
+
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
