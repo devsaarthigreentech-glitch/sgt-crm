@@ -58,11 +58,17 @@ async function main() {
     const org = orgs[0]
     if (!org.is_active) throw new Error(`org '${orgCode}' is not active`)
 
-    // A distributor login must actually point at a distributor, or the
-    // portal's scoping would be describing something it is not.
-    if (role === 'distributor' && org.org_type !== 'distributor') {
+    // The login's role must match what the org actually is, or the portal
+    // would describe something it is not — a "dealer" login on a distributor
+    // org would hide the dealer-registration screen it should have.
+    const expected: Record<string, string> = {
+      distributor: 'distributor',
+      dealer: 'dealer',
+    };
+    if (expected[role] && org.org_type !== expected[role]) {
       throw new Error(
-        `org '${orgCode}' is org_type='${org.org_type}', not 'distributor' — refusing to attach a distributor login to it`)
+        `org '${orgCode}' is org_type='${org.org_type}', not '${expected[role]}' — ` +
+        `refusing to attach a '${role}' login to it`)
     }
 
     const hash = await bcrypt.hash(password, 12)

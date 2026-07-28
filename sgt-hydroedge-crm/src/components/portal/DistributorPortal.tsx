@@ -22,9 +22,12 @@ type PortalPage = 'overview' | 'dealers' | 'quotes'
 // Nav for the partner shell. Kept flat and short on purpose: a distributor
 // has a handful of jobs, not a CRM. Quotations and Leads slot in here as
 // they land, rather than becoming a second side panel to maintain.
-const PORTAL_NAV: { id: PortalPage; label: string; icon: typeof Users }[] = [
+// Only a distributor appoints dealers. A dealer login gets the same shell
+// without that tab — the server refuses dealer registration from a
+// non-distributor anyway, so this just stops offering a dead end.
+const PORTAL_NAV: { id: PortalPage; label: string; icon: typeof Users; distributorOnly?: boolean }[] = [
   { id: 'overview', label: 'My view', icon: LayoutDashboard },
-  { id: 'dealers', label: 'My dealers', icon: Handshake },
+  { id: 'dealers', label: 'My dealers', icon: Handshake, distributorOnly: true },
   { id: 'quotes', label: 'Quotations', icon: FileText },
 ]
 
@@ -120,7 +123,7 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
         display: 'flex', gap: 2, padding: '0 20px', borderBottom: `1px solid ${LINE}`,
         backgroundColor: PAPER, position: 'sticky', top: 62, zIndex: 1,
       }}>
-        {PORTAL_NAV.map(n => {
+        {PORTAL_NAV.filter(n => !n.distributorOnly || org.org_type === 'distributor').map(n => {
           const Icon = n.icon
           const on = page === n.id
           return (
@@ -156,7 +159,9 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
         {/* Summary */}
         <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
           {[
-            { label: 'Dealers', value: activeDealers.filter(d => d.org_type === 'dealer').length, icon: Users },
+            ...(org.org_type === 'distributor'
+              ? [{ label: 'Dealers', value: activeDealers.filter(d => d.org_type === 'dealer').length, icon: Users }]
+              : []),
             { label: 'Sub-dealers', value: activeDealers.filter(d => d.org_type === 'sub_dealer').length, icon: Users },
             { label: 'Territory', value: org.territory ?? '—', icon: MapPin, wide: true },
           ].map(s => (
@@ -176,7 +181,7 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
 
         {/* Dealers */}
         <h2 style={{ margin: '0 0 10px', fontSize: 15, fontWeight: 700, color: INK }}>
-          Dealers I manage
+          {org.org_type === 'distributor' ? 'Dealers I manage' : 'Sub-dealers'}
         </h2>
 
         {dealers.length === 0 ? (

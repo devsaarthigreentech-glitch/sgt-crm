@@ -12,7 +12,7 @@
 // says so rather than quietly picking one.
 
 import { useEffect, useRef, useState } from 'react'
-import { Check, AlertCircle, Zap, FileText } from 'lucide-react'
+import { Check, AlertCircle, Zap, FileText, Eye, Download } from 'lucide-react'
 
 const INK = '#161614'
 const MUTED = '#6A675F'
@@ -38,15 +38,25 @@ export interface Resolution {
   gstRate?: string
 }
 
+export interface ErpCustomer {
+  name: string
+  customer_name?: string
+  gstin?: string | null
+  primary_address?: string | null
+}
+
 export interface QuoteApi {
   resolve(kva: string): Promise<Resolution>
   create(body: {
     kva: string; qty: number; rate?: string | null
-    customer: { name: string; gstin?: string; state?: string; city?: string }
+    customerErpName: string
     orgId?: number | null
     termsTemplate?: string | null
     termsHtml?: string | null
   }): Promise<any>
+  searchCustomers(q: string): Promise<ErpCustomer[]>
+  createCustomer(body: Record<string, string>): Promise<{ erpName: string; matchedOn: string }>
+  pdfUrl(erpName: string): Promise<string>
   termsList(): Promise<{ templates: string[]; default: string }>
   termsBody(name: string): Promise<string>
   list(): Promise<any[]>
@@ -94,7 +104,14 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
   const [qty, setQty] = useState(1)
   const [res, setRes] = useState<Resolution | null>(null)
   const [resolving, setResolving] = useState(false)
-  const [cust, setCust] = useState({ name: '', gstin: '', state: '', city: '' })
+  const [picked, setPicked] = useState<ErpCustomer | null>(null)
+  const [custQuery, setCustQuery] = useState('')
+  const [custHits, setCustHits] = useState<ErpCustomer[]>([])
+  const [custSearching, setCustSearching] = useState(false)
+  const [addingCust, setAddingCust] = useState(false)
+  const [newCust, setNewCust] = useState({ name: '', gstin: '', state: '', city: '' })
+  const [custErrors, setCustErrors] = useState<Record<string, string>>({})
+  const [pdfFor, setPdfFor] = useState<{ name: string; url: string } | null>(null)
   const [orgId, setOrgId] = useState<number | null>(null)
   const [partners, setPartners] = useState<{ id: number; code: string; legal_name: string }[]>([])
   const [list, setList] = useState<any[]>([])
@@ -146,7 +163,37 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
     return () => { if (timer.current) clearTimeout(timer.current) }
   }, [kva])
 
-  const canCreate = !!res?.resolved && !!cust.name.trim() && !busy
+  const custTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (custTimer.current) clearTimeout(custTimer.current)
+    if (picked || custQuery.trim().length < 2) { setCustHits([]); return }
+    setCustSearching(true)
+    custTimer.current = setTimeout(async () => {
+      try { setCustHits(await api.searchCustomers(custQuery)) }
+      catch { setCustHits([]) }
+      finally { setCustSearching(false) }
+    }, 350)
+    return () => { if (custTimer.current) clearTimeout(custTimer.current) }
+  }, [custQuery, picked])
+
+  const addCustomer = async () => {
+    setCustErrors({})
+    try {
+      const r = await api.createCustomer({
+        name: newCust.name.trim(), gstin: newCust.gstin.trim(),
+        state: newCust.state.trim(), city: newCust.city.trim(),
+      })
+      setPicked({ name: r.erpName, customer_name: newCust.name.trim(), gstin: newCust.gstin.trim() || null })
+      setAddingCust(false)
+      setNewCust({ name: '', gstin: '', state: '', city: '' })
+      setBanner(null)
+    } catch (e: any) {
+      if (e?.fields) setCustErrors(e.fields)
+      else setBanner(e.message)
+    }
+  }
+
+  const canCreate = !!res?.resolved && !!picked && !busy
 
   const create = async () => {
     if (!canCreate) return
@@ -155,19 +202,14 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
       const r = await api.create({
         kva, qty,
         rate: res?.rate ?? null,
-        customer: {
-          name: cust.name.trim(),
-          gstin: cust.gstin.trim() || undefined,
-          state: cust.state.trim() || undefined,
-          city: cust.city.trim() || undefined,
-        },
+        customerErpName: picked!.name,
         ...(showPartnerPicker ? { orgId } : {}),
         termsTemplate: termsName || null,
         termsHtml: termsEdited && termsHtml.trim() ? termsHtml : null,
       })
       setMade(r.data ?? r)
       setKva(''); setRes(null); setQty(1)
-      setCust({ name: '', gstin: '', state: '', city: '' })
+      setPicked(null); setCustQuery(''); setCustHits([])
       setTermsEdited(false)
       refresh()
     } catch (e: any) { setBanner(e.message) } finally { setBusy(false) }
@@ -175,6 +217,30 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
 
   return (
     <div style={{ backgroundColor: PAPER, height: '100%', overflowY: 'auto', padding: '20px 18px 60px' }}>
+      {pdfFor && (
+        <div
+          onClick={() => { URL.revokeObjectURL(pdfFor.url); setPdfFor(null) }}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 50, backgroundColor: 'rgba(22,22,20,0.55)',
+            display: 'flex', flexDirection: 'column', padding: '3vh 3vw',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+            <div style={{ flex: 1, color: '#fff', fontSize: 13.5, fontWeight: 600 }}>{pdfFor.name}</div>
+            <a href={pdfFor.url} download={`${pdfFor.name}.pdf`} onClick={e => e.stopPropagation()}
+              style={{ color: '#fff', fontSize: 12.5, textDecoration: 'none', border: '1px solid rgba(255,255,255,0.5)', borderRadius: 6, padding: '5px 11px' }}>
+              Download
+            </a>
+            <button onClick={() => { URL.revokeObjectURL(pdfFor.url); setPdfFor(null) }}
+              style={{ background: 'none', border: '1px solid rgba(255,255,255,0.5)', color: '#fff', borderRadius: 6, padding: '5px 11px', cursor: 'pointer', fontSize: 12.5, fontFamily: 'inherit' }}>
+              Close
+            </button>
+          </div>
+          <iframe title={pdfFor.name} src={pdfFor.url} onClick={e => e.stopPropagation()}
+            style={{ flex: 1, width: '100%', border: 'none', borderRadius: 8, backgroundColor: '#fff' }} />
+        </div>
+      )}
+
       <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 700, color: INK }}>Quotations</h1>
       <p style={{ margin: '0 0 16px', fontSize: 12.5, color: MUTED }}>
         Enter the customer's DG rating; the matching GreenX model is selected automatically.
@@ -279,14 +345,100 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
         </Card>
 
         <Card title="Customer">
-          <F label="Name" value={cust.name} onChange={v => setCust(c => ({ ...c, name: v }))} />
-          <F label="GSTIN" value={cust.gstin} placeholder="Optional"
-             onChange={v => setCust(c => ({ ...c, gstin: v.toUpperCase() }))}
-             hint="Used to match an existing ERPNext customer, and to decide CGST+SGST vs IGST." />
-          <div style={{ display: 'flex', gap: 10 }}>
-            <div style={{ flex: 1 }}><F label="City" value={cust.city} onChange={v => setCust(c => ({ ...c, city: v }))} /></div>
-            <div style={{ flex: 1 }}><F label="State" value={cust.state} onChange={v => setCust(c => ({ ...c, state: v }))} /></div>
-          </div>
+          {picked ? (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 10, marginBottom: 13,
+              padding: '10px 12px', borderRadius: 7,
+              backgroundColor: '#F2F6F2', border: '1px solid #CFE0D4',
+            }}>
+              <Check size={15} style={{ color: OK, flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13.5, fontWeight: 600, color: INK }}>
+                  {picked.customer_name || picked.name}
+                </div>
+                <div style={{ fontSize: 11.5, color: MUTED, marginTop: 2 }}>
+                  {picked.gstin ? `GSTIN ${picked.gstin}` : 'No GSTIN on record'}
+                </div>
+              </div>
+              <button type="button" onClick={() => { setPicked(null); setCustQuery('') }}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: MUTED, fontSize: 12, fontFamily: 'inherit' }}>
+                Change
+              </button>
+            </div>
+          ) : addingCust ? (
+            <div style={{ marginBottom: 13, padding: 12, borderRadius: 8, border: `1px dashed ${LINE}`, backgroundColor: '#FCFBF7' }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: INK, marginBottom: 10 }}>New customer</div>
+              <F label="Name" value={newCust.name} onChange={v => setNewCust(c => ({ ...c, name: v }))} />
+              {custErrors.name && <div style={{ fontSize: 11.5, color: DANGER, marginTop: -8, marginBottom: 10 }}>{custErrors.name}</div>}
+              <F label="GSTIN" value={newCust.gstin} placeholder="27AAECC3132G1Z1"
+                 onChange={v => setNewCust(c => ({ ...c, gstin: v.toUpperCase() }))} />
+              {custErrors.gstin && <div style={{ fontSize: 11.5, color: DANGER, marginTop: -8, marginBottom: 10 }}>{custErrors.gstin}</div>}
+              <div style={{ display: 'flex', gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <F label="City" value={newCust.city} onChange={v => setNewCust(c => ({ ...c, city: v }))} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <F label="State" value={newCust.state} onChange={v => setNewCust(c => ({ ...c, state: v }))} />
+                </div>
+              </div>
+              {custErrors.state && <div style={{ fontSize: 11.5, color: DANGER, marginTop: -8, marginBottom: 10 }}>{custErrors.state}</div>}
+              <div style={{ fontSize: 11, color: FAINT, marginBottom: 10 }}>
+                A GSTIN or a state is required — without one, GST cannot be worked out
+                and the quotation would go out with no tax.
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button type="button" onClick={addCustomer} style={{
+                  padding: '8px 14px', fontSize: 12.5, fontWeight: 600, fontFamily: 'inherit',
+                  border: 'none', borderRadius: 6, cursor: 'pointer', backgroundColor: INK, color: '#fff',
+                }}>Add customer</button>
+                <button type="button" onClick={() => { setAddingCust(false); setCustErrors({}) }} style={{
+                  padding: '8px 14px', fontSize: 12.5, fontFamily: 'inherit',
+                  border: `1px solid ${LINE}`, borderRadius: 6, cursor: 'pointer',
+                  background: '#fff', color: MUTED,
+                }}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <div style={{ marginBottom: 13 }}>
+              <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: MUTED, marginBottom: 5 }}>
+                Search existing customers
+              </label>
+              <input value={custQuery} onChange={e => setCustQuery(e.target.value)}
+                placeholder="Name or GSTIN — at least 2 characters" style={inputStyle()} />
+              {custSearching && <div style={{ fontSize: 11.5, color: FAINT, marginTop: 5 }}>Searching…</div>}
+              {custHits.length > 0 && (
+                <div style={{ marginTop: 6, border: `1px solid ${LINE}`, borderRadius: 7, overflow: 'hidden' }}>
+                  {custHits.map(c => (
+                    <button key={c.name} type="button" onClick={() => { setPicked(c); setCustHits([]) }}
+                      style={{
+                        display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer',
+                        padding: '9px 11px', background: '#fff', border: 'none',
+                        borderBottom: `1px solid ${LINE}`, fontFamily: 'inherit',
+                      }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: INK }}>{c.customer_name || c.name}</div>
+                      <div style={{ fontSize: 11, color: MUTED, marginTop: 1 }}>
+                        {c.gstin ? `GSTIN ${c.gstin}` : 'No GSTIN'}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {custQuery.trim().length >= 2 && !custSearching && custHits.length === 0 && (
+                <div style={{ fontSize: 12, color: MUTED, marginTop: 7 }}>No match.</div>
+              )}
+              <button type="button" onClick={() => { setAddingCust(true); setNewCust(c => ({ ...c, name: custQuery.trim() })) }}
+                style={{
+                  marginTop: 9, display: 'flex', alignItems: 'center', gap: 5,
+                  background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                  color: MUTED, fontSize: 12.5, fontFamily: 'inherit',
+                }}>
+                + Add a new customer
+              </button>
+              <div style={{ fontSize: 11, color: FAINT, marginTop: 6 }}>
+                Quoting never creates a customer on its own — adding one is a separate step.
+              </div>
+            </div>
+          )}
         </Card>
 
         {showPartnerPicker && (
@@ -417,6 +569,31 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
                     <div style={{ fontSize: 13, fontWeight: 700, color: INK }}>{rupees(q.grand_total)}</div>
                     <div style={{ fontSize: 10.5, color: FAINT }}>incl. GST</div>
                   </div>
+                </div>
+                <div style={{ display: 'flex', gap: 12, marginTop: 8, paddingTop: 8, borderTop: `1px solid ${LINE}` }}>
+                  <button type="button"
+                    onClick={async () => {
+                      setBanner(null)
+                      try { setPdfFor({ name: q.erp_name, url: await api.pdfUrl(q.erp_name) }) }
+                      catch (e: any) { setBanner(e.message) }
+                    }}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: MUTED, fontSize: 11.5, fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <Eye size={13} /> Preview
+                  </button>
+                  <button type="button"
+                    onClick={async () => {
+                      setBanner(null)
+                      try {
+                        const url = await api.pdfUrl(q.erp_name)
+                        const a = document.createElement('a')
+                        a.href = url; a.download = `${q.erp_name}.pdf`
+                        document.body.appendChild(a); a.click(); a.remove()
+                        setTimeout(() => URL.revokeObjectURL(url), 30000)
+                      } catch (e: any) { setBanner(e.message) }
+                    }}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: MUTED, fontSize: 11.5, fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <Download size={13} /> Download
+                  </button>
                 </div>
               </div>
             ))}

@@ -59,6 +59,12 @@ export const EXTERNAL_ROLE_ALLOW: Record<string, string[]> = {
   distributor: [
     '/api/v1/portal',
   ],
+  // A dealer is the one actually quoting customers, so they get the same
+  // portal. visible_org_ids() bounds them to themselves and any sub-dealers,
+  // so the same routes return a narrower slice without any special casing.
+  dealer: [
+    '/api/v1/portal',
+  ],
 }
 
 /** Reachable without any token at all. */

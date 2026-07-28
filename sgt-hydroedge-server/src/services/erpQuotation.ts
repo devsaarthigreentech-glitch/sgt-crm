@@ -179,6 +179,56 @@ export async function itemPrice(itemCode: string): Promise<string | null> {
   return r === undefined || r === null ? null : String(r);
 }
 
+/** Search the customer master. Used by the picker so nothing is created by typing. */
+export async function searchCustomers(q: string): Promise<any[]> {
+  const term = String(q ?? '').trim();
+  if (term.length < 2) return [];
+  const fields = ['name', 'customer_name', 'gstin', 'primary_address'];
+  const byName = await get('Customer', {
+    filters: [['customer_name', 'like', `%${term}%`]],
+    fields, limit_page_length: 15, order_by: 'customer_name asc',
+  });
+  // A GSTIN search is a different question, so run it too and merge.
+  let byGstin: any[] = [];
+  if (/^[0-9A-Z]{2,15}$/i.test(term)) {
+    try {
+      byGstin = await get('Customer', {
+        filters: [['gstin', 'like', `${term.toUpperCase()}%`]],
+        fields, limit_page_length: 10,
+      });
+    } catch { /* field may not exist without india_compliance */ }
+  }
+  const seen = new Set<string>();
+  return [...byName, ...byGstin].filter(c => {
+    if (seen.has(c.name)) return false;
+    seen.add(c.name);
+    return true;
+  });
+}
+
+/**
+ * The PDF ERPNext renders, proxied as bytes.
+ *
+ * Fetched server-side on purpose: a partner must never hold an ERPNext
+ * credential, and print_format.download_pdf needs one. The caller is
+ * responsible for checking that this quotation is theirs to see.
+ */
+export async function fetchQuotationPdf(erpName: string): Promise<ArrayBuffer> {
+  const fmt = process.env.ERP_QUOTE_PRINT_FORMAT ?? '';
+  const url =
+    `${BASE}/api/method/frappe.utils.print_format.download_pdf` +
+    `?doctype=${encodeURIComponent('Quotation')}&name=${encodeURIComponent(erpName)}` +
+    (fmt ? `&format=${encodeURIComponent(fmt)}` : '') +
+    `&no_letterhead=0`;
+  const res = await erpFetch(url, {
+    headers: { Authorization: `token ${KEY}:${SECRET}`, Accept: 'application/pdf' },
+  });
+  if (!res.ok) {
+    throw new Error(`ERPNext could not render the PDF for ${erpName} (HTTP ${res.status})`);
+  }
+  return res.arrayBuffer();
+}
+
 export interface CustomerInput {
   name: string;
   gstin?: string | null;
@@ -192,8 +242,37 @@ export interface CustomerResult {
 }
 
 /**
+ * Look up an existing customer WITHOUT creating one.
+ * Returns null when there is no match — the caller decides what to do.
+ */
+export async function findQuotationCustomer(input: CustomerInput): Promise<CustomerResult | null> {
+  const name = String(input.name ?? '').trim();
+  const gstin = String(input.gstin ?? '').trim().toUpperCase();
+  if (gstin) {
+    for (const field of ['gstin', 'tax_id']) {
+      try {
+        const hit = await get('Customer', {
+          filters: [[field, '=', gstin]], fields: ['name'], limit_page_length: 1,
+        });
+        if (hit.length) return { erpName: hit[0].name, matchedOn: 'gstin' };
+      } catch { /* field may not exist */ }
+    }
+  }
+  if (!name) return null;
+  const byName = await get('Customer', {
+    filters: [['customer_name', '=', name]], fields: ['name'], limit_page_length: 1,
+  });
+  return byName.length ? { erpName: byName[0].name, matchedOn: 'name' } : null;
+}
+
+/**
  * Find or create the end customer. GSTIN first — it is the only
  * identifier that is actually unique.
+ *
+ * Creating a Customer is creating financial master data, so this is now
+ * only reachable from the explicit "add customer" endpoint. It used to be
+ * called from the quote path, which meant a mistyped name silently became
+ * a permanent ERPNext Customer with no GSTIN and no address.
  */
 export async function ensureQuotationCustomer(input: CustomerInput): Promise<CustomerResult> {
   const name = String(input.name ?? '').trim();
@@ -311,7 +390,8 @@ export async function pickTaxTemplate(customerStateCodeValue?: string | null): P
 }
 
 export interface CreateQuotationInput {
-  customer: CustomerInput;
+  /** An ERPNext Customer that already exists. Never created here. */
+  customerErpName: string;
   itemCode: string;
   qty: number;
   /** Omit to let ERPNext price it from the selling price list. */
@@ -344,10 +424,10 @@ export interface CreateQuotationResult {
 export async function createQuotation(input: CreateQuotationInput): Promise<CreateQuotationResult> {
   if (!BASE || !KEY || !SECRET) throw new Error('ERPNext is not configured on this server');
 
-  const customer = await ensureQuotationCustomer(input.customer);
-  // Ask ERPNext where this customer is, rather than trusting a form field
-  // that is routinely left blank for a customer who already exists.
-  const custState = await customerStateCode(customer.erpName, input.customer.gstin);
+  const customer: CustomerResult = { erpName: input.customerErpName, matchedOn: 'name' };
+  // Ask ERPNext where this customer is. The customer record is authoritative;
+  // there is no form field to fall back on any more.
+  const custState = await customerStateCode(customer.erpName, null);
   const taxTemplate = await pickTaxTemplate(custState);
 
   const today = new Date().toISOString().slice(0, 10);

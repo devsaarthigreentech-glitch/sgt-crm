@@ -19,8 +19,10 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { query, pool } from '../db/pool.js'
 import { requireRole } from '../auth/guard.js'
 import { resolveForKva } from '../domain/quotePricing.js'
+import { inspectGstin } from '../domain/gstin.js'
 import {
   createQuotation, itemPrice, fetchQuotation, listTermsTemplates, fetchTerms,
+  searchCustomers, ensureQuotationCustomer, fetchQuotationPdf,
   type CreateQuotationInput,
 } from '../services/erpQuotation.js'
 
@@ -35,6 +37,8 @@ export interface QuoteBody {
   qty?: number
   rate?: string | number | null
   orgId?: number | null
+  /** An existing ERPNext Customer. Required — quoting never creates one. */
+  customerErpName?: string
   customer?: { name?: string; gstin?: string; state?: string; city?: string }
   validDays?: number
   termsTemplate?: string | null
@@ -54,14 +58,19 @@ export async function performQuotation(
   const who = actor(req)
   const qty = Math.max(1, Math.floor(Number(body.qty ?? 1)))
 
-  // Cheapest check first: this needs neither the database nor ERPNext, so a
-  // request missing the customer fails immediately instead of after a
-  // catalogue lookup and a price call.
-  const customerName = String(body.customer?.name ?? '').trim()
-  if (!customerName) {
+  // A quotation attaches to a customer that ALREADY exists. Creating one is
+  // a separate, deliberate act via POST /quotes/customers — otherwise a
+  // mistyped name becomes permanent financial master data in ERPNext.
+  const customerErpName = String(body.customerErpName ?? '').trim()
+  if (!customerErpName) {
     return {
       ok: false as const, code: 400,
-      payload: { error: { code: 'bad_request', message: 'Customer name is required' } },
+      payload: {
+        error: {
+          code: 'customer_required',
+          message: 'Select an existing customer, or add one first. Quoting does not create customers.',
+        },
+      },
     }
   }
 
@@ -88,12 +97,7 @@ export async function performQuotation(
   }
 
   const input: CreateQuotationInput = {
-    customer: {
-      name: customerName,
-      gstin: body.customer?.gstin ?? null,
-      state: body.customer?.state ?? null,
-      city: body.customer?.city ?? null,
-    },
+    customerErpName,
     itemCode: resolution.modelCode,
     qty,
     rate: body.rate ?? resolution.rate,
@@ -119,7 +123,7 @@ export async function performQuotation(
        on conflict (erp_name) do nothing`,
       [created.erpName, orgId, Number(body.kva), resolution.modelId, resolution.modelCode,
        qty, input.rate ?? null, created.netTotal, created.grandTotal, commissionRate,
-       created.customer.erpName, customerName, body.customer?.gstin ?? null,
+       created.customer.erpName, created.customer.erpName, body.customer?.gstin ?? null,
        body.customer?.state ?? null, who.id, who.name, opts.via],
     )
   } catch (err) {
@@ -154,6 +158,42 @@ export async function performQuotation(
   }
 }
 
+/**
+ * Create a customer, with the minimum needed for a usable quotation.
+ *
+ * Name alone is not enough: without a GSTIN or a state we cannot tell
+ * in-state from inter-state, and the quotation silently comes out with no
+ * GST. That is exactly how the first quotations went out at zero tax, so
+ * one of the two is required here rather than discovered later.
+ */
+export async function createCustomerChecked(b: Record<string, string>) {
+  const name = String(b.name ?? '').trim()
+  const gstin = String(b.gstin ?? '').trim().toUpperCase()
+  const state = String(b.state ?? '').trim()
+
+  const fields: Record<string, string> = {}
+  if (!name) fields.name = 'Customer name is required'
+  if (!gstin && !state) {
+    fields.gstin = 'Enter a GSTIN, or pick a state — one is needed to work out GST'
+    fields.state = 'Enter a state, or a GSTIN — one is needed to work out GST'
+  }
+  if (gstin) {
+    const g = inspectGstin(gstin)
+    if (!g.valid) fields.gstin = g.message ?? 'GSTIN is not valid'
+  }
+  if (Object.keys(fields).length) {
+    return {
+      ok: false as const, code: 422,
+      payload: { error: { code: 'validation_failed', message: 'Some fields need attention' }, fields },
+    }
+  }
+
+  const created = await ensureQuotationCustomer({
+    name, gstin: gstin || null, state: state || null, city: b.city ?? null,
+  })
+  return { ok: true as const, payload: { data: created } }
+}
+
 export default async function quotesRoutes(app: FastifyInstance) {
   // ---- Resolve — free, no side effects ---------------------------------
   app.post('/resolve', { preHandler: staff }, async (req, reply) => {
@@ -181,6 +221,35 @@ export default async function quotesRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: { code: 'not_found', message: 'No such terms template' } })
     }
     return reply.send({ data: { name, terms: html } })
+  })
+
+  // ---- Customers: search, and explicit creation ------------------------
+  app.get('/customers', { preHandler: staff }, async (req, reply) => {
+    const { q } = (req.query ?? {}) as { q?: string }
+    return reply.send({ data: await searchCustomers(String(q ?? '')) })
+  })
+
+  app.post('/customers', { preHandler: staff }, async (req, reply) => {
+    const b = (req.body ?? {}) as Record<string, string>
+    const result = await createCustomerChecked(b)
+    if (!result.ok) return reply.code(result.code).send(result.payload)
+    return reply.code(201).send(result.payload)
+  })
+
+  // ---- The rendered PDF, proxied ---------------------------------------
+  app.get('/:erpName/pdf', { preHandler: staff }, async (req, reply) => {
+    const { erpName } = req.params as { erpName: string }
+    try {
+      const buf = await fetchQuotationPdf(erpName)
+      return reply
+        .header('Content-Type', 'application/pdf')
+        .header('Content-Disposition', `inline; filename="${erpName}.pdf"`)
+        .send(Buffer.from(buf))
+    } catch (e: any) {
+      return reply.code(502).send({
+        error: { code: 'pdf_failed', message: String(e?.message ?? e).slice(0, 300) },
+      })
+    }
   })
 
   // ---- Create -----------------------------------------------------------

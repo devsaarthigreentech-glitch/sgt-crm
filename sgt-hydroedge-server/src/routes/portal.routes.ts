@@ -36,8 +36,10 @@ import { requireAuth } from '../auth/guard.js'
 import { validateForSubmit, type RegistrationInput } from '../domain/partnerValidation.js'
 import { inspectGstin } from '../domain/gstin.js'
 import { resolveForKva } from '../domain/quotePricing.js'
-import { itemPrice, listTermsTemplates, fetchTerms } from '../services/erpQuotation.js'
-import { performQuotation, type QuoteBody } from './quotes.routes.js'
+import {
+  itemPrice, listTermsTemplates, fetchTerms, searchCustomers, fetchQuotationPdf,
+} from '../services/erpQuotation.js'
+import { performQuotation, createCustomerChecked, type QuoteBody } from './quotes.routes.js'
 
 interface Caller {
   userId: string
@@ -175,6 +177,48 @@ export default async function portalRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: { code: 'not_found', message: 'No such terms template' } })
     }
     return reply.send({ data: { name, terms: html } })
+  })
+
+  app.get('/quotes/customers', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { q } = (req.query ?? {}) as { q?: string }
+    return reply.send({ data: await searchCustomers(String(q ?? '')) })
+  })
+
+  app.post('/quotes/customers', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const result = await createCustomerChecked((req.body ?? {}) as Record<string, string>)
+    if (!result.ok) return reply.code(result.code).send(result.payload)
+    return reply.code(201).send(result.payload)
+  })
+
+  // The PDF, proxied. Scoped first: a partner may only download a quotation
+  // that belongs to their own org tree.
+  app.get('/quotes/:erpName/pdf', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { erpName } = req.params as { erpName: string }
+    const { rows } = await query(
+      `select 1 from quote_service.quotation_ref
+        where erp_name = $1
+          and org_id in (select org_id from quote_service.visible_org_ids($2))`,
+      [erpName, me.orgId])
+    if (!rows.length) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } })
+    }
+    try {
+      const buf = await fetchQuotationPdf(erpName)
+      return reply
+        .header('Content-Type', 'application/pdf')
+        .header('Content-Disposition', `inline; filename="${erpName}.pdf"`)
+        .send(Buffer.from(buf))
+    } catch (e: any) {
+      return reply.code(502).send({
+        error: { code: 'pdf_failed', message: String(e?.message ?? e).slice(0, 300) },
+      })
+    }
   })
 
   app.post('/quotes', { preHandler: requireAuth }, async (req, reply) => {

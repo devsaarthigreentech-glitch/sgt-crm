@@ -20,7 +20,7 @@ import { staffQuoteApi } from './components/quotes/quotesApi'
 // Roles belonging to partners rather than SGT staff. These get their own
 // shell entirely — see the branch below. Kept in sync with
 // EXTERNAL_ROLE_ALLOW in the server's src/auth/policy.ts.
-const EXTERNAL_ROLES = ['distributor']
+const EXTERNAL_ROLES = ['distributor', 'dealer']
 
 type Page = 'home' | 'my-dashboard' | 'pipeline' | 'customers' | 'triage' | 'capture' | 'outreach' | 'onboarding' | 'quotes'
 

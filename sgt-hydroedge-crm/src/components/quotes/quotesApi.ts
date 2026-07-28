@@ -53,6 +53,27 @@ export function makeQuoteApi(prefix: string, withPartners: boolean): QuoteApi {
       request<{ data: { templates: string[]; default: string } }>(`${prefix}/terms`)
         .then(r => r.data),
 
+    searchCustomers: (q: string) =>
+      request<{ data: any[] }>(`${prefix}/customers?q=${encodeURIComponent(q)}`).then(r => r.data),
+
+    createCustomer: (body: Record<string, string>) =>
+      request<{ data: { erpName: string; matchedOn: string } }>(`${prefix}/customers`, {
+        method: 'POST', body: JSON.stringify(body),
+      }).then(r => r.data),
+
+    /** Fetched as a blob because the PDF route needs the bearer token. */
+    pdfUrl: async (erpName: string) => {
+      const token = getToken()
+      const res = await fetch(`${BASE_URL}${prefix}/${encodeURIComponent(erpName)}/pdf`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({} as any))
+        throw new Error(body?.error?.message ?? `HTTP ${res.status}`)
+      }
+      return URL.createObjectURL(await res.blob())
+    },
+
     termsBody: (name: string) =>
       request<{ data: { name: string; terms: string } }>(
         `${prefix}/terms/${encodeURIComponent(name)}`).then(r => r.data.terms),
