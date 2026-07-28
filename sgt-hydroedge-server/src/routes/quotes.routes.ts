@@ -20,7 +20,7 @@ import { query, pool } from '../db/pool.js'
 import { requireRole } from '../auth/guard.js'
 import { resolveForKva } from '../domain/quotePricing.js'
 import {
-  createQuotation, itemPrice, fetchQuotation,
+  createQuotation, itemPrice, fetchQuotation, listTermsTemplates, fetchTerms,
   type CreateQuotationInput,
 } from '../services/erpQuotation.js'
 
@@ -37,6 +37,8 @@ export interface QuoteBody {
   orgId?: number | null
   customer?: { name?: string; gstin?: string; state?: string; city?: string }
   validDays?: number
+  termsTemplate?: string | null
+  termsHtml?: string | null
 }
 
 /**
@@ -98,6 +100,8 @@ export async function performQuotation(
     salesPartner,
     commissionRate,
     validDays: body.validDays,
+    termsTemplate: body.termsTemplate ?? null,
+    termsHtml: body.termsHtml ?? null,
   }
 
   const created = await createQuotation(input)
@@ -136,6 +140,8 @@ export async function performQuotation(
         netTotal: created.netTotal,
         grandTotal: created.grandTotal,
         taxTemplate: created.taxTemplate,
+        termsTemplate: created.termsTemplate,
+        termsWarning: created.termsWarning,
         totalTax: created.totalTax,
         taxWarning: created.taxWarning,
         commissionRate: created.commissionRate,
@@ -159,6 +165,22 @@ export default async function quotesRoutes(app: FastifyInstance) {
     // `resolved: false` above the catalogue is a business outcome, not an
     // error — 200 with a structured reason, per the spec.
     return reply.send({ data: r })
+  })
+
+  // ---- Terms templates, for the picker ---------------------------------
+  app.get('/terms', { preHandler: staff }, async (_req, reply) => {
+    const list = await listTermsTemplates()
+    const preferred = process.env.ERP_DEALER_TERMS ?? 'GreenX Dealer Quotation Terms'
+    return reply.send({ data: { templates: list.map(t => t.name), default: preferred } })
+  })
+
+  app.get('/terms/:name', { preHandler: staff }, async (req, reply) => {
+    const { name } = req.params as { name: string }
+    const html = await fetchTerms(name)
+    if (html === null) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'No such terms template' } })
+    }
+    return reply.send({ data: { name, terms: html } })
   })
 
   // ---- Create -----------------------------------------------------------

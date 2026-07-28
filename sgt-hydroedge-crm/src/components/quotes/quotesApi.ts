@@ -49,6 +49,14 @@ export function makeQuoteApi(prefix: string, withPartners: boolean): QuoteApi {
 
     list: () => request<{ data: any[] }>(`${prefix}`).then(r => r.data),
 
+    termsList: () =>
+      request<{ data: { templates: string[]; default: string } }>(`${prefix}/terms`)
+        .then(r => r.data),
+
+    termsBody: (name: string) =>
+      request<{ data: { name: string; terms: string } }>(
+        `${prefix}/terms/${encodeURIComponent(name)}`).then(r => r.data.terms),
+
     ...(withPartners
       ? {
           partners: () =>

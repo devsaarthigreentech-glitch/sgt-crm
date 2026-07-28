@@ -36,7 +36,7 @@ import { requireAuth } from '../auth/guard.js'
 import { validateForSubmit, type RegistrationInput } from '../domain/partnerValidation.js'
 import { inspectGstin } from '../domain/gstin.js'
 import { resolveForKva } from '../domain/quotePricing.js'
-import { itemPrice } from '../services/erpQuotation.js'
+import { itemPrice, listTermsTemplates, fetchTerms } from '../services/erpQuotation.js'
 import { performQuotation, type QuoteBody } from './quotes.routes.js'
 
 interface Caller {
@@ -154,6 +154,27 @@ export default async function portalRoutes(app: FastifyInstance) {
     const { kva } = (req.body ?? {}) as { kva?: unknown }
     const r = await resolveForKva(kva, { erpRate: itemPrice })
     return reply.send({ data: r })
+  })
+
+  // Partners get the same terms templates and the same ability to edit the
+  // wording on their own quote — they are the ones signing it with the customer.
+  app.get('/quotes/terms', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const list = await listTermsTemplates()
+    const preferred = process.env.ERP_DEALER_TERMS ?? 'GreenX Dealer Quotation Terms'
+    return reply.send({ data: { templates: list.map(t => t.name), default: preferred } })
+  })
+
+  app.get('/quotes/terms/:name', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { name } = req.params as { name: string }
+    const html = await fetchTerms(name)
+    if (html === null) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'No such terms template' } })
+    }
+    return reply.send({ data: { name, terms: html } })
   })
 
   app.post('/quotes', { preHandler: requireAuth }, async (req, reply) => {

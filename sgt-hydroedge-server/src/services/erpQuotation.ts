@@ -39,6 +39,8 @@ const TAX_IN_STATE = process.env.ERP_TAX_IN_STATE ?? 'Output GST In-state - SGT'
 const TAX_OUT_STATE = process.env.ERP_TAX_OUT_STATE ?? 'Output GST Out-state - SGT';
 /** SGT's own state code, used to decide CGST+SGST vs IGST. */
 const HOME_STATE_CODE = process.env.ERP_HOME_STATE_CODE ?? '';
+/** Terms applied when the caller does not choose one. */
+const DEFAULT_TERMS = process.env.ERP_DEALER_TERMS ?? 'GreenX Dealer Quotation Terms';
 
 function authHeaders() {
   return {
@@ -132,6 +134,38 @@ async function post(doctype: string, doc: Record<string, unknown>): Promise<any>
     throw new Error(`ERPNext could not create the ${doctype}: ${String(msg).slice(0, 400)}`);
   }
   return JSON.parse(text).data;
+}
+
+/**
+ * Terms templates available for selling documents.
+ * Powers the dropdown, so a user picks a real template rather than typing one.
+ */
+export async function listTermsTemplates(): Promise<{ name: string }[]> {
+  try {
+    return await get('Terms and Conditions', {
+      filters: [['selling', '=', 1], ['disabled', '=', 0]],
+      fields: ['name'], limit_page_length: 50, order_by: 'name asc',
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The terms HTML for a template.
+ *
+ * Same trap as the tax rows: setting `tc_name` alone does not populate
+ * `terms` over REST, because the client-side fetch that does it only runs
+ * in the ERPNext UI. Both fields have to be sent, so the text is read here.
+ */
+export async function fetchTerms(template: string): Promise<string | null> {
+  try {
+    const doc = await getDoc('Terms and Conditions', template);
+    const t = doc?.terms;
+    return typeof t === 'string' && t.trim() ? t : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Item Price for a code in the selling list. Null when there is none. */
@@ -286,6 +320,10 @@ export interface CreateQuotationInput {
   salesPartner?: string | null;
   commissionRate?: number | null;
   validDays?: number;
+  /** Terms template name. Falls back to the configured default. */
+  termsTemplate?: string | null;
+  /** Overrides the template's text for this quotation only. */
+  termsHtml?: string | null;
 }
 
 export interface CreateQuotationResult {
@@ -294,6 +332,8 @@ export interface CreateQuotationResult {
   netTotal: string | null;
   grandTotal: string | null;
   taxTemplate: string | null;
+  termsTemplate: string | null;
+  termsWarning: string | null;
   totalTax: string | null;
   /** Set when the quotation carries no GST. Show it — do not swallow it. */
   taxWarning: string | null;
@@ -361,6 +401,26 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
       + `address in ERPNext, or type one on the quote, so GST can be applied.`;
   }
 
+  // ---- Terms ----------------------------------------------------------
+  // Named template AND its text, for the same reason the tax rows are sent
+  // explicitly. An edited body wins over the template it came from.
+  const termsTemplate = input.termsTemplate ?? DEFAULT_TERMS;
+  let termsWarning: string | null = null;
+  if (input.termsHtml && input.termsHtml.trim()) {
+    doc.terms = input.termsHtml;
+    if (termsTemplate) doc.tc_name = termsTemplate;
+  } else if (termsTemplate) {
+    const text = await fetchTerms(termsTemplate);
+    if (text) {
+      doc.tc_name = termsTemplate;
+      doc.terms = text;
+    } else {
+      termsWarning =
+        `Terms template "${termsTemplate}" was not found or is empty, so the ` +
+        `quotation carries no terms.`;
+    }
+  }
+
   const created = await post('Quotation', doc);
 
   // Verify against what ERPNext actually stored, not what we sent. A
@@ -378,6 +438,8 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
     netTotal: created.net_total != null ? String(created.net_total) : null,
     grandTotal: created.grand_total != null ? String(created.grand_total) : null,
     taxTemplate,
+    termsTemplate: doc.tc_name ? String(doc.tc_name) : null,
+    termsWarning,
     totalTax: created.total_taxes_and_charges != null
       ? String(created.total_taxes_and_charges) : null,
     taxWarning,

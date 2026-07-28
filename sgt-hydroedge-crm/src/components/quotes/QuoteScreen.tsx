@@ -44,7 +44,11 @@ export interface QuoteApi {
     kva: string; qty: number; rate?: string | null
     customer: { name: string; gstin?: string; state?: string; city?: string }
     orgId?: number | null
+    termsTemplate?: string | null
+    termsHtml?: string | null
   }): Promise<any>
+  termsList(): Promise<{ templates: string[]; default: string }>
+  termsBody(name: string): Promise<string>
   list(): Promise<any[]>
   /** Partner pickers only make sense for SGT staff. */
   partners?: () => Promise<{ id: number; code: string; legal_name: string }[]>
@@ -97,6 +101,11 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
   const [busy, setBusy] = useState(false)
   const [banner, setBanner] = useState<string | null>(null)
   const [made, setMade] = useState<any>(null)
+  const [terms, setTerms] = useState<{ templates: string[]; default: string } | null>(null)
+  const [termsName, setTermsName] = useState('')
+  const [termsHtml, setTermsHtml] = useState('')
+  const [termsEdited, setTermsEdited] = useState(false)
+  const [showTerms, setShowTerms] = useState(false)
 
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -104,7 +113,25 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
   useEffect(() => {
     refresh()
     if (showPartnerPicker && api.partners) api.partners().then(setPartners).catch(() => {})
+    api.termsList()
+      .then(t => {
+        setTerms(t)
+        const pick = t.templates.includes(t.default) ? t.default : (t.templates[0] ?? '')
+        setTermsName(pick)
+      })
+      .catch(() => {})
   }, [])
+
+  // Pull the chosen template's wording so it can be read and edited before
+  // sending. An edit is never overwritten by a later template load.
+  useEffect(() => {
+    if (!termsName) { setTermsHtml(''); return }
+    let cancelled = false
+    api.termsBody(termsName)
+      .then(html => { if (!cancelled && !termsEdited) setTermsHtml(html) })
+      .catch(() => { if (!cancelled && !termsEdited) setTermsHtml('') })
+    return () => { cancelled = true }
+  }, [termsName])
 
   // Debounced preview — resolving is free, so it can run as they type.
   useEffect(() => {
@@ -135,10 +162,13 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
           city: cust.city.trim() || undefined,
         },
         ...(showPartnerPicker ? { orgId } : {}),
+        termsTemplate: termsName || null,
+        termsHtml: termsEdited && termsHtml.trim() ? termsHtml : null,
       })
       setMade(r.data ?? r)
       setKva(''); setRes(null); setQty(1)
       setCust({ name: '', gstin: '', state: '', city: '' })
+      setTermsEdited(false)
       refresh()
     } catch (e: any) { setBanner(e.message) } finally { setBusy(false) }
   }
@@ -175,6 +205,21 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
             }}>
               <AlertCircle size={13} style={{ flexShrink: 0, marginTop: 1 }} />
               <span><strong>No GST on this quotation.</strong> {made.taxWarning}</span>
+            </div>
+          )}
+          {made.termsWarning && (
+            <div style={{
+              marginTop: 8, padding: '8px 10px', borderRadius: 6, fontSize: 11.5,
+              backgroundColor: WARN_BG, color: WARN_FG,
+              display: 'flex', alignItems: 'flex-start', gap: 5,
+            }}>
+              <AlertCircle size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+              <span>{made.termsWarning}</span>
+            </div>
+          )}
+          {made.termsTemplate && !made.termsWarning && (
+            <div style={{ fontSize: 11.5, opacity: 0.85, marginTop: 3 }}>
+              Terms: {made.termsTemplate}
             </div>
           )}
           {made.mirrored === false && (
@@ -261,6 +306,84 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
             </div>
           </Card>
         )}
+
+        <Card title="Terms and conditions">
+          <div style={{ marginBottom: 13 }}>
+            <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: MUTED, marginBottom: 5 }}>
+              Template
+            </label>
+            <select
+              value={termsName}
+              onChange={e => { setTermsName(e.target.value); setTermsEdited(false) }}
+              style={{ ...inputStyle(), appearance: 'auto' }}
+            >
+              <option value="">No terms</option>
+              {(terms?.templates ?? []).map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <div style={{ fontSize: 11, color: FAINT, marginTop: 3 }}>
+              Applied to every quotation unless you change it here.
+            </div>
+          </div>
+
+          {termsName && (
+            <div style={{ marginBottom: 13 }}>
+              <button
+                type="button"
+                onClick={() => setShowTerms(v => !v)}
+                style={{
+                  background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                  color: MUTED, fontSize: 12.5, fontFamily: 'inherit',
+                }}
+              >
+                {showTerms ? 'Hide' : 'Read / edit'} the wording
+                {termsEdited && <span style={{ color: WARN_FG }}> · edited for this quote</span>}
+              </button>
+
+              {showTerms && (
+                <>
+                  <div
+                    style={{
+                      marginTop: 8, padding: '10px 12px', borderRadius: 7,
+                      border: `1px solid ${LINE}`, backgroundColor: '#FCFBF7',
+                      fontSize: 12, color: INK, maxHeight: 190, overflowY: 'auto',
+                    }}
+                    dangerouslySetInnerHTML={{ __html: termsHtml || '<em>Nothing to show.</em>' }}
+                  />
+                  <textarea
+                    value={termsHtml}
+                    onChange={e => { setTermsHtml(e.target.value); setTermsEdited(true) }}
+                    rows={7}
+                    spellCheck={false}
+                    style={{
+                      ...inputStyle(), marginTop: 8, fontFamily: 'ui-monospace, monospace',
+                      fontSize: 11.5, lineHeight: 1.5, resize: 'vertical',
+                    }}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 5 }}>
+                    <span style={{ fontSize: 11, color: FAINT }}>
+                      Edits apply to this quotation only — the template is unchanged.
+                    </span>
+                    {termsEdited && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTermsEdited(false)
+                          api.termsBody(termsName).then(setTermsHtml).catch(() => {})
+                        }}
+                        style={{
+                          background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                          color: MUTED, fontSize: 11, fontFamily: 'inherit', whiteSpace: 'nowrap',
+                        }}
+                      >
+                        Reset to template
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </Card>
 
         <button onClick={create} disabled={!canCreate} style={{
           width: '100%', padding: '13px', fontSize: 14, fontWeight: 700, fontFamily: 'inherit',
