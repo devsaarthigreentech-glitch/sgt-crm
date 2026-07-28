@@ -229,6 +229,43 @@ export async function fetchQuotationPdf(erpName: string): Promise<ArrayBuffer> {
   return res.arrayBuffer();
 }
 
+/**
+ * Current state of many quotations in ONE call.
+ *
+ * The local mirror goes stale in two ways, both seen in practice:
+ *
+ *  · a quotation deleted in ERPNext leaves our row behind, and
+ *  · Frappe REVERTS the naming series when the newest document in a
+ *    series is deleted, so the next quotation REUSES that number. Our row
+ *    then describes a different document entirely — same name, wrong
+ *    customer, wrong total.
+ *
+ * So the list is reconciled against ERPNext rather than trusted. One
+ * batched request, not one per row.
+ */
+export async function fetchQuotationSummaries(
+  names: string[],
+): Promise<Map<string, { customer_name: string; grand_total: string; status: string }>> {
+  const out = new Map<string, { customer_name: string; grand_total: string; status: string }>();
+  if (!names.length) return out;
+  // Chunked: a long `in` list makes for an unwieldy query string.
+  for (let i = 0; i < names.length; i += 50) {
+    const rows = await get('Quotation', {
+      filters: [['name', 'in', names.slice(i, i + 50)]],
+      fields: ['name', 'customer_name', 'grand_total', 'status'],
+      limit_page_length: 100,
+    });
+    for (const r of rows) {
+      out.set(String(r.name), {
+        customer_name: r.customer_name,
+        grand_total: r.grand_total != null ? String(r.grand_total) : '0',
+        status: r.status ?? 'Draft',
+      });
+    }
+  }
+  return out;
+}
+
 export interface CustomerInput {
   name: string;
   gstin?: string | null;

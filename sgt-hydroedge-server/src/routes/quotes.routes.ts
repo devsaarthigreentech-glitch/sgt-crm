@@ -22,7 +22,7 @@ import { resolveForKva } from '../domain/quotePricing.js'
 import { inspectGstin } from '../domain/gstin.js'
 import {
   createQuotation, itemPrice, fetchQuotation, listTermsTemplates, fetchTerms,
-  searchCustomers, ensureQuotationCustomer, fetchQuotationPdf,
+  searchCustomers, ensureQuotationCustomer, fetchQuotationPdf, fetchQuotationSummaries,
   type CreateQuotationInput,
 } from '../services/erpQuotation.js'
 
@@ -123,7 +123,17 @@ export async function performQuotation(
           net_total, grand_total, commission_rate, erp_customer, customer_name,
           customer_gstin, customer_state, status, raised_by, raised_by_name, raised_via)
        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'draft',$15,$16,$17)
-       on conflict (erp_name) do nothing`,
+       on conflict (erp_name) do update set
+          org_id = excluded.org_id, input_kva = excluded.input_kva,
+          model_id = excluded.model_id, model_code = excluded.model_code,
+          qty = excluded.qty, unit_rate = excluded.unit_rate,
+          net_total = excluded.net_total, grand_total = excluded.grand_total,
+          commission_rate = excluded.commission_rate,
+          erp_customer = excluded.erp_customer, customer_name = excluded.customer_name,
+          customer_gstin = excluded.customer_gstin, customer_state = excluded.customer_state,
+          status = excluded.status, raised_by = excluded.raised_by,
+          raised_by_name = excluded.raised_by_name, raised_via = excluded.raised_via,
+          updated_at = now()`,
       [created.erpName, orgId, Number(body.kva), resolution.modelId, resolution.modelCode,
        qty, input.rate ?? null, created.netTotal, created.grandTotal, commissionRate,
        created.customer.erpName, created.customer.erpName, body.customer?.gstin ?? null,
@@ -195,6 +205,51 @@ export async function createCustomerChecked(b: Record<string, string>) {
     name, gstin: gstin || null, state: state || null, city: b.city ?? null,
   })
   return { ok: true as const, payload: { data: created } }
+}
+
+/**
+ * Bring a page of mirror rows in line with ERPNext, which is the system of
+ * record. Rows whose document no longer exists are removed; rows whose
+ * document changed under them are refreshed.
+ *
+ * If ERPNext is unreachable the mirror is returned untouched — a network
+ * blip must not look like every quotation was deleted.
+ */
+export async function reconcileQuotations(rows: any[]): Promise<any[]> {
+  if (!rows.length) return rows
+  const names = rows.map(r => String(r.erp_name))
+  let live: Map<string, { customer_name: string; grand_total: string; status: string }>
+  try {
+    live = await fetchQuotationSummaries(names)
+  } catch {
+    return rows
+  }
+
+  const gone = names.filter(n => !live.has(n))
+  if (gone.length) {
+    await pool.query(
+      `delete from quote_service.quotation_ref where erp_name = any($1)`, [gone])
+  }
+
+  const fresh = rows.filter(r => live.has(String(r.erp_name)))
+  // Write the corrected snapshot back so the next read is right even if
+  // ERPNext is briefly unreachable.
+  for (const r of fresh) {
+    const l = live.get(String(r.erp_name))!
+    if (String(r.grand_total ?? '') !== l.grand_total ||
+        String(r.customer_name ?? '') !== String(l.customer_name ?? '') ||
+        String(r.status ?? '') !== l.status) {
+      await pool.query(
+        `update quote_service.quotation_ref
+            set customer_name = $2, grand_total = $3, status = $4, updated_at = now()
+          where erp_name = $1`,
+        [r.erp_name, l.customer_name, l.grand_total, l.status])
+      r.customer_name = l.customer_name
+      r.grand_total = l.grand_total
+      r.status = l.status
+    }
+  }
+  return fresh
 }
 
 export default async function quotesRoutes(app: FastifyInstance) {
@@ -279,7 +334,7 @@ export default async function quotesRoutes(app: FastifyInstance) {
              from quote_service.quotation_ref q
              left join quote_service.org o on o.id = q.org_id
             order by q.created_at desc limit 200`)
-    return reply.send({ data: rows })
+    return reply.send({ data: await reconcileQuotations(rows) })
   })
 
   // ---- The authoritative document --------------------------------------

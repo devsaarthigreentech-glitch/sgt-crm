@@ -39,7 +39,9 @@ import { resolveForKva } from '../domain/quotePricing.js'
 import {
   itemPrice, listTermsTemplates, fetchTerms, searchCustomers, fetchQuotationPdf,
 } from '../services/erpQuotation.js'
-import { performQuotation, createCustomerChecked, type QuoteBody } from './quotes.routes.js'
+import {
+  performQuotation, createCustomerChecked, reconcileQuotations, type QuoteBody,
+} from './quotes.routes.js'
 
 interface Caller {
   userId: string
@@ -245,7 +247,9 @@ export default async function portalRoutes(app: FastifyInstance) {
         where q.org_id in (select org_id from quote_service.visible_org_ids($1))
         order by q.created_at desc
         limit 200`, [me.orgId])
-    return reply.send({ data: rows })
+    // Same reconciliation as the CRM list: ERPNext is the system of record,
+    // and a quotation deleted there must not linger here.
+    return reply.send({ data: await reconcileQuotations(rows) })
   })
 
   // ---- Edit a dealer they manage -----------------------------------------

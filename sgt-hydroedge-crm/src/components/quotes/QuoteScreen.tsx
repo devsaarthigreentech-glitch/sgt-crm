@@ -547,7 +547,18 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
           {busy ? 'Creating in ERPNext…' : 'Create quotation'}
         </button>
 
-        <h2 style={{ margin: '0 0 10px', fontSize: 15, fontWeight: 700, color: INK }}>Recent</h2>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 10 }}>
+          <h2 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: INK }}>Recent</h2>
+          <button type="button" onClick={refresh} style={{
+            background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+            color: MUTED, fontSize: 12, fontFamily: 'inherit',
+          }}>
+            Refresh
+          </button>
+          <span style={{ fontSize: 11, color: FAINT }}>
+            checked against ERPNext each time
+          </span>
+        </div>
         {list.length === 0 ? (
           <p style={{ fontSize: 13, color: FAINT }}>No quotations yet.</p>
         ) : (
