@@ -14,13 +14,15 @@ import CustomerList from './components/customer/CustomerList'
 import OutreachDesk from './components/outreach/OutreachDesk';
 import PartnerOnboarding from './components/onboarding/PartnerOnboarding'
 import DistributorPortal from './components/portal/DistributorPortal'
+import QuoteScreen from './components/quotes/QuoteScreen'
+import { staffQuoteApi } from './components/quotes/quotesApi'
 
 // Roles belonging to partners rather than SGT staff. These get their own
 // shell entirely — see the branch below. Kept in sync with
 // EXTERNAL_ROLE_ALLOW in the server's src/auth/policy.ts.
 const EXTERNAL_ROLES = ['distributor']
 
-type Page = 'home' | 'my-dashboard' | 'pipeline' | 'customers' | 'triage' | 'capture' | 'outreach' | 'onboarding'
+type Page = 'home' | 'my-dashboard' | 'pipeline' | 'customers' | 'triage' | 'capture' | 'outreach' | 'onboarding' | 'quotes'
 
 export default function App() {
   const [page, setPage] = useState<Page>('home')
@@ -100,7 +102,9 @@ export default function App() {
       />
       <main style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-        {effectivePage === 'onboarding' ? (
+        {effectivePage === 'quotes' ? (
+            <QuoteScreen api={staffQuoteApi} showPartnerPicker />
+        ) : effectivePage === 'onboarding' ? (
             <PartnerOnboarding />
         ) : effectivePage === 'outreach' ? (
             <OutreachDesk />

@@ -35,6 +35,9 @@ import { query, pool } from '../db/pool.js'
 import { requireAuth } from '../auth/guard.js'
 import { validateForSubmit, type RegistrationInput } from '../domain/partnerValidation.js'
 import { inspectGstin } from '../domain/gstin.js'
+import { resolveForKva } from '../domain/quotePricing.js'
+import { itemPrice } from '../services/erpQuotation.js'
+import { performQuotation, type QuoteBody } from './quotes.routes.js'
 
 interface Caller {
   userId: string
@@ -129,6 +132,53 @@ export default async function portalRoutes(app: FastifyInstance) {
         order by case when o.org_type = 'dealer' then 0 else 1 end, o.code`,
       [me.orgId])
 
+    return reply.send({ data: rows })
+  })
+
+  // =========================================================================
+  // Quotations.
+  //
+  // ERPNext owns the document; the distributor never touches ERPNext. Every
+  // call here goes through the same performQuotation() the CRM uses, with
+  // one difference that matters: the partner's org is FORCED to their own,
+  // so a quotation can never be raised in another partner's name and the
+  // commission always lands with whoever actually raised it.
+  //
+  // Listing reads our local mirror, bounded by visible_org_ids — which is
+  // the only reason the mirror exists.
+  // =========================================================================
+
+  app.post('/quotes/resolve', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { kva } = (req.body ?? {}) as { kva?: unknown }
+    const r = await resolveForKva(kva, { erpRate: itemPrice })
+    return reply.send({ data: r })
+  })
+
+  app.post('/quotes', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const body = (req.body ?? {}) as QuoteBody
+    // forcedOrgId — the partner cannot choose whose quotation this is.
+    const result = await performQuotation(req, body, { forcedOrgId: me.orgId, via: 'portal' })
+    if (!result.ok) return reply.code(result.code).send(result.payload)
+    return reply.code(201).send(result.payload)
+  })
+
+  app.get('/quotes', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { rows } = await query(
+      `select q.id, q.erp_name, q.input_kva, q.model_code, q.qty, q.unit_rate,
+              q.net_total, q.grand_total, q.commission_rate,
+              q.customer_name, q.customer_state, q.status, q.created_at,
+              o.code as org_code
+         from quote_service.quotation_ref q
+         left join quote_service.org o on o.id = q.org_id
+        where q.org_id in (select org_id from quote_service.visible_org_ids($1))
+        order by q.created_at desc
+        limit 200`, [me.orgId])
     return reply.send({ data: rows })
   })
 

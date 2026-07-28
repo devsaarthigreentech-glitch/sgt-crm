@@ -10,12 +10,14 @@
 // distributor token would still reach nothing.
 
 import { useEffect, useState } from 'react'
-import { LogOut, Users, MapPin, RefreshCw, LayoutDashboard, Handshake } from 'lucide-react'
+import { LogOut, Users, MapPin, RefreshCw, LayoutDashboard, Handshake, FileText } from 'lucide-react'
 import { portalApi, type PortalMe, type PortalDealer } from './portalApi'
 import DealerRegistration from './DealerRegistration'
 import DealerEdit from './DealerEdit'
+import QuoteScreen from '../quotes/QuoteScreen'
+import { portalQuoteApi } from '../quotes/quotesApi'
 
-type PortalPage = 'overview' | 'dealers'
+type PortalPage = 'overview' | 'dealers' | 'quotes'
 
 // Nav for the partner shell. Kept flat and short on purpose: a distributor
 // has a handful of jobs, not a CRM. Quotations and Leads slot in here as
@@ -23,6 +25,7 @@ type PortalPage = 'overview' | 'dealers'
 const PORTAL_NAV: { id: PortalPage; label: string; icon: typeof Users }[] = [
   { id: 'overview', label: 'My view', icon: LayoutDashboard },
   { id: 'dealers', label: 'My dealers', icon: Handshake },
+  { id: 'quotes', label: 'Quotations', icon: FileText },
 ]
 
 const PAPER = '#ECE8DA'
@@ -136,7 +139,8 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
 
       {editDealerId !== null ? (
         <DealerEdit dealerId={editDealerId} onBack={() => { setEditDealerId(null); load() }} />
-      ) : page === 'dealers' ? <DealerRegistration /> : (
+      ) : page === 'quotes' ? <QuoteScreen api={portalQuoteApi} />
+      : page === 'dealers' ? <DealerRegistration /> : (
       <div style={{ padding: '20px 20px 60px', maxWidth: 760, margin: '0 auto' }}>
         <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 700, color: INK }}>My view</h1>
         <p style={{ margin: '0 0 18px', fontSize: 12.5, color: MUTED }}>
