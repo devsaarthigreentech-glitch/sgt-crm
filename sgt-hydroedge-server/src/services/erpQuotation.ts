@@ -196,6 +196,56 @@ export async function ensureQuotationCustomer(input: CustomerInput): Promise<Cus
   return { erpName: created.name, matchedOn: 'created' };
 }
 
+/**
+ * The state code to tax against, for a customer ERPNext already knows.
+ *
+ * The GSTIN typed into our form is the LAST resort, not the first. A user
+ * quoting an existing customer will usually leave that field blank — and
+ * did, which is how a Tamil Nadu customer with GSTIN 33BVGPK5958P1ZU got
+ * a quotation with no tax at all. ERPNext holds the authoritative value.
+ *
+ * Order: the Customer's own GSTIN, then their address GSTIN, then
+ * india_compliance's gst_state_number on the address, then whatever was
+ * typed. Returns null only when nothing anywhere knows where they are.
+ */
+async function customerStateCode(erpCustomer: string, typedGstin?: string | null): Promise<string | null> {
+  const fromGstin = (g: unknown) => {
+    const s = String(g ?? '').trim().toUpperCase();
+    return s.length === 15 ? s.slice(0, 2) : null;
+  };
+
+  try {
+    const rows = await get('Customer', {
+      filters: [['name', '=', erpCustomer]],
+      fields: ['name', 'gstin', 'tax_id'], limit_page_length: 1,
+    });
+    const c = rows[0];
+    const direct = fromGstin(c?.gstin) ?? fromGstin(c?.tax_id);
+    if (direct) return direct;
+  } catch { /* the field may not exist without india_compliance */ }
+
+  // Addresses link to a party through the Dynamic Link child table.
+  try {
+    const addrs = await get('Address', {
+      filters: [['Dynamic Link', 'link_name', '=', erpCustomer]],
+      fields: ['name', 'gstin', 'gst_state_number', 'is_primary_address', 'address_type'],
+      limit_page_length: 10,
+    });
+    // Prefer the billing address, then the primary, then anything.
+    const ranked = [...addrs].sort((a, b) =>
+      (b.address_type === 'Billing' ? 2 : 0) + (b.is_primary_address ? 1 : 0) -
+      ((a.address_type === 'Billing' ? 2 : 0) + (a.is_primary_address ? 1 : 0)));
+    for (const a of ranked) {
+      const viaGstin = fromGstin(a.gstin);
+      if (viaGstin) return viaGstin;
+      const n = String(a.gst_state_number ?? '').trim();
+      if (/^\d{1,2}$/.test(n)) return n.padStart(2, '0');
+    }
+  } catch { /* no address, or no permission — fall through */ }
+
+  return fromGstin(typedGstin);
+}
+
 /** SGT's home state code, derived from the company GSTIN unless pinned. */
 let cachedHomeState: string | null = null;
 async function homeStateCode(): Promise<string | null> {
@@ -219,11 +269,11 @@ async function homeStateCode(): Promise<string | null> {
  * tell, so we return null and let ERPNext apply its own default rather
  * than guess a tax treatment.
  */
-export async function pickTaxTemplate(customerGstin?: string | null): Promise<string | null> {
+export async function pickTaxTemplate(customerStateCodeValue?: string | null): Promise<string | null> {
   const home = await homeStateCode();
-  const cust = String(customerGstin ?? '').trim();
-  if (!home || cust.length !== 15) return null;
-  return cust.slice(0, 2) === home ? TAX_IN_STATE : TAX_OUT_STATE;
+  const cust = String(customerStateCodeValue ?? '').trim();
+  if (!home || cust.length !== 2) return null;
+  return cust === home ? TAX_IN_STATE : TAX_OUT_STATE;
 }
 
 export interface CreateQuotationInput {
@@ -255,7 +305,10 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
   if (!BASE || !KEY || !SECRET) throw new Error('ERPNext is not configured on this server');
 
   const customer = await ensureQuotationCustomer(input.customer);
-  const taxTemplate = await pickTaxTemplate(input.customer.gstin);
+  // Ask ERPNext where this customer is, rather than trusting a form field
+  // that is routinely left blank for a customer who already exists.
+  const custState = await customerStateCode(customer.erpName, input.customer.gstin);
+  const taxTemplate = await pickTaxTemplate(custState);
 
   const today = new Date().toISOString().slice(0, 10);
   const validDays = input.validDays ?? 15;
@@ -302,7 +355,10 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
         `The quotation will carry no GST.`;
     }
   } else {
-    taxWarning = 'No GSTIN on the customer, so no tax template could be chosen.';
+    taxWarning =
+      `Could not determine ${customer.erpName}'s state — no GSTIN on the customer, `
+      + `none on their addresses, and none entered here. Add a GSTIN or a billing `
+      + `address in ERPNext, or type one on the quote, so GST can be applied.`;
   }
 
   const created = await post('Quotation', doc);
