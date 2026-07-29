@@ -36,6 +36,7 @@ export interface Resolution {
   priceBookMrp?: string | null
   rateMismatch?: boolean
   gstRate?: string
+  amcOptions?: { years: number; itemCode: string; rate: string | null }[]
 }
 
 export interface ErpCustomer {
@@ -51,6 +52,7 @@ export interface QuoteApi {
     kva: string; qty: number; rate?: string | null
     customerErpName: string
     discountPct?: number | null
+    discountAmount?: number | null
     amcYears?: number | null
     orgId?: number | null
     termsTemplate?: string | null
@@ -123,7 +125,9 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
   } | null>(null)
   const [sending, setSending] = useState(false)
   const [sent, setSent] = useState<string | null>(null)
+  const [discountMode, setDiscountMode] = useState<'pct' | 'amount'>('pct')
   const [discountPct, setDiscountPct] = useState('')
+  const [discountAmt, setDiscountAmt] = useState('')
   const [amcYears, setAmcYears] = useState(0)
   const [limits, setLimits] = useState<{ discountCaps: Record<string, number>; maxDiscount?: number; amcPct: number } | null>(null)
   const [orgId, setOrgId] = useState<number | null>(null)
@@ -210,14 +214,25 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
 
   const maxDiscount = limits?.maxDiscount
     ?? Math.max(0, ...Object.values(limits?.discountCaps ?? {}))
-  const discNum = Number(discountPct) || 0
-  const overCap = discNum > maxDiscount
   const machineAmt = (Number(res?.rate) || 0) * qty
-  const amcAmt = amcYears > 0 && limits
-    ? Math.round((Number(res?.rate) || 0) * limits.amcPct / 100) * amcYears * qty
+
+  // AMC is its own priced item now, so take the real figure rather than
+  // recomputing 10% here and risking a number the document will not carry.
+  const amcOption = res?.amcOptions?.find(o => o.years === amcYears)
+  const amcAmt = amcYears > 0 && amcOption?.rate ? Number(amcOption.rate) * qty : 0
+  const amcMissing = amcYears > 0 && !amcOption?.rate
+
+  // The discount applies to the MACHINE LINE only — never to the AMC.
+  const discNum = discountMode === 'pct' ? (Number(discountPct) || 0) : 0
+  const discAmtNum = discountMode === 'amount' ? (Number(discountAmt) || 0) : 0
+  const discountValue = discountMode === 'pct'
+    ? Math.round(machineAmt * discNum / 100)
+    : Math.round(discAmtNum)
+  const effectivePct = machineAmt > 0
+    ? Math.round((discountValue / machineAmt) * 10000) / 100
     : 0
-  const discountAmt = Math.round((machineAmt + amcAmt) * discNum / 100)
-  const netEstimate = machineAmt + amcAmt - discountAmt
+  const overCap = effectivePct > maxDiscount
+  const netEstimate = machineAmt + amcAmt - discountValue
 
   const canCreate = !!res?.resolved && !!picked && !busy && !overCap
 
@@ -230,7 +245,8 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
         rate: res?.rate ?? null,
         customerErpName: picked!.name,
         ...(showPartnerPicker ? { orgId } : {}),
-        discountPct: discountPct.trim() ? Number(discountPct) : null,
+        discountPct: discountMode === 'pct' && discountPct.trim() ? Number(discountPct) : null,
+        discountAmount: discountMode === 'amount' && discountAmt.trim() ? Number(discountAmt) : null,
         amcYears: amcYears > 0 ? amcYears : null,
         termsTemplate: termsName || null,
         termsHtml: termsEdited && termsHtml.trim() ? termsHtml : null,
@@ -238,7 +254,7 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
       setMade(r.data ?? r)
       setKva(''); setRes(null); setQty(1)
       setPicked(null); setCustQuery(''); setCustHits([])
-      setDiscountPct(''); setAmcYears(0)
+      setDiscountPct(''); setDiscountAmt(''); setAmcYears(0)
       setTermsEdited(false)
       refresh()
     } catch (e: any) { setBanner(e.message) } finally { setBusy(false) }
@@ -577,38 +593,59 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
         )}
 
         <Card title="Commercials">
-          <div style={{ display: 'flex', gap: 10 }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
             <div style={{ flex: 1 }}>
               <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: MUTED, marginBottom: 5 }}>
-                Discount %
+                Discount on {res?.resolved ? res.modelCode : 'the unit'}
               </label>
-              <input type="number" value={discountPct} min={0} max={maxDiscount} step="0.5"
-                onChange={e => setDiscountPct(e.target.value)}
-                placeholder="0" style={inputStyle(overCap)} />
+              <div style={{ display: 'flex', gap: 6 }}>
+                <select value={discountMode}
+                  onChange={e => { setDiscountMode(e.target.value as 'pct' | 'amount'); setDiscountPct(''); setDiscountAmt('') }}
+                  style={{ ...inputStyle(), appearance: 'auto', width: 92, flexShrink: 0 }}>
+                  <option value="pct">%</option>
+                  <option value="amount">₹</option>
+                </select>
+                {discountMode === 'pct' ? (
+                  <input type="number" value={discountPct} min={0} max={maxDiscount} step="0.5"
+                    onChange={e => setDiscountPct(e.target.value)}
+                    placeholder="0" style={inputStyle(overCap)} />
+                ) : (
+                  <input type="number" value={discountAmt} min={0} step="1000"
+                    onChange={e => setDiscountAmt(e.target.value)}
+                    placeholder="0" style={inputStyle(overCap)} />
+                )}
+              </div>
               <div style={{ fontSize: 11, color: overCap ? DANGER : FAINT, marginTop: 3 }}>
                 {overCap
-                  ? `Above your ${maxDiscount}% limit — SGT must approve anything deeper.`
-                  : `Up to ${maxDiscount}%. Applied before GST.`}
+                  ? `${effectivePct}% is over your ${maxDiscount}% limit — most you can give is ${rupees(Math.floor(machineAmt * maxDiscount / 100))}.`
+                  : discountMode === 'amount' && discountValue > 0
+                    ? `${effectivePct}% of the unit line. Limit ${maxDiscount}%.`
+                    : `Up to ${maxDiscount}%, on the unit only — never the AMC.`}
               </div>
             </div>
+
             <div style={{ flex: 1 }}>
               <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: MUTED, marginBottom: 5 }}>
                 AMC
               </label>
               <select value={amcYears} onChange={e => setAmcYears(Number(e.target.value))}
-                style={{ ...inputStyle(), appearance: 'auto' }}>
+                style={{ ...inputStyle(amcMissing), appearance: 'auto' }}>
                 <option value={0}>Not included</option>
-                <option value={1}>1 year</option>
-                <option value={2}>2 years</option>
-                <option value={3}>3 years</option>
+                {(res?.amcOptions ?? [{ years: 1 }, { years: 2 }, { years: 3 }] as any).map((o: any) => (
+                  <option key={o.years} value={o.years}>
+                    {o.years} year{o.years > 1 ? 's' : ''}{o.rate ? ` — ${rupees(o.rate)}` : ''}
+                  </option>
+                ))}
               </select>
-              <div style={{ fontSize: 11, color: FAINT, marginTop: 3 }}>
-                {limits ? `${limits.amcPct}% of unit price per year` : 'Optional'}
+              <div style={{ fontSize: 11, color: amcMissing ? DANGER : FAINT, marginTop: 3 }}>
+                {amcMissing
+                  ? 'No price in ERPNext for this AMC — run the AMC matrix script.'
+                  : 'Priced per model. Not discounted.'}
               </div>
             </div>
           </div>
 
-          {(discountAmt > 0 || amcAmt > 0) && res?.resolved && (
+          {res?.resolved && (discountValue > 0 || amcAmt > 0) && (
             <div style={{
               marginTop: 13, marginBottom: 13, padding: '10px 12px', borderRadius: 7,
               backgroundColor: '#F7F4EA', border: `1px solid ${LINE}`, fontSize: 12, color: INK,
@@ -616,14 +653,15 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span>{res.modelCode} × {qty}</span><span>{rupees(machineAmt)}</span>
               </div>
-              {amcAmt > 0 && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 3 }}>
-                  <span>AMC × {amcYears} yr</span><span>{rupees(amcAmt)}</span>
+              {discountValue > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 3, color: WARN_FG }}>
+                  <span>Less discount ({effectivePct}%)</span><span>− {rupees(discountValue)}</span>
                 </div>
               )}
-              {discountAmt > 0 && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 3, color: WARN_FG }}>
-                  <span>Discount {discountPct}%</span><span>− {rupees(discountAmt)}</span>
+              {amcAmt > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 3 }}>
+                  <span>AMC · {amcYears} yr{amcYears > 1 ? 's' : ''}{qty > 1 ? ` × ${qty}` : ''}</span>
+                  <span>{rupees(amcAmt)}</span>
                 </div>
               )}
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, paddingTop: 6, borderTop: `1px solid ${LINE}`, fontWeight: 700 }}>

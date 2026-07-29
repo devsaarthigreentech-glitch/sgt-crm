@@ -84,20 +84,62 @@ export function checkDiscount(raw: unknown, actor: DiscountActor): DiscountCheck
   return { ok: true, pct: Math.round(pct * 100) / 100, max };
 }
 
+// ── Discount as an amount ────────────────────────────────────────────
+// The owner may prefer to say "knock off ₹20,000" rather than "give 4%".
+// Both are accepted, but the CAP is always expressed as a percentage,
+// because that is what protects the margin. So an amount is converted to
+// its effective percentage of the machine line and checked the same way —
+// otherwise "₹2,00,000 off" would sail past a 7% limit.
+
+export interface AmountCheck extends DiscountCheck {
+  /** The rupee figure to put on the line. */
+  amount: number;
+}
+
+export function checkDiscountAmount(
+  raw: unknown, lineTotal: number, actor: DiscountActor,
+): AmountCheck {
+  const max = DISCOUNT_CAPS[actor];
+  if (raw === null || raw === undefined || raw === '') {
+    return { ok: true, pct: 0, max, amount: 0 };
+  }
+  const amount = Number(raw);
+  if (!Number.isFinite(amount)) {
+    return { ok: false, pct: 0, max, amount: 0, message: 'Discount must be a number' };
+  }
+  if (amount < 0) {
+    return { ok: false, pct: 0, max, amount, message: 'Discount cannot be negative' };
+  }
+  if (!Number.isFinite(lineTotal) || lineTotal <= 0) {
+    return { ok: false, pct: 0, max, amount, message: 'No line value to discount against' };
+  }
+  if (amount > lineTotal) {
+    return {
+      ok: false, pct: 100, max, amount,
+      message: 'Discount cannot exceed the value of the item',
+    };
+  }
+  const pct = Math.round((amount / lineTotal) * 10000) / 100;
+  if (pct > max) {
+    return {
+      ok: false, pct, max, amount,
+      message: `₹${Math.round(amount).toLocaleString('en-IN')} is ${pct}% of this line, ` +
+               `over the ${max}% limit. The most you can give is ` +
+               `₹${Math.round(lineTotal * max / 100).toLocaleString('en-IN')}.`,
+    };
+  }
+  return { ok: true, pct, max, amount: Math.round(amount * 100) / 100 };
+}
+
 // ── AMC ──────────────────────────────────────────────────────────────
-// The price list puts AMC at 10% of sale price per year, starting after
-// the standard warranty. Quoted as its own line so the customer sees what
-// they are buying, and so it can be dropped without touching the machine.
+// One priced item per model per term, so the printed line shows a list
+// rate equal to the charge instead of a phantom discount off zero. The
+// code is built in exactly one place; the rate comes from ERPNext.
 
 export const AMC_PCT = num(process.env.QUOTE_AMC_PCT, 10);
-export const AMC_ITEM = process.env.ERP_AMC_ITEM ?? 'GreenX-AMC';
+export const AMC_TERMS = [1, 2, 3];
 
-/**
- * AMC rate for one year against a unit price. Rounded to whole rupees:
- * a fraction of a paisa on a service line helps nobody.
- */
-export function amcRate(unitRate: string | number, years = 1): number {
-  const base = Number(unitRate);
-  if (!Number.isFinite(base) || base <= 0) return 0;
-  return Math.round((base * AMC_PCT / 100) * Math.max(1, years));
+/** e.g. GreenX-100 + 2 -> "GreenX-100-AMC-2Y". */
+export function amcItemCode(modelCode: string, years: number): string {
+  return `${modelCode}-AMC-${years}Y`;
 }

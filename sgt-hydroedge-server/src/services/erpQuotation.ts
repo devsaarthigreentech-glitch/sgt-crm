@@ -490,10 +490,15 @@ export interface CreateQuotationInput {
     contact?: string | null;
     gstin?: string | null;
   } | null;
-  /** 0-100, already checked against the caller's cap by the route. */
+  /**
+   * Discount on the MACHINE LINE only, already checked against the
+   * caller's cap. Applied per line rather than to the document, so it
+   * never silently discounts the AMC alongside it.
+   */
   discountPct?: number | null;
-  /** An extra AMC line at this rate, when the customer opted in. */
-  amc?: { itemCode: string; rate: number; qty: number } | null;
+  discountAmount?: number | null;
+  /** An AMC line. Priced by ERPNext from its own Item Price. */
+  amc?: { itemCode: string; qty: number } | null;
   /** Terms template name. Falls back to the configured default. */
   termsTemplate?: string | null;
   /** Overrides the template's text for this quotation only. */
@@ -542,31 +547,35 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
       {
         item_code: input.itemCode,
         qty: input.qty,
-        ...(input.rate != null && input.rate !== '' ? { rate: Number(input.rate) } : {}),
+        ...(input.rate != null && input.rate !== '' ? { price_list_rate: Number(input.rate) } : {}),
+        // Line-level discount: ERPNext derives `rate` from price_list_rate
+        // minus this, so the printed line shows list, discount and net
+        // correctly. Sending `rate` directly instead would make the
+        // discount columns read as zero however much was given.
+        ...(input.discountAmount
+          ? { discount_amount: input.discountAmount }
+          : input.discountPct
+            ? { discount_percentage: input.discountPct }
+            : {}),
         // india_compliance derives gst_treatment from the tax rows it finds.
         // With none present it settles on "Nil-Rated" and zeroes the GST —
         // which is how the first two quotations came out at 0% tax. GreenX is
         // taxable at 18%, so say so rather than let it be inferred.
         gst_treatment: 'Taxable',
       },
+      // No rate: the AMC item carries its own Item Price, so ERPNext prices
+      // it and the list rate on the printed line equals the charge. It is
+      // deliberately NOT discounted — the discount is on the machine.
       ...(input.amc
         ? [{
             item_code: input.amc.itemCode,
             qty: input.amc.qty,
-            rate: input.amc.rate,
             gst_treatment: 'Taxable',
           }]
         : []),
     ],
   };
 
-  // Applied to the NET total, so GST is charged on the discounted value.
-  // ERPNext's default is 'Grand Total', which would tax the full amount and
-  // then discount the tax-inclusive figure — wrong for a pre-tax discount.
-  if (input.discountPct && input.discountPct > 0) {
-    doc.apply_discount_on = 'Net Total';
-    doc.additional_discount_percentage = input.discountPct;
-  }
 
   if (input.salesPartner) {
     doc.sales_partner = input.salesPartner;

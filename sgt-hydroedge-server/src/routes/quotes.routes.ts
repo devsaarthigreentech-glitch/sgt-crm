@@ -21,7 +21,8 @@ import { requireRole } from '../auth/guard.js'
 import { resolveForKva } from '../domain/quotePricing.js'
 import { inspectGstin } from '../domain/gstin.js'
 import {
-  checkDiscount, actorFor, DISCOUNT_CAPS, amcRate, AMC_ITEM, AMC_PCT,
+  checkDiscount, checkDiscountAmount, actorFor, DISCOUNT_CAPS,
+  amcItemCode, AMC_PCT, AMC_TERMS,
 } from '../domain/quoteDiscount.js'
 import { sendQuotation, mailProvider, isEmail } from '../services/quoteMail.js'
 import {
@@ -47,8 +48,10 @@ export interface QuoteBody {
   validDays?: number
   termsTemplate?: string | null
   termsHtml?: string | null
+  /** Either a percentage OR a rupee amount. Percentage wins if both. */
   discountPct?: number | string | null
-  /** Add an AMC line at 10% of the unit rate. */
+  discountAmount?: number | string | null
+  /** 1, 2 or 3 — adds that model's AMC item. */
   amcYears?: number | null
 }
 
@@ -134,16 +137,28 @@ export async function performQuotation(
   // Discount authority follows the ORG raising the quote, not the login's
   // role — a dealer's cap must hold whether they raise it themselves or an
   // SGT user raises it on their behalf.
-  const discount = checkDiscount(body.discountPct, actorFor(orgType))
+  //
+  // Either form is accepted. The cap is a PERCENTAGE either way: an amount
+  // is measured against the machine line so "₹2,00,000 off" cannot walk
+  // past a 7% limit just because it was typed in rupees.
+  const actorKind = actorFor(orgType)
+  const machineLine = (Number(body.rate ?? resolution.rate) || 0) * qty
+  const usingAmount = body.discountPct == null || body.discountPct === ''
+  const discount = usingAmount
+    ? checkDiscountAmount(body.discountAmount, machineLine, actorKind)
+    : checkDiscount(body.discountPct, actorKind)
   if (!discount.ok) {
     return {
       ok: false as const, code: 422,
       payload: {
         error: { code: 'discount_too_high', message: discount.message },
-        fields: { discountPct: discount.message },
+        fields: usingAmount
+          ? { discountAmount: discount.message }
+          : { discountPct: discount.message },
       },
     }
   }
+  const discountAmount = usingAmount ? (discount as any).amount ?? 0 : 0
 
   const input: CreateQuotationInput = {
     customerErpName,
@@ -159,13 +174,12 @@ export async function performQuotation(
     raisedByOrg: salesPartner,
     raisedVia: opts.via === 'portal' ? 'Partner portal' : 'SGT CRM',
     partner: partnerSnapshot,
-    discountPct: discount.pct || null,
-    amc: body.amcYears && Number(body.amcYears) > 0
-      ? {
-          itemCode: AMC_ITEM,
-          rate: amcRate(resolution.rate ?? 0, Number(body.amcYears)),
-          qty,
-        }
+    discountPct: usingAmount ? null : (discount.pct || null),
+    discountAmount: discountAmount || null,
+    // Its own priced item per model per term, so the printed line shows a
+    // list rate rather than a discount off zero.
+    amc: body.amcYears && AMC_TERMS.includes(Number(body.amcYears))
+      ? { itemCode: amcItemCode(resolution.modelCode, Number(body.amcYears)), qty }
       : null,
   }
 
@@ -215,7 +229,7 @@ export async function performQuotation(
         netTotal: created.netTotal,
         grandTotal: created.grandTotal,
         discountPct: discount.pct || null,
-        discountAmount: created.discountAmount,
+        discountAmount: discountAmount || created.discountAmount,
         amcYears: body.amcYears ?? null,
         taxTemplate: created.taxTemplate,
         termsTemplate: created.termsTemplate,
@@ -397,6 +411,17 @@ export default async function quotesRoutes(app: FastifyInstance) {
       productCode: product ?? 'GreenX',
       erpRate: itemPrice,
     })
+    if (r.resolved) {
+      // Real AMC prices from ERPNext, so the screen never guesses at a
+      // figure the document will not carry.
+      const options = await Promise.all(AMC_TERMS.map(async y => {
+        const code = amcItemCode(r.modelCode, y)
+        let rate: string | null = null
+        try { rate = await itemPrice(code) } catch { /* not created yet */ }
+        return { years: y, itemCode: code, rate }
+      }))
+      return reply.send({ data: { ...r, amcOptions: options } })
+    }
     // `resolved: false` above the catalogue is a business outcome, not an
     // error — 200 with a structured reason, per the spec.
     return reply.send({ data: r })
@@ -421,7 +446,7 @@ export default async function quotesRoutes(app: FastifyInstance) {
   // ---- Commercial limits the UI needs to label its controls -------------
   app.get('/limits', { preHandler: staff }, async (_req, reply) => {
     return reply.send({
-      data: { discountCaps: DISCOUNT_CAPS, amcPct: AMC_PCT, amcItem: AMC_ITEM },
+      data: { discountCaps: DISCOUNT_CAPS, amcPct: AMC_PCT, amcTerms: AMC_TERMS },
     })
   })
 

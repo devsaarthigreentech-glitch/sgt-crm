@@ -36,7 +36,9 @@ import { requireAuth } from '../auth/guard.js'
 import { validateForSubmit, type RegistrationInput } from '../domain/partnerValidation.js'
 import { inspectGstin } from '../domain/gstin.js'
 import { resolveForKva } from '../domain/quotePricing.js'
-import { actorFor, DISCOUNT_CAPS, AMC_PCT, AMC_ITEM } from '../domain/quoteDiscount.js'
+import {
+  actorFor, DISCOUNT_CAPS, AMC_PCT, AMC_TERMS, amcItemCode,
+} from '../domain/quoteDiscount.js'
 import {
   itemPrice, listTermsTemplates, fetchTerms, searchCustomers, fetchQuotationPdf,
 } from '../services/erpQuotation.js'
@@ -160,6 +162,15 @@ export default async function portalRoutes(app: FastifyInstance) {
     if (!me) return
     const { kva } = (req.body ?? {}) as { kva?: unknown }
     const r = await resolveForKva(kva, { erpRate: itemPrice })
+    if (r.resolved) {
+      const options = await Promise.all(AMC_TERMS.map(async y => {
+        const code = amcItemCode(r.modelCode, y)
+        let rate: string | null = null
+        try { rate = await itemPrice(code) } catch { /* not created yet */ }
+        return { years: y, itemCode: code, rate }
+      }))
+      return reply.send({ data: { ...r, amcOptions: options } })
+    }
     return reply.send({ data: r })
   })
 
@@ -195,7 +206,7 @@ export default async function portalRoutes(app: FastifyInstance) {
         discountCaps: { [actor]: DISCOUNT_CAPS[actor] },
         maxDiscount: DISCOUNT_CAPS[actor],
         amcPct: AMC_PCT,
-        amcItem: AMC_ITEM,
+        amcTerms: AMC_TERMS,
       },
     })
   })
