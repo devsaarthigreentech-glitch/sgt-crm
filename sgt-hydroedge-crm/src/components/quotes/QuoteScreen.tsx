@@ -12,7 +12,7 @@
 // says so rather than quietly picking one.
 
 import { useEffect, useRef, useState } from 'react'
-import { Check, AlertCircle, Zap, FileText, Eye, Download } from 'lucide-react'
+import { Check, AlertCircle, Zap, FileText, Eye, Download, Send } from 'lucide-react'
 
 const INK = '#161614'
 const MUTED = '#6A675F'
@@ -59,6 +59,9 @@ export interface QuoteApi {
   searchCustomers(q: string): Promise<ErpCustomer[]>
   createCustomer(body: Record<string, string>): Promise<{ erpName: string; matchedOn: string }>
   pdfUrl(erpName: string): Promise<string>
+  recipients(erpName: string): Promise<{ to: string[]; cc: string[]; customerName: string; provider: string }>
+  send(erpName: string, body: { to?: string; subject?: string; message?: string }):
+    Promise<{ provider: string; to: string[]; cc: string[]; loggedToErp: boolean; note?: string }>
   limits(): Promise<{ discountCaps: Record<string, number>; maxDiscount?: number; amcPct: number }>
   termsList(): Promise<{ templates: string[]; default: string }>
   termsBody(name: string): Promise<string>
@@ -115,6 +118,11 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
   const [newCust, setNewCust] = useState({ name: '', gstin: '', state: '', city: '' })
   const [custErrors, setCustErrors] = useState<Record<string, string>>({})
   const [pdfFor, setPdfFor] = useState<{ name: string; url: string } | null>(null)
+  const [sendFor, setSendFor] = useState<{
+    name: string; to: string; cc: string[]; subject: string; customerName: string; provider: string
+  } | null>(null)
+  const [sending, setSending] = useState(false)
+  const [sent, setSent] = useState<string | null>(null)
   const [discountPct, setDiscountPct] = useState('')
   const [amcYears, setAmcYears] = useState(0)
   const [limits, setLimits] = useState<{ discountCaps: Record<string, number>; maxDiscount?: number; amcPct: number } | null>(null)
@@ -238,6 +246,94 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
 
   return (
     <div style={{ backgroundColor: PAPER, height: '100%', overflowY: 'auto', padding: '20px 18px 60px' }}>
+      {sent && (
+        <div style={{ padding: '11px 13px', marginBottom: 13, borderRadius: 8, backgroundColor: '#DCEBE1', color: OK, fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 7 }}>
+          <Check size={15} /> {sent}
+        </div>
+      )}
+
+      {sendFor && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 60, backgroundColor: 'rgba(22,22,20,0.55)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+        }}>
+          <div style={{
+            backgroundColor: '#fff', borderRadius: 12, padding: 20,
+            width: '100%', maxWidth: 520, maxHeight: '86vh', overflowY: 'auto',
+          }}>
+            <h3 style={{ margin: '0 0 3px', fontSize: 15.5, fontWeight: 700, color: INK }}>
+              Send {sendFor.name}
+            </h3>
+            <p style={{ margin: '0 0 15px', fontSize: 12, color: MUTED }}>
+              The PDF is attached automatically.
+            </p>
+
+            <F label="To" value={sendFor.to}
+               onChange={v => setSendFor(x => x && { ...x, to: v })}
+               hint="Comma-separated for more than one." />
+
+            <div style={{ marginBottom: 13 }}>
+              <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: MUTED, marginBottom: 5 }}>
+                Copied automatically
+              </label>
+              {sendFor.cc.length ? (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                  {sendFor.cc.map(a => (
+                    <span key={a} style={{
+                      fontSize: 11.5, padding: '4px 9px', borderRadius: 999,
+                      backgroundColor: '#EFEADC', color: INK,
+                    }}>{a}</span>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ fontSize: 11.5, color: WARN_FG }}>
+                  Nobody yet — set QUOTE_CC_SGT, and a contact email on the partner org.
+                </div>
+              )}
+            </div>
+
+            <F label="Subject" value={sendFor.subject}
+               onChange={v => setSendFor(x => x && { ...x, subject: v })} />
+
+            <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+              <button
+                disabled={sending || !sendFor.to.trim()}
+                onClick={async () => {
+                  if (!sendFor) return
+                  setSending(true); setBanner(null)
+                  try {
+                    const r = await api.send(sendFor.name, {
+                      to: sendFor.to, subject: sendFor.subject,
+                    })
+                    setSent(
+                      `${sendFor.name} sent to ${r.to.join(', ')}` +
+                      (r.cc.length ? `, copied to ${r.cc.length}` : '') +
+                      (r.note ? ` — ${r.note}` : ''))
+                    setSendFor(null)
+                  } catch (e: any) { setBanner(e.message) } finally { setSending(false) }
+                }}
+                style={{
+                  flex: 1, padding: '11px', fontSize: 13.5, fontWeight: 700, fontFamily: 'inherit',
+                  border: 'none', borderRadius: 7,
+                  cursor: sending || !sendFor.to.trim() ? 'not-allowed' : 'pointer',
+                  backgroundColor: sending || !sendFor.to.trim() ? '#D8D3C4' : INK,
+                  color: sending || !sendFor.to.trim() ? '#8C887E' : '#fff',
+                }}>
+                {sending ? 'Sending…' : 'Send now'}
+              </button>
+              <button onClick={() => setSendFor(null)} disabled={sending} style={{
+                padding: '11px 16px', fontSize: 13.5, fontFamily: 'inherit',
+                border: `1px solid ${LINE}`, borderRadius: 7, cursor: 'pointer',
+                background: '#fff', color: MUTED,
+              }}>Cancel</button>
+            </div>
+            <div style={{ fontSize: 10.5, color: FAINT, marginTop: 9, textAlign: 'center' }}>
+              via {sendFor.provider === 'n8n' ? 'n8n' : 'ERPNext'}
+            </div>
+          </div>
+        </div>
+      )}
+
       {pdfFor && (
         <div
           onClick={() => { URL.revokeObjectURL(pdfFor.url); setPdfFor(null) }}
@@ -685,6 +781,24 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
                     }}
                     style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: MUTED, fontSize: 11.5, fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 4 }}>
                     <Download size={13} /> Download
+                  </button>
+                  <button type="button"
+                    onClick={async () => {
+                      setBanner(null); setSent(null)
+                      try {
+                        const r = await api.recipients(q.erp_name)
+                        setSendFor({
+                          name: q.erp_name,
+                          to: r.to.join(', '),
+                          cc: r.cc,
+                          customerName: r.customerName,
+                          provider: r.provider,
+                          subject: `Quotation ${q.erp_name} from SGT HydroEdge`,
+                        })
+                      } catch (e: any) { setBanner(e.message) }
+                    }}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: MUTED, fontSize: 11.5, fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <Send size={13} /> Send
                   </button>
                 </div>
               </div>

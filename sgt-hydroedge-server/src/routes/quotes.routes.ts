@@ -23,6 +23,7 @@ import { inspectGstin } from '../domain/gstin.js'
 import {
   checkDiscount, actorFor, DISCOUNT_CAPS, amcRate, AMC_ITEM, AMC_PCT,
 } from '../domain/quoteDiscount.js'
+import { sendQuotation, mailProvider, isEmail } from '../services/quoteMail.js'
 import {
   createQuotation, itemPrice, fetchQuotation, listTermsTemplates, fetchTerms,
   searchCustomers, ensureQuotationCustomer, fetchQuotationPdf, fetchQuotationSummaries,
@@ -285,6 +286,82 @@ export async function reconcileQuotations(rows: any[]): Promise<any[]> {
   return fresh
 }
 
+/**
+ * Who a quotation goes to, and who is copied.
+ *
+ * The customer address defaults to whatever ERPNext already holds on the
+ * quotation, so the common case needs no typing. SGT is always copied.
+ * The partner is copied from their own org record, which means a
+ * distributor is automatically on anything their dealer sends without
+ * either of them having to remember.
+ */
+export async function buildRecipients(erpName: string, overrideTo?: string) {
+  const doc = await fetchQuotation(erpName)
+  const to: string[] = []
+  const typed = String(overrideTo ?? '').trim()
+  if (typed) {
+    for (const part of typed.split(/[,;]/).map(x => x.trim()).filter(Boolean)) to.push(part)
+  } else if (doc?.contact_email) {
+    to.push(String(doc.contact_email).trim())
+  }
+
+  const cc = new Set<string>()
+  const sgt = String(process.env.QUOTE_CC_SGT ?? '').trim()
+  for (const a of sgt.split(/[,;]/).map(x => x.trim()).filter(Boolean)) cc.add(a)
+
+  // The partner who raised it, and their parent if there is one.
+  const { rows } = await query(
+    `select o.contact_email as own, p.contact_email as parent
+       from quote_service.quotation_ref q
+       join quote_service.org o on o.id = q.org_id
+       left join quote_service.org p on p.id = o.parent_id
+      where q.erp_name = $1`, [erpName])
+  for (const r of rows) {
+    if (r.own) cc.add(String(r.own).trim())
+    if (r.parent) cc.add(String(r.parent).trim())
+  }
+
+  // Never copy someone we are already writing to.
+  for (const t of to) cc.delete(t)
+
+  return {
+    to: to.filter(isEmail),
+    cc: [...cc].filter(isEmail),
+    rejected: [...to, ...cc].filter(a => a && !isEmail(a)),
+    customerName: doc?.customer_name ?? '',
+    grandTotal: doc?.grand_total ?? null,
+  }
+}
+
+export async function performSend(erpName: string, body: Record<string, any>) {
+  const built = await buildRecipients(erpName, body.to)
+  if (!built.to.length) {
+    return {
+      ok: false as const, code: 422,
+      payload: {
+        error: {
+          code: 'no_recipient',
+          message: 'No valid customer email. Enter one, or add it to the customer in ERPNext.',
+        },
+        rejected: built.rejected,
+      },
+    }
+  }
+
+  const subject = String(body.subject ?? '').trim() ||
+    `Quotation ${erpName} from SGT HydroEdge`
+  const message = String(body.message ?? '').trim() ||
+    `<p>Dear ${built.customerName || 'Sir/Madam'},</p>` +
+    `<p>Please find attached our quotation ${erpName} for your consideration.</p>` +
+    `<p>We would be glad to answer any questions.</p>` +
+    `<p>Regards,<br>SGT HydroEdge</p>`
+
+  const result = await sendQuotation({
+    erpName, to: built.to, cc: built.cc, subject, message,
+  })
+  return { ok: true as const, payload: { data: { ...result, rejected: built.rejected } } }
+}
+
 export default async function quotesRoutes(app: FastifyInstance) {
   // ---- Resolve — free, no side effects ---------------------------------
   app.post('/resolve', { preHandler: staff }, async (req, reply) => {
@@ -349,6 +426,33 @@ export default async function quotesRoutes(app: FastifyInstance) {
       req.log.error({ err: e, erpName }, 'quotation PDF render failed')
       return reply.code(502).send({
         error: { code: 'pdf_failed', message: String(e?.message ?? e).slice(0, 300) },
+      })
+    }
+  })
+
+  // ---- Who would this go to, before sending it -------------------------
+  app.get('/:erpName/recipients', { preHandler: staff }, async (req, reply) => {
+    const { erpName } = req.params as { erpName: string }
+    try {
+      const r = await buildRecipients(erpName)
+      return reply.send({ data: { ...r, provider: mailProvider() } })
+    } catch (e: any) {
+      return reply.code(404).send({
+        error: { code: 'not_found', message: String(e?.message ?? e).slice(0, 250) },
+      })
+    }
+  })
+
+  app.post('/:erpName/send', { preHandler: staff }, async (req, reply) => {
+    const { erpName } = req.params as { erpName: string }
+    try {
+      const r = await performSend(erpName, (req.body ?? {}) as Record<string, any>)
+      if (!r.ok) return reply.code(r.code).send(r.payload)
+      return reply.send(r.payload)
+    } catch (e: any) {
+      req.log.error({ err: e, erpName }, 'quotation send failed')
+      return reply.code(502).send({
+        error: { code: 'send_failed', message: String(e?.message ?? e).slice(0, 400) },
       })
     }
   })

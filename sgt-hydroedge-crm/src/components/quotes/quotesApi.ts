@@ -49,6 +49,15 @@ export function makeQuoteApi(prefix: string, withPartners: boolean): QuoteApi {
 
     list: () => request<{ data: any[] }>(`${prefix}`).then(r => r.data),
 
+    recipients: (erpName: string) =>
+      request<{ data: { to: string[]; cc: string[]; customerName: string; provider: string } }>(
+        `${prefix}/${encodeURIComponent(erpName)}/recipients`).then(r => r.data),
+
+    send: (erpName: string, body: { to?: string; subject?: string; message?: string }) =>
+      request<{ data: { provider: string; to: string[]; cc: string[]; loggedToErp: boolean; note?: string } }>(
+        `${prefix}/${encodeURIComponent(erpName)}/send`,
+        { method: 'POST', body: JSON.stringify(body) }).then(r => r.data),
+
     limits: () =>
       request<{ data: { discountCaps: Record<string, number>; maxDiscount?: number; amcPct: number } }>(
         `${prefix}/limits`).then(r => r.data),

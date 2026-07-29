@@ -41,8 +41,10 @@ import {
   itemPrice, listTermsTemplates, fetchTerms, searchCustomers, fetchQuotationPdf,
 } from '../services/erpQuotation.js'
 import {
-  performQuotation, createCustomerChecked, reconcileQuotations, type QuoteBody,
+  performQuotation, createCustomerChecked, reconcileQuotations,
+  buildRecipients, performSend, type QuoteBody,
 } from './quotes.routes.js'
+import { mailProvider } from '../services/quoteMail.js'
 
 interface Caller {
   userId: string
@@ -211,6 +213,47 @@ export default async function portalRoutes(app: FastifyInstance) {
     const result = await createCustomerChecked((req.body ?? {}) as Record<string, string>)
     if (!result.ok) return reply.code(result.code).send(result.payload)
     return reply.code(201).send(result.payload)
+  })
+
+  // Sending is scoped exactly like the PDF: a partner may only send a
+  // quotation from their own org tree.
+  async function ownsQuotation(erpName: string, orgId: number) {
+    const { rows } = await query(
+      `select 1 from quote_service.quotation_ref
+        where erp_name = $1
+          and org_id in (select org_id from quote_service.visible_org_ids($2))`,
+      [erpName, orgId])
+    return rows.length > 0
+  }
+
+  app.get('/quotes/:erpName/recipients', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { erpName } = req.params as { erpName: string }
+    if (!await ownsQuotation(erpName, me.orgId)) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } })
+    }
+    const r = await buildRecipients(erpName)
+    return reply.send({ data: { ...r, provider: mailProvider() } })
+  })
+
+  app.post('/quotes/:erpName/send', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { erpName } = req.params as { erpName: string }
+    if (!await ownsQuotation(erpName, me.orgId)) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } })
+    }
+    try {
+      const r = await performSend(erpName, (req.body ?? {}) as Record<string, any>)
+      if (!r.ok) return reply.code(r.code).send(r.payload)
+      return reply.send(r.payload)
+    } catch (e: any) {
+      req.log.error({ err: e, erpName }, 'portal quotation send failed')
+      return reply.code(502).send({
+        error: { code: 'send_failed', message: String(e?.message ?? e).slice(0, 400) },
+      })
+    }
   })
 
   // The PDF, proxied. Scoped first: a partner may only download a quotation
