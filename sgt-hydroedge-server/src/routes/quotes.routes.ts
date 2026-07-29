@@ -158,7 +158,13 @@ export async function performQuotation(
       },
     }
   }
-  const discountAmount = usingAmount ? (discount as any).amount ?? 0 : 0
+  // The user types a discount for the WHOLE line; ERPNext's discount_amount
+  // is PER UNIT. Divide before sending, or a qty of 3 would take the figure
+  // off three times over.
+  const discountAmount = usingAmount ? Number((discount as any).amount ?? 0) : 0
+  const discountPerUnit = discountAmount > 0 && qty > 0
+    ? Math.round((discountAmount / qty) * 100) / 100
+    : 0
 
   const input: CreateQuotationInput = {
     customerErpName,
@@ -175,7 +181,7 @@ export async function performQuotation(
     raisedVia: opts.via === 'portal' ? 'Partner portal' : 'SGT CRM',
     partner: partnerSnapshot,
     discountPct: usingAmount ? null : (discount.pct || null),
-    discountAmount: discountAmount || null,
+    discountAmountPerUnit: discountPerUnit || null,
     // Its own priced item per model per term, so the printed line shows a
     // list rate rather than a discount off zero.
     amc: body.amcYears && AMC_TERMS.includes(Number(body.amcYears))

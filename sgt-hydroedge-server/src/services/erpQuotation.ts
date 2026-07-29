@@ -496,7 +496,11 @@ export interface CreateQuotationInput {
    * never silently discounts the AMC alongside it.
    */
   discountPct?: number | null;
-  discountAmount?: number | null;
+  /**
+   * PER UNIT, in rupees. ERPNext's `discount_amount` field is per unit,
+   * not per line — the route divides the entered figure by quantity.
+   */
+  discountAmountPerUnit?: number | null;
   /** An AMC line. Priced by ERPNext from its own Item Price. */
   amc?: { itemCode: string; qty: number } | null;
   /** Terms template name. Falls back to the configured default. */
@@ -519,6 +523,28 @@ export interface CreateQuotationResult {
   taxWarning: string | null;
   commissionRate: number | null;
   totalCommission: string | null;
+}
+
+/**
+ * The discount fields for a quotation line. Which combination works is
+ * not obvious and is not symmetrical — see the note at the call site.
+ */
+function discountFields(input: CreateQuotationInput): Record<string, number> {
+  const list = Number(input.rate ?? 0);
+  const perUnit = Number(input.discountAmountPerUnit ?? 0);
+
+  if (perUnit > 0 && list > 0) {
+    const rate = Math.round((list - perUnit) * 100) / 100;
+    return {
+      discount_amount: Math.round(perUnit * 100) / 100,
+      // Required. Without it ERPNext ignores discount_amount entirely.
+      rate: rate < 0 ? 0 : rate,
+    };
+  }
+  if (input.discountPct && input.discountPct > 0) {
+    return { discount_percentage: input.discountPct };
+  }
+  return {};
 }
 
 export async function createQuotation(input: CreateQuotationInput): Promise<CreateQuotationResult> {
@@ -548,15 +574,21 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
         item_code: input.itemCode,
         qty: input.qty,
         ...(input.rate != null && input.rate !== '' ? { price_list_rate: Number(input.rate) } : {}),
-        // Line-level discount: ERPNext derives `rate` from price_list_rate
-        // minus this, so the printed line shows list, discount and net
-        // correctly. Sending `rate` directly instead would make the
-        // discount columns read as zero however much was given.
-        ...(input.discountAmount
-          ? { discount_amount: input.discountAmount }
-          : input.discountPct
-            ? { discount_percentage: input.discountPct }
-            : {}),
+        // How ERPNext wants a line discount, established by probing a real
+        // site rather than reasoning about it:
+        //
+        //   percentage -> price_list_rate + discount_percentage. ERPNext
+        //                 derives rate and discount_amount itself.
+        //   amount     -> price_list_rate + discount_amount + rate. The
+        //                 rate MUST be sent: a bare discount_amount with no
+        //                 pricing rule is silently discarded and the line
+        //                 comes out at full price with the discount columns
+        //                 reading zero.
+        //
+        // Sending rate alongside the amount also keeps the exact rupee
+        // figure the user typed, instead of drifting through a rounded
+        // percentage (₹8,501 becoming ₹8,500.80).
+        ...(discountFields(input)),
         // india_compliance derives gst_treatment from the tax rows it finds.
         // With none present it settles on "Nil-Rated" and zeroes the GST —
         // which is how the first two quotations came out at 0% tax. GreenX is
