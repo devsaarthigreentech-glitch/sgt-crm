@@ -23,12 +23,11 @@
 // =====================================================================
 
 import { erpFetch } from './erpLimit.js';
-import { fetchQuotationPdf } from './erpQuotation.js';
+import { fetchQuotationPdf, quotePrintFormat } from './erpQuotation.js';
 
 const BASE = process.env.ERPNEXT_URL?.replace(/\/+$/, '') ?? '';
 const KEY = process.env.ERPNEXT_API_KEY ?? '';
 const SECRET = process.env.ERPNEXT_API_SECRET ?? '';
-const PRINT_FORMAT = process.env.ERP_QUOTE_PRINT_FORMAT ?? '';
 const PROVIDER = (process.env.QUOTE_MAIL_PROVIDER ?? 'erpnext').toLowerCase();
 const N8N_URL = process.env.QUOTE_MAIL_N8N_URL ?? '';
 const N8N_TOKEN = process.env.QUOTE_MAIL_N8N_TOKEN ?? '';
@@ -106,6 +105,18 @@ async function logCommunication(input: SendQuoteInput, via: string): Promise<boo
 }
 
 async function sendViaErpNext(input: SendQuoteInput): Promise<SendQuoteResult> {
+  // Frappe attaches the document PDF ONLY when print_format (or print_html)
+  // is truthy. Omit it and the mail goes out with body text and no
+  // attachment, silently. So resolve one, and refuse to send without it
+  // rather than deliver a quotation email containing no quotation.
+  const printFormat = await quotePrintFormat();
+  if (!printFormat) {
+    throw new Error(
+      'No print format could be resolved for Quotation, so the PDF would not be ' +
+      'attached. Set ERP_QUOTE_PRINT_FORMAT, or enable a Print Format on the ' +
+      'Quotation doctype in ERPNext.');
+  }
+
   const res = await erpFetch(
     `${BASE}/api/method/frappe.core.doctype.communication.email.make`,
     {
@@ -119,10 +130,10 @@ async function sendViaErpNext(input: SendQuoteInput): Promise<SendQuoteResult> {
         recipients: input.to.join(', '),
         cc: input.cc.join(', '),
         send_email: 1,
-        // ERPNext renders and attaches the print format itself, so the
-        // customer gets exactly the document the Preview shows.
-        ...(PRINT_FORMAT ? { print_format: PRINT_FORMAT } : {}),
-        attach_document_print: 1,
+        // Always sent: this is what makes Frappe render and attach the PDF,
+        // and it is the same format the Preview button shows.
+        print_format: printFormat,
+        print_letterhead: 1,
         send_me_a_copy: 0,
       }),
     },

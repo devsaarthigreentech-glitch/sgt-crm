@@ -57,6 +57,27 @@ export interface QuoteBody {
  * `forcedOrgId` is set by the portal to the caller's own org — staff may
  * choose one, a partner may not.
  */
+/**
+ * Flatten an org row into the block the print format renders.
+ *
+ * Snapshotted deliberately: the PDF must show the partner as they were
+ * when the quotation was issued, not as they are whenever someone reprints
+ * it. Looking this up in Jinja at print time would silently rewrite
+ * documents the customer already has.
+ */
+function snapshotPartner(o: Record<string, any>): CreateQuotationInput['partner'] {
+  const addr = [o.address_line1, o.address_line2, o.city, o.state, o.pincode]
+    .map(x => String(x ?? '').trim()).filter(Boolean).join(', ')
+  const contact = [o.contact_name, o.contact_mobile, o.contact_email]
+    .map(x => String(x ?? '').trim()).filter(Boolean).join(' · ')
+  return {
+    name: `${o.legal_name}${o.code ? ` (${o.code})` : ''}`,
+    address: addr || null,
+    contact: contact || null,
+    gstin: o.gstin ?? null,
+  }
+}
+
 export async function performQuotation(
   req: FastifyRequest,
   body: QuoteBody,
@@ -91,9 +112,13 @@ export async function performQuotation(
   let salesPartner: string | null = null
   let commissionRate: number | null = null
   let orgType: string | null = null
+  let partnerSnapshot: CreateQuotationInput['partner'] = null
   if (orgId) {
     const { rows } = await query(
-      `select code, org_type from quote_service.org where id = $1 and is_active`, [orgId])
+      `select code, org_type, legal_name, trade_name, gstin,
+              address_line1, address_line2, city, state, pincode,
+              contact_name, contact_mobile, contact_email
+         from quote_service.org where id = $1 and is_active`, [orgId])
     if (!rows.length) {
       return {
         ok: false as const, code: 400,
@@ -102,6 +127,7 @@ export async function performQuotation(
     }
     salesPartner = rows[0].code
     orgType = rows[0].org_type
+    partnerSnapshot = snapshotPartner(rows[0])
     commissionRate = Number(process.env.ERP_PARTNER_COMMISSION ?? '40.48')
   }
 
@@ -132,6 +158,7 @@ export async function performQuotation(
     raisedBy: who.name ? `${who.name}${who.id ? ` (user ${who.id})` : ''}` : null,
     raisedByOrg: salesPartner,
     raisedVia: opts.via === 'portal' ? 'Partner portal' : 'SGT CRM',
+    partner: partnerSnapshot,
     discountPct: discount.pct || null,
     amc: body.amcYears && Number(body.amcYears) > 0
       ? {
