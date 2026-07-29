@@ -46,10 +46,13 @@ export default function App() {
     })
   }, [])
 
-  // Load leads from API
+  // Load leads from API. Waits for the auth check — firing this on mount races
+  // the token and leaves a stale "Login required" on screen after logging in.
+  // External roles never touch /leads (the server denies them anyway).
   useEffect(() => {
+    if (!user || EXTERNAL_ROLES.includes(user.role)) return
     loadLeads()
-  }, [])
+  }, [user])
 
   const loadLeads = async (): Promise<Lead[]> => {
     try {
