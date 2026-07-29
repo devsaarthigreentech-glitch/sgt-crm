@@ -174,8 +174,17 @@ async function sendViaN8n(input: SendQuoteInput): Promise<SendQuoteResult> {
       quotation: input.erpName,
       to: input.to,
       cc: input.cc,
+      // Comma-joined too: Gmail and most mail nodes want a string, and
+      // `{{ $json.body.toCsv }}` is easier to get right in an n8n
+      // expression than joining an array inline.
+      toCsv: input.to.join(','),
+      ccCsv: input.cc.join(','),
       subject: input.subject,
       html: input.message,
+      // base64 in JSON, NOT binary. n8n needs a "Convert to File" node to
+      // turn this into binary before a mail node will attach it — a mail
+      // node asked for an attachment reads binary off the item, never a
+      // string in the JSON.
       attachment: {
         filename: `${input.erpName}.pdf`,
         contentType: 'application/pdf',
