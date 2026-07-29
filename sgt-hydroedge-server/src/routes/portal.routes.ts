@@ -308,11 +308,17 @@ export default async function portalRoutes(app: FastifyInstance) {
   app.get('/quotes', { preHandler: requireAuth }, async (req, reply) => {
     const me = await resolveCaller(req, reply)
     if (!me) return
+    // A distributor sees their dealers' quotations as well as their own —
+    // visible_org_ids walks the subtree downwards. org_name and mine let
+    // the list say WHOSE a quotation is, instead of showing a bare code.
     const { rows } = await query(
       `select q.id, q.erp_name, q.input_kva, q.model_code, q.qty, q.unit_rate,
               q.net_total, q.grand_total, q.commission_rate,
               q.customer_name, q.customer_state, q.status, q.created_at,
-              o.code as org_code
+              q.raised_by_name,
+              o.code as org_code,
+              coalesce(o.trade_name, o.legal_name) as org_name,
+              (q.org_id = $1) as mine
          from quote_service.quotation_ref q
          left join quote_service.org o on o.id = q.org_id
         where q.org_id in (select org_id from quote_service.visible_org_ids($1))

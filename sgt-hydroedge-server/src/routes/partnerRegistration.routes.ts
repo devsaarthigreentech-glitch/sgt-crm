@@ -567,6 +567,39 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
           })
         }
         const org = orgs[0]
+
+        // Fill BLANKS only. The existing org is the older, curated record;
+        // an application attached to it may still be the only place a
+        // contact or bank detail was ever captured. coalesce keeps what is
+        // already there and takes the rest.
+        await client.query(
+          `update quote_service.org o
+              set address_line1  = coalesce(o.address_line1,  $2),
+                  address_line2  = coalesce(o.address_line2,  $3),
+                  city           = coalesce(o.city,           $4),
+                  state          = coalesce(o.state,          $5),
+                  state_code     = coalesce(o.state_code,     $6),
+                  pincode        = coalesce(o.pincode,        $7),
+                  contact_name        = coalesce(o.contact_name,        $8),
+                  contact_designation = coalesce(o.contact_designation, $9),
+                  contact_mobile      = coalesce(o.contact_mobile,      $10),
+                  contact_email       = coalesce(o.contact_email,       $11),
+                  pan                 = coalesce(o.pan,                 $12),
+                  bank_account_name   = coalesce(o.bank_account_name,   $13),
+                  bank_account_number = coalesce(o.bank_account_number, $14),
+                  bank_ifsc           = coalesce(o.bank_ifsc,           $15),
+                  bank_name           = coalesce(o.bank_name,           $16),
+                  bank_branch         = coalesce(o.bank_branch,         $17),
+                  gstin               = coalesce(o.gstin,               $18),
+                  territory           = coalesce(o.territory,           $19),
+                  updated_at = now()
+            where o.id = $1`,
+          [org.id, reg.address_line1, reg.address_line2, reg.city, reg.state,
+           reg.state_code, reg.pincode,
+           reg.contact_name, reg.contact_designation, reg.contact_mobile, reg.contact_email,
+           reg.pan, reg.bank_account_name, reg.bank_account_number, reg.bank_ifsc,
+           reg.bank_name, reg.bank_branch, reg.gstin, reg.proposed_territory])
+
         const { rows: [updated] } = await client.query(
           `update partner_service.registration
               set status = 'approved', approved_at = now(), approved_by = $2,
@@ -639,13 +672,29 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
         parentCode,
       })
 
+      // The org carries the partner's master data from here on — the
+      // registration is frozen once approved, so anything left behind in it
+      // is stranded. Copy the lot, or the distributor's portal shows a
+      // partner with no contact, no address and no bank details.
       const { rows: [org] } = await client.query(
         `insert into quote_service.org
-           (code, legal_name, trade_name, org_type, dealer_type, parent_id, territory, gstin, is_active)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, true)
+           (code, legal_name, trade_name, org_type, dealer_type, parent_id,
+            territory, gstin, pan, is_active,
+            address_line1, address_line2, city, state, state_code, pincode, country,
+            contact_name, contact_designation, contact_mobile, contact_email,
+            bank_account_name, bank_account_number, bank_ifsc, bank_name, bank_branch)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, true,
+                 $10, $11, $12, $13, $14, $15, coalesce($16, 'India'),
+                 $17, $18, $19, $20,
+                 $21, $22, $23, $24, $25)
          returning id, code, legal_name`,
         [code, reg.legal_name, reg.trade_name, reg.partner_type, reg.dealer_type,
-         parentId, reg.proposed_territory, reg.gstin])
+         parentId, reg.proposed_territory, reg.gstin, reg.pan,
+         reg.address_line1, reg.address_line2, reg.city, reg.state, reg.state_code,
+         reg.pincode, reg.country,
+         reg.contact_name, reg.contact_designation, reg.contact_mobile, reg.contact_email,
+         reg.bank_account_name, reg.bank_account_number, reg.bank_ifsc,
+         reg.bank_name, reg.bank_branch])
 
       const { rows: [updated] } = await client.query(
         `update partner_service.registration

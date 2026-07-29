@@ -784,11 +784,23 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontSize: 13.5, fontWeight: 600, color: INK, display: 'flex', alignItems: 'center', gap: 5 }}>
                       <FileText size={13} /> {q.customer_name}
+                      {/* Raised by someone below me — a distributor seeing a
+                          dealer's quotation. `mine` is only sent by the portal. */}
+                      {q.mine === false && (
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, letterSpacing: '0.04em',
+                          textTransform: 'uppercase', padding: '2px 6px', borderRadius: 4,
+                          backgroundColor: '#EFEADC', color: MUTED, whiteSpace: 'nowrap',
+                        }}>
+                          {q.org_name ?? q.org_code}
+                        </span>
+                      )}
                     </div>
                     <div style={{ fontSize: 11.5, color: MUTED, marginTop: 2 }}>
                       {q.erp_name} · {q.model_code}{q.qty > 1 ? ` × ${q.qty}` : ''}
                       {q.input_kva ? ` · ${Number(q.input_kva)} kVA` : ''}
                       {q.org_code ? ` · ${q.org_code}` : ' · SGT direct'}
+                      {q.mine === false && q.raised_by_name ? ` · ${q.raised_by_name}` : ''}
                     </div>
                   </div>
                   <div style={{ textAlign: 'right', flexShrink: 0 }}>
