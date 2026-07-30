@@ -33,6 +33,7 @@ import {
   createQuotation, itemPrice, fetchQuotation, listTermsTemplates, fetchTerms,
   searchCustomers, ensureQuotationCustomer, fetchQuotationPdf, fetchQuotationSummaries,
   listQuotationAttachments, uploadQuotationAttachment, deleteQuotationAttachment,
+  uploadPublicImage,
   type CreateQuotationInput, type CreateQuotationLine,
 } from '../services/erpQuotation.js'
 
@@ -206,11 +207,12 @@ export async function performQuotation(
   let partnerSnapshot: CreateQuotationInput['partner'] = null
   if (orgId) {
     const { rows } = await query(
-      `select code, org_type, legal_name, trade_name, gstin,
+      `select id, code, org_type, legal_name, trade_name, gstin,
               address_line1, address_line2, city, state, pincode,
               contact_name, contact_mobile, contact_email,
               bank_account_name, bank_account_number, bank_ifsc,
-              bank_name, bank_branch
+              bank_name, bank_branch,
+              logo_filename, logo_mime, logo_bytes, erp_logo_url
          from quote_service.org where id = $1 and is_active`, [orgId])
     if (!rows.length) {
       return {
@@ -222,6 +224,30 @@ export async function performQuotation(
     orgType = rows[0].org_type
     partnerSnapshot = snapshotPartner(rows[0])
     commissionRate = Number(process.env.ERP_PARTNER_COMMISSION ?? '40.48')
+
+    // The logo lives in our database; ERPNext needs its own copy to print
+    // it. Upload once, remember the URL, reuse it on every later quote.
+    //
+    // Best effort throughout: a partner without a logo, or an upload that
+    // fails, must never stop a quotation being raised. The document just
+    // prints with SGT's mark alone, which is what happened before this
+    // existed.
+    partnerSnapshot!.logo = rows[0].erp_logo_url ?? null
+    if (!partnerSnapshot!.logo && rows[0].logo_bytes) {
+      try {
+        const url = await uploadPublicImage(
+          rows[0].logo_filename ?? `${rows[0].code}-logo.png`,
+          rows[0].logo_mime ?? 'image/png',
+          rows[0].logo_bytes as Buffer,
+        )
+        await query(
+          `update quote_service.org set erp_logo_url = $2, updated_at = now() where id = $1`,
+          [rows[0].id, url])
+        partnerSnapshot!.logo = url
+      } catch (err) {
+        req.log.warn({ err, org: rows[0].code }, 'partner logo could not be published to ERPNext')
+      }
+    }
   }
 
   // Discount authority follows the ORG raising the quote, not the login's

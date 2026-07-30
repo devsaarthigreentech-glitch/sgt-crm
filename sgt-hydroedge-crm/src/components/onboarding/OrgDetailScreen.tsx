@@ -11,7 +11,10 @@
 
 import { useEffect, useState } from 'react'
 import { ArrowLeft, Check, AlertCircle, History, RefreshCw } from 'lucide-react'
-import { onboardingApi, ValidationError, type OrgDetail } from './onboardingApi'
+import {
+  onboardingApi, ValidationError, BASE_URL, getToken, type OrgDetail,
+} from './onboardingApi'
+import LogoField, { logoApiFor } from '../common/LogoField'
 
 const INK = '#161614'
 const MUTED = '#6A675F'
@@ -133,6 +136,16 @@ export default function OrgDetailScreen({ orgId, onBack }: { orgId: number; onBa
           <F label="Legal name" value={form.legal_name} onChange={v => set('legal_name', v)} error={errors.legal_name} />
           <F label="Trade name" value={form.trade_name} onChange={v => set('trade_name', v)} />
           <F label="Territory" value={form.territory} onChange={v => set('territory', v)} />
+        </Card>
+
+        {/* The only place a DISTRIBUTOR's own logo can be set — the portal
+            lets a partner edit the orgs beneath them, never themselves. */}
+        <Card title="Logo" hint="Printed beside SGT’s mark on quotations this partner raises.">
+          <LogoField
+            key={orgId}
+            api={logoApiFor(BASE_URL, `/partners/orgs/${orgId}`, getToken)}
+            hint="Takes effect on their next quotation."
+          />
         </Card>
 
         <Card title="Tax" hint="Leave blank if they are not registered. A wrong GSTIN is rejected.">

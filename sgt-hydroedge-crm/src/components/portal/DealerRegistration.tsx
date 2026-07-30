@@ -21,9 +21,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, Check, AlertCircle, Plus } from 'lucide-react'
 import {
-  portalApi, ValidationError,
+  portalApi, ValidationError, BASE_URL, getToken,
   type PortalReference, type PortalRegistration,
 } from './portalApi'
+import LogoField, { logoApiFor } from '../common/LogoField'
 
 const PAPER = '#ECE8DA'
 const INK = '#161614'
@@ -320,6 +321,17 @@ export default function DealerRegistration() {
             {!individual && (
               <Field label="Trade name" value={form.trade_name} onChange={v => set('trade_name', v)} />
             )}
+          </Card>
+
+          {/* Keyed on the registration id: opening a different dealer must
+              re-fetch rather than keep showing the last one's logo. */}
+          <Card title="Logo" hint="Optional. Carried over when SGT approves them.">
+            <LogoField
+              key={openId}
+              disabled={!editable}
+              api={logoApiFor(BASE_URL, `/portal/registrations/${openId}`, getToken)}
+              hint="Printed beside SGT’s mark on every quotation this dealer raises."
+            />
           </Card>
 
           <Card title="Contact" hint="The person you deal with.">

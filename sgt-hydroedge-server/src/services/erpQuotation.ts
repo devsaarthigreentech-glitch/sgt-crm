@@ -552,6 +552,12 @@ export interface CreateQuotationInput {
      * customer is given, not in a follow-up mail.
      */
     bank?: string | null;
+    /**
+     * Absolute URL of the partner's logo, for the printed header.
+     * Snapshotted like the rest of this block: a quotation reprinted
+     * after a rebrand must still show the mark it went out with.
+     */
+    logo?: string | null;
   } | null;
   /** Terms template name. Falls back to the configured default. */
   termsTemplate?: string | null;
@@ -698,6 +704,7 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
   if (input.partner?.contact) doc.custom_partner_contact = input.partner.contact;
   if (input.partner?.gstin) doc.custom_partner_gstin = input.partner.gstin;
   if (input.partner?.bank) doc.custom_partner_bank = input.partner.bank;
+  if (input.partner?.logo) doc.custom_partner_logo = input.partner.logo;
 
   // Naming the template is not enough over REST: the client-side fetch that
   // expands it into rows only runs in the UI. The rows must be sent.
@@ -893,6 +900,56 @@ export async function uploadQuotationAttachment(
   const data = JSON.parse(text).message ?? JSON.parse(text).data;
   if (!data?.name) throw new Error('ERPNext accepted the upload but returned no File record');
   return attachmentRow(data);
+}
+
+/**
+ * Publish an image to ERPNext and return an ABSOLUTE url for it.
+ *
+ * Used for partner logos. Three deliberate choices:
+ *
+ *   is_private = 0  the PDF renderer fetches images over plain HTTP with
+ *                   no session. A private file would 403 and the logo
+ *                   would silently vanish from the printed quotation.
+ *   no doctype      the file belongs to the partner, not to any one
+ *                   document. Attaching it to a Quotation would delete
+ *                   it with that quotation.
+ *   absolute url    Frappe returns "/files/x.png". Relative paths do not
+ *                   resolve in every PDF backend, so the host is baked
+ *                   in here, once.
+ *
+ * The caller is expected to cache the returned URL — this uploads a new
+ * copy every time it is called.
+ */
+export async function uploadPublicImage(
+  fileName: string,
+  contentType: string,
+  bytes: Buffer,
+): Promise<string> {
+  if (!BASE || !KEY || !SECRET) throw new Error('ERPNext is not configured on this server');
+
+  const form = new FormData();
+  form.append('file', new Blob([new Uint8Array(bytes)], { type: contentType }), fileName);
+  form.append('is_private', '0');
+
+  const res = await erpFetch(`${BASE}/api/method/upload_file`, {
+    method: 'POST',
+    headers: { Authorization: `token ${KEY}:${SECRET}`, Accept: 'application/json' },
+    body: form,
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    let msg = text.slice(0, 300);
+    try {
+      const j = JSON.parse(text);
+      msg = j.exception ?? j._server_messages ?? msg;
+    } catch { /* keep the raw text */ }
+    throw new Error(`ERPNext rejected the image: ${String(msg).slice(0, 250)}`);
+  }
+
+  const data = JSON.parse(text).message ?? JSON.parse(text).data;
+  const url = String(data?.file_url ?? '');
+  if (!url) throw new Error('ERPNext stored the image but returned no URL');
+  return url.startsWith('http') ? url : `${BASE}${url}`;
 }
 
 /**

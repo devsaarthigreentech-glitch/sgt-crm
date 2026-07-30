@@ -27,6 +27,8 @@ import { requireRole } from '../auth/guard.js'
 import { validateForSubmit, type RegistrationInput } from '../domain/partnerValidation.js'
 import { inspectGstin } from '../domain/gstin.js'
 import { allotCode } from '../domain/partnerCode.js'
+import { decodeLogo, LOGO_MAX_BYTES } from '../domain/partnerLogo.js'
+import { readLogo, saveLogo, clearLogo } from '../services/partnerLogoStore.js'
 
 const director = requireRole('director')
 
@@ -75,6 +77,71 @@ function actor(req: FastifyRequest) {
 }
 
 export default async function partnerRegistrationRoutes(app: FastifyInstance) {
+  // =======================================================================
+  // Partner logos — SGT's side of the same feature the portal has.
+  //
+  // Needed here for a case the portal cannot cover: a DISTRIBUTOR's own
+  // logo. The portal only lets a partner edit orgs BENEATH them, so
+  // nobody there can set their own. SGT does it from the org screen.
+  //
+  // The registration variant matters for partners SGT onboards directly,
+  // where there is no distributor to fill the form in.
+  // =======================================================================
+
+  const LOGO_BODY_LIMIT = LOGO_MAX_BYTES * 2 + 4096
+
+  function sendLogo(
+    reply: any,
+    logo: { fileName: string; contentType: string; bytes: Buffer } | null,
+  ) {
+    if (!logo) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'No logo set' } })
+    }
+    return reply
+      .header('Content-Type', logo.contentType)
+      .header('Content-Disposition', `inline; filename="${logo.fileName}"`)
+      .header('Cache-Control', 'private, max-age=300')
+      .send(logo.bytes)
+  }
+
+  for (const [prefix, target] of [
+    ['registrations', 'registration'],
+    ['orgs', 'org'],
+  ] as const) {
+    app.get(`/${prefix}/:id/logo`, { preHandler: director }, async (req, reply) => {
+      const { id } = req.params as { id: string }
+      return sendLogo(reply, await readLogo(target, id))
+    })
+
+    app.put(`/${prefix}/:id/logo`, {
+      preHandler: director, bodyLimit: LOGO_BODY_LIMIT,
+    }, async (req, reply) => {
+      const { id } = req.params as { id: string }
+      const r = decodeLogo(req.body)
+      if (!r.ok) {
+        return reply.code(422).send({
+          error: { code: 'bad_image', message: r.message }, fields: { logo: r.message },
+        })
+      }
+      await saveLogo(target, id, r.logo)
+      if (target === 'org') {
+        const who = actor(req)
+        await query(
+          `insert into quote_service.org_event (org_id, event_type, actor, actor_name, changes, note)
+           values ($1, 'updated', $2, $3, $4, 'logo set from the CRM')`,
+          [id, who.id, who.name,
+           JSON.stringify({ logo: { from: 'replaced', to: r.logo.fileName } })])
+      }
+      return reply.send({ data: { fileName: r.logo.fileName, sizeBytes: r.logo.bytes.length } })
+    })
+
+    app.delete(`/${prefix}/:id/logo`, { preHandler: director }, async (req, reply) => {
+      const { id } = req.params as { id: string }
+      await clearLogo(target, id)
+      return reply.send({ data: { removed: true } })
+    })
+  }
+
   // ---- Reference data for the form's dropdowns --------------------------
   app.get('/reference', { preHandler: director }, async (_req, reply) => {
     const [states, distributors] = await Promise.all([
@@ -595,13 +662,19 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
                   bank_branch         = coalesce(o.bank_branch,         $17),
                   gstin               = coalesce(o.gstin,               $18),
                   territory           = coalesce(o.territory,           $19),
+                  -- All three move together or not at all: a filename
+                  -- without its bytes would render as a broken image.
+                  logo_filename = case when o.logo_bytes is null then $20 else o.logo_filename end,
+                  logo_mime     = case when o.logo_bytes is null then $21 else o.logo_mime end,
+                  logo_bytes    = coalesce(o.logo_bytes, $22),
                   updated_at = now()
             where o.id = $1`,
           [org.id, reg.address_line1, reg.address_line2, reg.city, reg.state,
            reg.state_code, reg.pincode,
            reg.contact_name, reg.contact_designation, reg.contact_mobile, reg.contact_email,
            reg.pan, reg.bank_account_name, reg.bank_account_number, reg.bank_ifsc,
-           reg.bank_name, reg.bank_branch, reg.gstin, reg.proposed_territory])
+           reg.bank_name, reg.bank_branch, reg.gstin, reg.proposed_territory,
+           reg.logo_filename, reg.logo_mime, reg.logo_bytes])
 
         const { rows: [updated] } = await client.query(
           `update partner_service.registration
@@ -685,11 +758,13 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
             territory, gstin, pan, is_active, entity_type,
             address_line1, address_line2, city, state, state_code, pincode, country,
             contact_name, contact_designation, contact_mobile, contact_email,
-            bank_account_name, bank_account_number, bank_ifsc, bank_name, bank_branch)
+            bank_account_name, bank_account_number, bank_ifsc, bank_name, bank_branch,
+            logo_filename, logo_mime, logo_bytes)
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, coalesce($26, 'company'),
                  $10, $11, $12, $13, $14, $15, coalesce($16, 'India'),
                  $17, $18, $19, $20,
-                 $21, $22, $23, $24, $25)
+                 $21, $22, $23, $24, $25,
+                 $27, $28, $29)
          returning id, code, legal_name`,
         [code, reg.legal_name, reg.trade_name, reg.partner_type, reg.dealer_type,
          parentId, reg.proposed_territory, reg.gstin, reg.pan,
@@ -697,7 +772,8 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
          reg.pincode, reg.country,
          reg.contact_name, reg.contact_designation, reg.contact_mobile, reg.contact_email,
          reg.bank_account_name, reg.bank_account_number, reg.bank_ifsc,
-         reg.bank_name, reg.bank_branch, reg.entity_type])
+         reg.bank_name, reg.bank_branch, reg.entity_type,
+         reg.logo_filename, reg.logo_mime, reg.logo_bytes])
 
       const { rows: [updated] } = await client.query(
         `update partner_service.registration

@@ -44,6 +44,8 @@ import {
   listQuotationAttachments, deleteQuotationAttachment,
 } from '../services/erpQuotation.js'
 import { SPEC_FIELDS } from '../domain/quoteSpec.js'
+import { decodeLogo, LOGO_MAX_BYTES } from '../domain/partnerLogo.js'
+import { readLogo, saveLogo, clearLogo } from '../services/partnerLogoStore.js'
 import {
   performQuotation, createCustomerChecked, reconcileQuotations,
   buildRecipients, performSend, performAttach, ATTACH_MAX_BYTES,
@@ -389,6 +391,141 @@ export default async function portalRoutes(app: FastifyInstance) {
     // Same reconciliation as the CRM list: ERPNext is the system of record,
     // and a quotation deleted there must not linger here.
     return reply.send({ data: await reconcileQuotations(rows) })
+  })
+
+  // =========================================================================
+  // Partner logos.
+  //
+  // Two places a logo can be set, because there are two states a partner
+  // can be in:
+  //
+  //   /registrations/:id/logo   while the application is a draft
+  //   /dealers/:id/logo         once they are approved and have a code
+  //
+  // The second matters more than it looks: partners who predate the
+  // application flow have no registration at all, so without it their
+  // logo could never be set.
+  //
+  // Served as bytes, not as a public URL. The image is only public once
+  // ERPNext has a copy for printing — see uploadPublicImage.
+  // =========================================================================
+
+  /** Uploads are base64 JSON; Fastify's 1 MB default is too small. */
+  const LOGO_BODY_LIMIT = LOGO_MAX_BYTES * 2 + 4096
+
+  function sendLogo(reply: FastifyReply, logo: { fileName: string; contentType: string; bytes: Buffer } | null) {
+    if (!logo) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'No logo set' } })
+    }
+    return reply
+      .header('Content-Type', logo.contentType)
+      .header('Content-Disposition', `inline; filename="${logo.fileName}"`)
+      // Private: it is scoped to this login, so no shared cache may hold it.
+      .header('Cache-Control', 'private, max-age=300')
+      .send(logo.bytes)
+  }
+
+  app.get('/registrations/:id/logo', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { id } = req.params as { id: string }
+    if (!await ownedRegistration(id, me.orgId)) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } })
+    }
+    return sendLogo(reply, await readLogo('registration', id))
+  })
+
+  app.put('/registrations/:id/logo', {
+    preHandler: requireAuth, bodyLimit: LOGO_BODY_LIMIT,
+  }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { id } = req.params as { id: string }
+    const reg = await ownedRegistration(id, me.orgId)
+    if (!reg) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } })
+    }
+    if (reg.status !== 'draft') {
+      return reply.code(409).send({
+        error: { code: 'not_editable', message: `Already ${reg.status} — no longer editable` },
+      })
+    }
+    const r = decodeLogo(req.body)
+    if (!r.ok) {
+      return reply.code(422).send({
+        error: { code: 'bad_image', message: r.message }, fields: { logo: r.message },
+      })
+    }
+    await saveLogo('registration', id, r.logo)
+    return reply.send({ data: { fileName: r.logo.fileName, sizeBytes: r.logo.bytes.length } })
+  })
+
+  app.delete('/registrations/:id/logo', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { id } = req.params as { id: string }
+    const reg = await ownedRegistration(id, me.orgId)
+    if (!reg) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } })
+    }
+    await clearLogo('registration', id)
+    return reply.send({ data: { removed: true } })
+  })
+
+  /** True when this org is a descendant of the caller — never the caller. */
+  async function ownsDealer(id: string, orgId: number) {
+    const { rows } = await query(
+      `select 1 from quote_service.org
+        where id = $1
+          and id in (select org_id from quote_service.visible_org_ids($2))
+          and id <> $2`, [id, orgId])
+    return rows.length > 0
+  }
+
+  app.get('/dealers/:id/logo', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { id } = req.params as { id: string }
+    if (!await ownsDealer(id, me.orgId)) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } })
+    }
+    return sendLogo(reply, await readLogo('org', id))
+  })
+
+  app.put('/dealers/:id/logo', {
+    preHandler: requireAuth, bodyLimit: LOGO_BODY_LIMIT,
+  }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { id } = req.params as { id: string }
+    if (!await ownsDealer(id, me.orgId)) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } })
+    }
+    const r = decodeLogo(req.body)
+    if (!r.ok) {
+      return reply.code(422).send({
+        error: { code: 'bad_image', message: r.message }, fields: { logo: r.message },
+      })
+    }
+    await saveLogo('org', id, r.logo)
+    await query(
+      `insert into quote_service.org_event (org_id, event_type, actor, actor_name, changes, note)
+       values ($1, 'updated', $2, $3, $4, $5)`,
+      [id, me.userId, (req.user as any)?.name ?? null,
+       JSON.stringify({ logo: { from: 'replaced', to: r.logo.fileName } }),
+       `logo set via distributor portal (${me.orgCode})`])
+    return reply.send({ data: { fileName: r.logo.fileName, sizeBytes: r.logo.bytes.length } })
+  })
+
+  app.delete('/dealers/:id/logo', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { id } = req.params as { id: string }
+    if (!await ownsDealer(id, me.orgId)) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } })
+    }
+    await clearLogo('org', id)
+    return reply.send({ data: { removed: true } })
   })
 
   // ---- Edit a dealer they manage -----------------------------------------

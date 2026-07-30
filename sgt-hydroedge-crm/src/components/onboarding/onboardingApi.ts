@@ -2,9 +2,9 @@
 // Mirrors lib/api.ts: same BASE_URL convention, same bearer-token handling,
 // same { data } / { error } envelope.
 
-const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3004/api/v1'
+export const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3004/api/v1'
 
-function getToken(): string | null {
+export function getToken(): string | null {
   try {
     return (
       localStorage.getItem('token') ||

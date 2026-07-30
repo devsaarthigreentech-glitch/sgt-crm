@@ -11,7 +11,8 @@
 
 import { useEffect, useState } from 'react'
 import { ArrowLeft, Check, AlertCircle } from 'lucide-react'
-import { portalApi, ValidationError } from './portalApi'
+import { portalApi, ValidationError, BASE_URL, getToken } from './portalApi'
+import LogoField, { logoApiFor } from '../common/LogoField'
 
 const PAPER = '#ECE8DA'
 const INK = '#161614'
@@ -133,6 +134,16 @@ export default function DealerEdit({ dealerId, onBack }: { dealerId: number; onB
              value={form.legal_name} onChange={v => set('legal_name', v)} error={errors.legal_name} />
           <F label="Trade name" value={form.trade_name} onChange={v => set('trade_name', v)} />
           <F label="Territory" value={form.territory} onChange={v => set('territory', v)} />
+        </Card>
+
+        {/* Applies from the NEXT quotation onward. Ones already raised keep
+            the logo they were printed with — the snapshot is deliberate. */}
+        <Card title="Logo" hint="Printed beside SGT’s mark on quotations this dealer raises.">
+          <LogoField
+            key={dealerId}
+            api={logoApiFor(BASE_URL, `/portal/dealers/${dealerId}`, getToken)}
+            hint="Takes effect on their next quotation."
+          />
         </Card>
 
         <Card title="Contact">

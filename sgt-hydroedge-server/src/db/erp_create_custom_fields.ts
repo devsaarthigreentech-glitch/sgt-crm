@@ -120,6 +120,17 @@ const FIELDS: FieldDef[] = [
     insert_after: 'custom_partner_gstin',
     description: 'Partner bank account the customer pays into, snapshotted when the quotation was raised.',
   },
+  // The URL of the partner's logo, uploaded to ERPNext by the CRM the
+  // first time that partner is quoted for. Hidden from the printed field
+  // list — the print format renders it as an image in the header, and a
+  // bare URL printed as text would be noise on the document.
+  {
+    fieldname: 'custom_partner_logo',
+    label: 'Partner Logo URL',
+    fieldtype: 'Data',
+    insert_after: 'custom_partner_bank',
+    description: 'Absolute URL of the partner logo shown in the printed header. Stamped by the CRM.',
+  },
 ];
 
 const DOCTYPE = 'Quotation';
@@ -186,8 +197,13 @@ async function main() {
       allow_on_submit: 0,
       no_copy: 1,
       // The partner block is FOR the print format; the attribution fields
-      // are internal and stay off the document.
-      print_hide: f.fieldname.startsWith('custom_partner_') ? 0 : 1,
+      // are internal and stay off the document. The logo is the exception
+      // in that block — the print format draws it as an image, so the raw
+      // URL must not also print as a line of text.
+      print_hide:
+        f.fieldname === 'custom_partner_logo' ? 1
+        : f.fieldname.startsWith('custom_partner_') ? 0
+        : 1,
       translatable: 0,
     });
     if (r.ok) { made++; console.log(`    ✓ ${f.fieldname}`); }
