@@ -802,6 +802,33 @@ export interface QuotationAttachment {
   createdAt: string | null;
 }
 
+/**
+ * Content type from the file extension.
+ *
+ * ERPNext's File row does not carry one, and it matters on the n8n path:
+ * an attachment sent as application/octet-stream arrives as a nameless
+ * blob in some mail clients rather than a PDF the customer can preview.
+ */
+const CONTENT_TYPES: Record<string, string> = {
+  pdf: 'application/pdf',
+  png: 'image/png',
+  jpg: 'image/jpeg', jpeg: 'image/jpeg',
+  gif: 'image/gif', webp: 'image/webp',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ppt: 'application/vnd.ms-powerpoint',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  csv: 'text/csv', txt: 'text/plain', zip: 'application/zip',
+  dwg: 'image/vnd.dwg', dxf: 'image/vnd.dxf',
+};
+
+export function guessContentType(fileName: string): string {
+  const ext = String(fileName ?? '').split('.').pop()?.toLowerCase() ?? '';
+  return CONTENT_TYPES[ext] ?? 'application/octet-stream';
+}
+
 function attachmentRow(f: any): QuotationAttachment {
   return {
     name: String(f.name),

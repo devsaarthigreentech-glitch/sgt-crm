@@ -26,7 +26,7 @@ import {
 } from '../domain/quoteDiscount.js'
 import {
   sendQuotation, mailProvider, isEmail,
-  defaultQuoteSubject, defaultQuoteMessage,
+  defaultQuoteSubject, defaultQuoteMessage, defaultQuoteMessageText, textToHtml,
 } from '../services/quoteMail.js'
 import { cleanSpec, SPEC_FIELDS } from '../domain/quoteSpec.js'
 import {
@@ -547,7 +547,13 @@ export async function buildRecipients(erpName: string, overrideTo?: string) {
     attachments,
     // Offered to the sender for editing, rather than applied behind
     // their back. Both surfaces get the identical wording.
+    //
+    // Two forms of the same letter: the send dialog edits the PLAIN TEXT
+    // one, because nobody should have to proofread <p> tags before a
+    // quotation goes out. The HTML is what the customer receives, and it
+    // is derived from the text — see textToHtml.
     suggestedSubject: defaultQuoteSubject(ctx),
+    suggestedMessageText: defaultQuoteMessageText(ctx),
     suggestedMessage: defaultQuoteMessage(ctx),
   }
 }
@@ -579,7 +585,19 @@ export async function performSend(erpName: string, body: Record<string, any>) {
     : built.attachments.filter(a => chosen.includes(a.name))
 
   const subject = String(body.subject ?? '').trim() || built.suggestedSubject
-  const message = String(body.message ?? '').trim() || built.suggestedMessage
+
+  // The dialog sends what the user actually typed — plain text — and says
+  // so. It is converted here, at the last moment before sending, so the
+  // stored Communication and the mail itself carry identical HTML.
+  //
+  // Default is 'html' so any caller predating the editor change keeps
+  // working: it was passing HTML, and it still may.
+  const typed = String(body.message ?? '').trim()
+  const message = !typed
+    ? built.suggestedMessage
+    : body.messageFormat === 'text'
+      ? textToHtml(typed)
+      : typed
 
   const result = await sendQuotation({
     erpName, to: built.to, cc: built.cc, subject, message, attachments,

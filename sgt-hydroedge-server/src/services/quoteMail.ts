@@ -24,7 +24,7 @@
 
 import { erpFetch } from './erpLimit.js';
 import {
-  fetchQuotationPdf, quotePrintFormat, fetchAttachmentBytes,
+  fetchQuotationPdf, quotePrintFormat, fetchAttachmentBytes, guessContentType,
   type QuotationAttachment,
 } from './erpQuotation.js';
 
@@ -185,7 +185,7 @@ async function sendViaN8n(input: SendQuoteInput): Promise<SendQuoteResult> {
       const bytes = await fetchAttachmentBytes(a.fileUrl);
       extras.push({
         filename: a.fileName,
-        contentType: 'application/octet-stream',
+        contentType: guessContentType(a.fileName),
         base64: Buffer.from(bytes).toString('base64'),
       });
     } catch {
@@ -275,27 +275,72 @@ export function defaultQuoteSubject(ctx: QuoteMessageContext): string {
   return `Quotation ${ctx.erpName} from SGT HydroEdge`;
 }
 
-export function defaultQuoteMessage(ctx: QuoteMessageContext): string {
+/**
+ * The covering note as the SENDER sees it: plain text, blank line between
+ * paragraphs, `**bold**` where a word should stand out.
+ *
+ * This is the authoritative wording. The HTML that reaches the customer is
+ * derived from it by textToHtml() at send time, so there is one place to
+ * edit the letter and no chance of the two versions drifting apart.
+ */
+export function defaultQuoteMessageText(ctx: QuoteMessageContext): string {
   const who = String(ctx.customerName ?? '').trim();
   const extras = (ctx.attachmentNames ?? []).filter(Boolean);
   const signature = String(ctx.partnerName ?? '').trim();
 
   return [
-    `<p>Dear ${who || 'Sir/Madam'},</p>`,
-    `<p>Thank you for your enquiry and for the opportunity to quote.</p>`,
-    `<p>Please find attached our quotation <strong>${ctx.erpName}</strong> for your kind ` +
-    `consideration. It covers the equipment, the commercial terms and the scope of supply ` +
-    `in full.` +
-    (extras.length
-      ? ` Also attached: ${extras.map(n => `<em>${n}</em>`).join(', ')}.`
-      : '') +
-    `</p>`,
-    `<p>We look forward to being associated with you, and to serving you to your complete ` +
-    `satisfaction. Should you need any clarification on the specification, the pricing or ` +
-    `the delivery schedule, please do write back or call — we would be glad to help.</p>`,
-    `<p>We hope to receive your valued order.</p>`,
-    `<p>Warm regards,<br>${signature ? `${signature}<br>` : ''}SGT HydroEdge Private Limited</p>`,
-  ].join('');
+    `Dear ${who || 'Sir/Madam'},`,
+    ``,
+    `Thank you for your enquiry and for the opportunity to quote.`,
+    ``,
+    `Please find attached our quotation **${ctx.erpName}** for your kind consideration. ` +
+    `It covers the equipment, the commercial terms and the scope of supply in full.` +
+    (extras.length ? ` Also attached: ${extras.join(', ')}.` : ''),
+    ``,
+    `We look forward to being associated with you, and to serving you to your complete ` +
+    `satisfaction. Should you need any clarification on the specification, the pricing ` +
+    `or the delivery schedule, please do write back or call — we would be glad to help.`,
+    ``,
+    `We hope to receive your valued order.`,
+    ``,
+    `Warm regards,`,
+    ...(signature ? [signature] : []),
+    `SGT HydroEdge Private Limited`,
+  ].join('\n');
+}
+
+/**
+ * Plain text -> the HTML an email client renders.
+ *
+ * The sender writes and reads plain text; the customer receives HTML.
+ * Rules, deliberately few enough to be predictable:
+ *
+ *   blank line   -> new paragraph
+ *   single break -> <br> within the paragraph
+ *   **bold**     -> <strong>
+ *
+ * Everything is escaped FIRST, so an ampersand in a customer's name, or a
+ * stray "<" someone typed, cannot break the mail or inject markup.
+ */
+export function textToHtml(text: string): string {
+  const escaped = String(text ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  const bolded = escaped.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+
+  return bolded
+    .split(/\n\s*\n/)
+    .map(block => block.trim())
+    .filter(Boolean)
+    .map(block => `<p>${block.replace(/\n/g, '<br>')}</p>`)
+    .join('');
+}
+
+/** The same letter, as HTML. Kept for callers that want it ready-made. */
+export function defaultQuoteMessage(ctx: QuoteMessageContext): string {
+  return textToHtml(defaultQuoteMessageText(ctx));
 }
 
 export const mailProvider = (): 'erpnext' | 'n8n' =>

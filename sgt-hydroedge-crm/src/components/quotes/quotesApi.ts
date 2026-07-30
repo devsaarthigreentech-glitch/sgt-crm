@@ -56,7 +56,9 @@ export function makeQuoteApi(prefix: string, withPartners: boolean): QuoteApi {
         `${prefix}/${encodeURIComponent(erpName)}/recipients`).then(r => r.data),
 
     send: (erpName: string, body: {
-      to?: string; subject?: string; message?: string; attachments?: string[]
+      to?: string; subject?: string; message?: string
+      messageFormat?: 'text' | 'html'
+      attachments?: string[]
     }) =>
       request<{ data: { provider: string; to: string[]; cc: string[]; loggedToErp: boolean; note?: string; attached?: string[] } }>(
         `${prefix}/${encodeURIComponent(erpName)}/send`,

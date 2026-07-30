@@ -79,6 +79,9 @@ export interface RecipientPlan {
   provider: string
   attachments?: QuoteAttachment[]
   suggestedSubject?: string
+  /** Plain text — what the sender reads and edits. */
+  suggestedMessageText?: string
+  /** The same letter as HTML, which is what the customer receives. */
   suggestedMessage?: string
 }
 
@@ -108,7 +111,10 @@ export interface QuoteApi {
   pdfUrl(erpName: string): Promise<string>
   recipients(erpName: string): Promise<RecipientPlan>
   send(erpName: string, body: {
-    to?: string; subject?: string; message?: string; attachments?: string[]
+    to?: string; subject?: string; message?: string
+    /** 'text' means the server converts the message to HTML before sending. */
+    messageFormat?: 'text' | 'html'
+    attachments?: string[]
   }): Promise<{ provider: string; to: string[]; cc: string[]; loggedToErp: boolean; note?: string; attached?: string[] }>
   limits(): Promise<{ discountCaps: Record<string, number>; maxDiscount?: number; amcPct: number; attachMaxMb?: number }>
   termsList(): Promise<{ templates: string[]; default: string }>
@@ -577,7 +583,8 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
         to: r.to.join(', '),
         cc: r.cc,
         subject: r.suggestedSubject ?? `Quotation ${erpName} from SGT HydroEdge`,
-        message: r.suggestedMessage ?? '',
+        // Plain text on purpose — the server turns it into HTML on send.
+        message: r.suggestedMessageText ?? '',
         customerName: r.customerName,
         provider: r.provider,
         attachments,
@@ -662,21 +669,25 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
             <F label="Subject" value={sendFor.subject}
                onChange={v => setSendFor(x => x && { ...x, subject: v })} />
 
+            {/* Plain text, deliberately. Nobody should have to proofread
+                <p> tags before a quotation goes to a customer — the server
+                turns this into HTML at the moment of sending. */}
             <div style={{ marginBottom: 13 }}>
               <label style={labelStyle}>Message</label>
               <textarea
                 value={sendFor.message}
                 onChange={e => setSendFor(x => x && { ...x, message: e.target.value })}
-                rows={9}
+                rows={13}
                 spellCheck
                 style={{
-                  ...inputStyle(), fontFamily: 'ui-monospace, monospace',
-                  fontSize: 11.5, lineHeight: 1.55, resize: 'vertical',
+                  ...inputStyle(), fontSize: 13, lineHeight: 1.6,
+                  resize: 'vertical',
                 }}
               />
-              <div style={{ fontSize: 11, color: FAINT, marginTop: 3 }}>
-                HTML. Edit it freely — this is what the customer reads before
-                they open the PDF.
+              <div style={{ fontSize: 11, color: FAINT, marginTop: 4 }}>
+                Write it as you would a letter. A blank line starts a new
+                paragraph, and <code>**text**</code> comes out bold. It is sent
+                as a properly formatted email — no HTML to type.
               </div>
             </div>
 
@@ -749,6 +760,7 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
                     const r = await api.send(sendFor.name, {
                       to: sendFor.to, subject: sendFor.subject,
                       message: sendFor.message,
+                      messageFormat: 'text',
                       attachments: sendFor.chosen,
                     })
                     setSent(
