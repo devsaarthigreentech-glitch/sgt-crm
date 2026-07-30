@@ -4,15 +4,22 @@
 //
 // ERPNext owns the resulting document. This screen does two things:
 //   1. resolve — type a kVA, see which GreenX model covers it and at what
-//      rate. Free, no side effects, debounced.
+//      rate. Free, no side effects, debounced. Once per machine.
 //   2. create — an explicit act that writes a Quotation to ERPNext.
 //
 // The rate shown is whatever ERPNext will actually use, read from its
 // Item Price. If that disagrees with our seeded price book the screen
 // says so rather than quietly picking one.
+//
+// MANY MACHINES, ONE QUOTATION. A plant room is rarely one set: three
+// DGs of three ratings is one enquiry and should be one document. Each
+// line resolves, prices and discounts on its own — MachineLine below owns
+// its own debounce and reports its resolution upward.
 
 import { useEffect, useRef, useState } from 'react'
-import { Check, AlertCircle, Zap, FileText, Eye, Download, Send } from 'lucide-react'
+import {
+  Check, AlertCircle, Zap, FileText, Send, Plus, X, Paperclip, Trash2,
+} from 'lucide-react'
 
 const INK = '#161614'
 const MUTED = '#6A675F'
@@ -46,14 +53,52 @@ export interface ErpCustomer {
   primary_address?: string | null
 }
 
+/** One optional specification input, defined server-side. */
+export interface SpecField {
+  key: string
+  label: string
+  group: string
+  placeholder?: string
+  unit?: string
+  numeric?: boolean
+}
+
+/** A document attached to the quotation in ERPNext. */
+export interface QuoteAttachment {
+  name: string
+  fileName: string
+  fileUrl: string
+  sizeBytes: number | null
+  createdAt: string | null
+}
+
+export interface RecipientPlan {
+  to: string[]
+  cc: string[]
+  customerName: string
+  provider: string
+  attachments?: QuoteAttachment[]
+  suggestedSubject?: string
+  suggestedMessage?: string
+}
+
+/** What the screen sends for one machine. */
+export interface QuoteLinePayload {
+  kva: string
+  qty: number
+  rate?: string | null
+  discountPct?: number | null
+  discountAmount?: number | null
+  amcYears?: number | null
+  spec?: Record<string, string> | null
+}
+
 export interface QuoteApi {
   resolve(kva: string): Promise<Resolution>
   create(body: {
-    kva: string; qty: number; rate?: string | null
+    lines: QuoteLinePayload[]
     customerErpName: string
-    discountPct?: number | null
-    discountAmount?: number | null
-    amcYears?: number | null
+    taxMode?: 'auto' | 'in_state' | 'out_state'
     orgId?: number | null
     termsTemplate?: string | null
     termsHtml?: string | null
@@ -61,13 +106,18 @@ export interface QuoteApi {
   searchCustomers(q: string): Promise<ErpCustomer[]>
   createCustomer(body: Record<string, string>): Promise<{ erpName: string; matchedOn: string }>
   pdfUrl(erpName: string): Promise<string>
-  recipients(erpName: string): Promise<{ to: string[]; cc: string[]; customerName: string; provider: string }>
-  send(erpName: string, body: { to?: string; subject?: string; message?: string }):
-    Promise<{ provider: string; to: string[]; cc: string[]; loggedToErp: boolean; note?: string }>
-  limits(): Promise<{ discountCaps: Record<string, number>; maxDiscount?: number; amcPct: number }>
+  recipients(erpName: string): Promise<RecipientPlan>
+  send(erpName: string, body: {
+    to?: string; subject?: string; message?: string; attachments?: string[]
+  }): Promise<{ provider: string; to: string[]; cc: string[]; loggedToErp: boolean; note?: string; attached?: string[] }>
+  limits(): Promise<{ discountCaps: Record<string, number>; maxDiscount?: number; amcPct: number; attachMaxMb?: number }>
   termsList(): Promise<{ templates: string[]; default: string }>
   termsBody(name: string): Promise<string>
   list(): Promise<any[]>
+  specFields(): Promise<SpecField[]>
+  attachments(erpName: string): Promise<QuoteAttachment[]>
+  attach(erpName: string, file: File): Promise<QuoteAttachment>
+  detach(erpName: string, fileName: string): Promise<{ removed: string }>
   /** Partner pickers only make sense for SGT staff. */
   partners?: () => Promise<{ id: number; code: string; legal_name: string }[]>
 }
@@ -82,13 +132,17 @@ const inputStyle = (bad?: boolean): React.CSSProperties => ({
   borderRadius: 6, outline: 'none', fontFamily: 'inherit',
 })
 
+const labelStyle: React.CSSProperties = {
+  display: 'block', fontSize: 11.5, fontWeight: 600, color: MUTED, marginBottom: 5,
+}
+
 function F({ label, value, onChange, placeholder, type = 'text', hint }: {
   label: string; value: any; onChange: (v: string) => void
   placeholder?: string; type?: string; hint?: string
 }) {
   return (
     <div style={{ marginBottom: 13 }}>
-      <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: MUTED, marginBottom: 5 }}>{label}</label>
+      <label style={labelStyle}>{label}</label>
       <input type={type} value={value ?? ''} placeholder={placeholder}
         onChange={e => onChange(e.target.value)} style={inputStyle()} />
       {hint && <div style={{ fontSize: 11, color: FAINT, marginTop: 3 }}>{hint}</div>}
@@ -96,40 +150,302 @@ function F({ label, value, onChange, placeholder, type = 'text', hint }: {
   )
 }
 
-function Card({ title, children }: { title: string; children: React.ReactNode }) {
+function Card({ title, right, children }: {
+  title: string; right?: React.ReactNode; children: React.ReactNode
+}) {
   return (
     <div style={{ backgroundColor: '#fff', border: `1px solid ${LINE}`, borderRadius: 10, padding: '15px 15px 3px', marginBottom: 13 }}>
-      <h3 style={{ margin: '0 0 13px', fontSize: 14, fontWeight: 700, color: INK }}>{title}</h3>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 13px' }}>
+        <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: INK, flex: 1 }}>{title}</h3>
+        {right}
+      </div>
       {children}
     </div>
   )
 }
 
+// ---------------------------------------------------------------------
+// One machine on the quotation.
+// ---------------------------------------------------------------------
+
+interface LineState {
+  /** Stable across re-orders, so React keys never collide. */
+  id: number
+  kva: string
+  qty: number
+  discountMode: 'pct' | 'amount'
+  discountPct: string
+  discountAmt: string
+  amcYears: number
+  spec: Record<string, string>
+  showSpec: boolean
+  res: Resolution | null
+  resolving: boolean
+}
+
+let nextLineId = 1
+const blankLine = (): LineState => ({
+  id: nextLineId++,
+  kva: '', qty: 1,
+  discountMode: 'pct', discountPct: '', discountAmt: '',
+  amcYears: 0, spec: {}, showSpec: false,
+  res: null, resolving: false,
+})
+
+/** Machine value, discount and AMC for one line — one place, so the
+ *  summary, the cap check and the payload can never disagree. */
+function lineMaths(l: LineState) {
+  const machineAmt = (Number(l.res?.rate) || 0) * l.qty
+  const amcOption = l.res?.amcOptions?.find(o => o.years === l.amcYears)
+  const amcAmt = l.amcYears > 0 && amcOption?.rate ? Number(amcOption.rate) * l.qty : 0
+  const amcMissing = l.amcYears > 0 && !amcOption?.rate
+  const discountValue = l.discountMode === 'pct'
+    ? Math.round(machineAmt * (Number(l.discountPct) || 0) / 100)
+    : Math.round(Number(l.discountAmt) || 0)
+  const effectivePct = machineAmt > 0
+    ? Math.round((discountValue / machineAmt) * 10000) / 100
+    : 0
+  return { machineAmt, amcAmt, amcMissing, discountValue, effectivePct }
+}
+
+function MachineLine({
+  line, index, count, maxDiscount, specFields, api, onChange, onRemove,
+}: {
+  line: LineState
+  index: number
+  count: number
+  maxDiscount: number
+  specFields: SpecField[]
+  api: QuoteApi
+  onChange: (patch: Partial<LineState>) => void
+  onRemove: () => void
+}) {
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Debounced preview — resolving is free, so it can run as they type.
+  // Owned by the line rather than the screen: with several machines on
+  // one quotation a single shared timer would cancel its siblings.
+  useEffect(() => {
+    if (timer.current) clearTimeout(timer.current)
+    if (!line.kva.trim()) {
+      if (line.res || line.resolving) onChange({ res: null, resolving: false })
+      return
+    }
+    onChange({ resolving: true })
+    timer.current = setTimeout(async () => {
+      try { onChange({ res: await api.resolve(line.kva), resolving: false }) }
+      catch { onChange({ resolving: false }) }
+    }, 400)
+    return () => { if (timer.current) clearTimeout(timer.current) }
+  }, [line.kva])
+
+  const m = lineMaths(line)
+  const overCap = m.effectivePct > maxDiscount
+  const res = line.res
+  const specCount = Object.values(line.spec).filter(v => String(v).trim()).length
+
+  const groups = [...new Set(specFields.map(f => f.group))]
+
+  return (
+    <div style={{
+      border: `1px solid ${LINE}`, borderRadius: 9, padding: '12px 13px 1px',
+      marginBottom: 11, backgroundColor: '#FCFBF7',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <span style={{
+          fontSize: 10.5, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
+          color: FAINT, flex: 1,
+        }}>
+          Machine {index + 1}{count > 1 ? ` of ${count}` : ''}
+        </span>
+        {count > 1 && (
+          <button type="button" onClick={onRemove} title="Remove this machine"
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: FAINT, padding: 2, display: 'flex' }}>
+            <X size={15} />
+          </button>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', gap: 10 }}>
+        <div style={{ flex: 2 }}>
+          <F label="DG rating (kVA)" value={line.kva} type="number" placeholder="e.g. 70"
+             onChange={v => onChange({ kva: v })} />
+        </div>
+        <div style={{ flex: 1 }}>
+          <F label="Quantity" value={line.qty} type="number"
+             onChange={v => onChange({ qty: Math.max(1, Number(v) || 1) })} />
+        </div>
+      </div>
+
+      {line.resolving && <div style={{ fontSize: 12, color: FAINT, marginBottom: 13 }}>Resolving…</div>}
+
+      {res && !line.resolving && (
+        res.resolved ? (
+          <div style={{ padding: '11px 12px', marginBottom: 13, borderRadius: 8, backgroundColor: '#F2F6F2', border: '1px solid #CFE0D4' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13.5, fontWeight: 700, color: INK }}>
+              <Zap size={14} /> {res.modelCode}
+            </div>
+            <div style={{ fontSize: 11.5, color: MUTED, marginTop: 3 }}>
+              covers DG up to {res.coversUptoKva} kVA · GST {res.gstRate}%
+            </div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: INK, marginTop: 6 }}>
+              {rupees(res.rate)} <span style={{ fontSize: 11, fontWeight: 500, color: FAINT }}>
+                per unit, ex-GST{line.qty > 1 ? ` · ${line.qty} units = ${rupees(m.machineAmt)}` : ''}
+              </span>
+            </div>
+            {res.rateSource === 'price_book' && (
+              <div style={{ fontSize: 11, color: WARN_FG, marginTop: 5 }}>
+                ERPNext has no price for this item — using the CRM price book.
+              </div>
+            )}
+            {res.rateMismatch && (
+              <div style={{ fontSize: 11, color: WARN_FG, marginTop: 5, display: 'flex', gap: 4 }}>
+                <AlertCircle size={12} />
+                ERPNext says {rupees(res.rate)}, the CRM price book says {rupees(res.priceBookMrp)}. ERPNext wins.
+              </div>
+            )}
+          </div>
+        ) : (
+          <div style={{ padding: '11px 12px', marginBottom: 13, borderRadius: 8, backgroundColor: WARN_BG, color: WARN_FG, fontSize: 12.5, display: 'flex', gap: 6 }}>
+            <AlertCircle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+            <span>{res.message}</span>
+          </div>
+        )
+      )}
+
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+        <div style={{ flex: 1 }}>
+          <label style={labelStyle}>Discount</label>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <select value={line.discountMode}
+              onChange={e => onChange({
+                discountMode: e.target.value as 'pct' | 'amount',
+                discountPct: '', discountAmt: '',
+              })}
+              style={{ ...inputStyle(), appearance: 'auto', width: 74, flexShrink: 0 }}>
+              <option value="pct">%</option>
+              <option value="amount">₹</option>
+            </select>
+            {line.discountMode === 'pct' ? (
+              <input type="number" value={line.discountPct} min={0} max={maxDiscount} step="0.5"
+                onChange={e => onChange({ discountPct: e.target.value })}
+                placeholder="0" style={inputStyle(overCap)} />
+            ) : (
+              <input type="number" value={line.discountAmt} min={0} step="1000"
+                onChange={e => onChange({ discountAmt: e.target.value })}
+                placeholder="0" style={inputStyle(overCap)} />
+            )}
+          </div>
+          <div style={{ fontSize: 11, color: overCap ? DANGER : FAINT, marginTop: 3 }}>
+            {overCap
+              ? `${m.effectivePct}% is over your ${maxDiscount}% limit — most you can give on this machine is ${rupees(Math.floor(m.machineAmt * maxDiscount / 100))}.`
+              : line.discountMode === 'amount' && m.discountValue > 0
+                ? `${m.effectivePct}% of this machine. Limit ${maxDiscount}%.`
+                : `Up to ${maxDiscount}%, on this machine only — never the AMC.`}
+          </div>
+        </div>
+
+        <div style={{ flex: 1 }}>
+          <label style={labelStyle}>AMC</label>
+          <select value={line.amcYears} onChange={e => onChange({ amcYears: Number(e.target.value) })}
+            style={{ ...inputStyle(m.amcMissing), appearance: 'auto' }}>
+            <option value={0}>Not included</option>
+            {(res?.amcOptions ?? [{ years: 1 }, { years: 2 }, { years: 3 }] as any).map((o: any) => (
+              <option key={o.years} value={o.years}>
+                {o.years} year{o.years > 1 ? 's' : ''}{o.rate ? ` — ${rupees(o.rate)}` : ''}
+              </option>
+            ))}
+          </select>
+          <div style={{ fontSize: 11, color: m.amcMissing ? DANGER : FAINT, marginTop: 3 }}>
+            {m.amcMissing
+              ? 'No price in ERPNext for this AMC — run the AMC matrix script.'
+              : 'Priced per model. Not discounted.'}
+          </div>
+        </div>
+      </div>
+
+      {/* ---- Specification: optional, and collapsed until asked for ---- */}
+      <div style={{ marginTop: 13, marginBottom: 13 }}>
+        <button type="button" onClick={() => onChange({ showSpec: !line.showSpec })}
+          style={{
+            background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+            color: MUTED, fontSize: 12.5, fontFamily: 'inherit',
+          }}>
+          {line.showSpec ? 'Hide' : 'Add'} specification
+          {specCount > 0 && <span style={{ color: OK }}> · {specCount} filled in</span>}
+        </button>
+        <div style={{ fontSize: 11, color: FAINT, marginTop: 3 }}>
+          Engine, alternator, dimensions. All optional — whatever you fill in is
+          printed under this line on the quotation.
+        </div>
+
+        {line.showSpec && (
+          <div style={{ marginTop: 10 }}>
+            {groups.map(g => (
+              <div key={g} style={{ marginBottom: 6 }}>
+                <div style={{
+                  fontSize: 10.5, fontWeight: 700, letterSpacing: '0.05em',
+                  textTransform: 'uppercase', color: FAINT, marginBottom: 7,
+                }}>{g}</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                  {specFields.filter(f => f.group === g).map(f => (
+                    <div key={f.key} style={{ flex: '1 1 200px', minWidth: 0, marginBottom: 11 }}>
+                      <label style={labelStyle}>
+                        {f.label}{f.unit ? ` (${f.unit})` : ''}
+                      </label>
+                      <input
+                        type={f.numeric ? 'number' : 'text'}
+                        value={line.spec[f.key] ?? ''}
+                        placeholder={f.placeholder}
+                        onChange={e => onChange({ spec: { ...line.spec, [f.key]: e.target.value } })}
+                        style={inputStyle()}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+            {specCount > 0 && (
+              <button type="button" onClick={() => onChange({ spec: {} })}
+                style={{
+                  background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                  color: MUTED, fontSize: 11.5, fontFamily: 'inherit', marginBottom: 11,
+                }}>
+                Clear this specification
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------
+
 export default function QuoteScreen({ api, showPartnerPicker = false }: {
   api: QuoteApi; showPartnerPicker?: boolean
 }) {
-  const [kva, setKva] = useState('')
-  const [qty, setQty] = useState(1)
-  const [res, setRes] = useState<Resolution | null>(null)
-  const [resolving, setResolving] = useState(false)
+  const [lines, setLines] = useState<LineState[]>([blankLine()])
+  const [specFields, setSpecFields] = useState<SpecField[]>([])
   const [picked, setPicked] = useState<ErpCustomer | null>(null)
   const [custQuery, setCustQuery] = useState('')
   const [custHits, setCustHits] = useState<ErpCustomer[]>([])
   const [custSearching, setCustSearching] = useState(false)
   const [addingCust, setAddingCust] = useState(false)
-  const [newCust, setNewCust] = useState({ name: '', gstin: '', state: '', city: '' })
+  const [newCust, setNewCust] = useState({ name: '', gstin: '', state: '', city: '', entityType: 'Company' })
   const [custErrors, setCustErrors] = useState<Record<string, string>>({})
+  const [taxMode, setTaxMode] = useState<'auto' | 'in_state' | 'out_state'>('auto')
   const [pdfFor, setPdfFor] = useState<{ name: string; url: string } | null>(null)
   const [sendFor, setSendFor] = useState<{
-    name: string; to: string; cc: string[]; subject: string; customerName: string; provider: string
+    name: string; to: string; cc: string[]; subject: string; message: string
+    customerName: string; provider: string
+    attachments: QuoteAttachment[]; chosen: string[]
   } | null>(null)
   const [sending, setSending] = useState(false)
+  const [attaching, setAttaching] = useState(false)
   const [sent, setSent] = useState<string | null>(null)
-  const [discountMode, setDiscountMode] = useState<'pct' | 'amount'>('pct')
-  const [discountPct, setDiscountPct] = useState('')
-  const [discountAmt, setDiscountAmt] = useState('')
-  const [amcYears, setAmcYears] = useState(0)
-  const [limits, setLimits] = useState<{ discountCaps: Record<string, number>; maxDiscount?: number; amcPct: number } | null>(null)
+  const [limits, setLimits] = useState<{ discountCaps: Record<string, number>; maxDiscount?: number; amcPct: number; attachMaxMb?: number } | null>(null)
   const [orgId, setOrgId] = useState<number | null>(null)
   const [partners, setPartners] = useState<{ id: number; code: string; legal_name: string }[]>([])
   const [list, setList] = useState<any[]>([])
@@ -142,13 +458,14 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
   const [termsEdited, setTermsEdited] = useState(false)
   const [showTerms, setShowTerms] = useState(false)
 
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const fileInput = useRef<HTMLInputElement | null>(null)
 
   const refresh = () => api.list().then(setList).catch(() => {})
   useEffect(() => {
     refresh()
     if (showPartnerPicker && api.partners) api.partners().then(setPartners).catch(() => {})
     api.limits().then(setLimits).catch(() => {})
+    api.specFields().then(setSpecFields).catch(() => {})
     api.termsList()
       .then(t => {
         setTerms(t)
@@ -169,19 +486,6 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
     return () => { cancelled = true }
   }, [termsName])
 
-  // Debounced preview — resolving is free, so it can run as they type.
-  useEffect(() => {
-    if (timer.current) clearTimeout(timer.current)
-    if (!kva.trim()) { setRes(null); return }
-    setResolving(true)
-    timer.current = setTimeout(async () => {
-      try { setRes(await api.resolve(kva)) }
-      catch (e: any) { setBanner(e.message) }
-      finally { setResolving(false) }
-    }, 400)
-    return () => { if (timer.current) clearTimeout(timer.current) }
-  }, [kva])
-
   const custTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     if (custTimer.current) clearTimeout(custTimer.current)
@@ -201,10 +505,11 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
       const r = await api.createCustomer({
         name: newCust.name.trim(), gstin: newCust.gstin.trim(),
         state: newCust.state.trim(), city: newCust.city.trim(),
+        entityType: newCust.entityType,
       })
       setPicked({ name: r.erpName, customer_name: newCust.name.trim(), gstin: newCust.gstin.trim() || null })
       setAddingCust(false)
-      setNewCust({ name: '', gstin: '', state: '', city: '' })
+      setNewCust({ name: '', gstin: '', state: '', city: '', entityType: 'Company' })
       setBanner(null)
     } catch (e: any) {
       if (e?.fields) setCustErrors(e.fields)
@@ -212,52 +517,100 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
     }
   }
 
+  const patchLine = (id: number, patch: Partial<LineState>) =>
+    setLines(ls => ls.map(l => (l.id === id ? { ...l, ...patch } : l)))
+
   const maxDiscount = limits?.maxDiscount
     ?? Math.max(0, ...Object.values(limits?.discountCaps ?? {}))
-  const machineAmt = (Number(res?.rate) || 0) * qty
 
-  // AMC is its own priced item now, so take the real figure rather than
-  // recomputing 10% here and risking a number the document will not carry.
-  const amcOption = res?.amcOptions?.find(o => o.years === amcYears)
-  const amcAmt = amcYears > 0 && amcOption?.rate ? Number(amcOption.rate) * qty : 0
-  const amcMissing = amcYears > 0 && !amcOption?.rate
+  const filled = lines.filter(l => l.kva.trim())
+  const totals = filled.reduce((acc, l) => {
+    const m = lineMaths(l)
+    return {
+      machine: acc.machine + m.machineAmt,
+      amc: acc.amc + m.amcAmt,
+      discount: acc.discount + m.discountValue,
+    }
+  }, { machine: 0, amc: 0, discount: 0 })
+  const netEstimate = totals.machine + totals.amc - totals.discount
 
-  // The discount applies to the MACHINE LINE only — never to the AMC.
-  const discNum = discountMode === 'pct' ? (Number(discountPct) || 0) : 0
-  const discAmtNum = discountMode === 'amount' ? (Number(discountAmt) || 0) : 0
-  const discountValue = discountMode === 'pct'
-    ? Math.round(machineAmt * discNum / 100)
-    : Math.round(discAmtNum)
-  const effectivePct = machineAmt > 0
-    ? Math.round((discountValue / machineAmt) * 10000) / 100
-    : 0
-  const overCap = effectivePct > maxDiscount
-  const netEstimate = machineAmt + amcAmt - discountValue
-
-  const canCreate = !!res?.resolved && !!picked && !busy && !overCap
+  const anyOverCap = filled.some(l => lineMaths(l).effectivePct > maxDiscount)
+  const allResolved = filled.length > 0 && filled.every(l => l.res?.resolved)
+  const canCreate = allResolved && !!picked && !busy && !anyOverCap
 
   const create = async () => {
     if (!canCreate) return
     setBusy(true); setBanner(null); setMade(null)
     try {
       const r = await api.create({
-        kva, qty,
-        rate: res?.rate ?? null,
+        lines: filled.map(l => ({
+          kva: l.kva,
+          qty: l.qty,
+          rate: l.res?.rate ?? null,
+          discountPct: l.discountMode === 'pct' && l.discountPct.trim() ? Number(l.discountPct) : null,
+          discountAmount: l.discountMode === 'amount' && l.discountAmt.trim() ? Number(l.discountAmt) : null,
+          amcYears: l.amcYears > 0 ? l.amcYears : null,
+          spec: Object.keys(l.spec).length ? l.spec : null,
+        })),
         customerErpName: picked!.name,
+        taxMode,
         ...(showPartnerPicker ? { orgId } : {}),
-        discountPct: discountMode === 'pct' && discountPct.trim() ? Number(discountPct) : null,
-        discountAmount: discountMode === 'amount' && discountAmt.trim() ? Number(discountAmt) : null,
-        amcYears: amcYears > 0 ? amcYears : null,
         termsTemplate: termsName || null,
         termsHtml: termsEdited && termsHtml.trim() ? termsHtml : null,
       })
       setMade(r.data ?? r)
-      setKva(''); setRes(null); setQty(1)
+      setLines([blankLine()])
       setPicked(null); setCustQuery(''); setCustHits([])
-      setDiscountPct(''); setDiscountAmt(''); setAmcYears(0)
+      setTaxMode('auto')
       setTermsEdited(false)
       refresh()
     } catch (e: any) { setBanner(e.message) } finally { setBusy(false) }
+  }
+
+  const openSend = async (erpName: string) => {
+    setBanner(null)
+    try {
+      const r = await api.recipients(erpName)
+      const attachments = r.attachments ?? []
+      setSendFor({
+        name: erpName,
+        to: r.to.join(', '),
+        cc: r.cc,
+        subject: r.suggestedSubject ?? `Quotation ${erpName} from SGT HydroEdge`,
+        message: r.suggestedMessage ?? '',
+        customerName: r.customerName,
+        provider: r.provider,
+        attachments,
+        // Everything already on the document is ticked: a file someone
+        // deliberately attached is one they meant the customer to have.
+        chosen: attachments.map(a => a.name),
+      })
+    } catch (e: any) { setBanner(e.message) }
+  }
+
+  const uploadAttachment = async (file: File) => {
+    if (!sendFor) return
+    setAttaching(true); setBanner(null)
+    try {
+      const a = await api.attach(sendFor.name, file)
+      setSendFor(x => x && {
+        ...x,
+        attachments: [...x.attachments, a],
+        chosen: [...x.chosen, a.name],
+      })
+    } catch (e: any) { setBanner(e.message) } finally { setAttaching(false) }
+  }
+
+  const removeAttachment = async (a: QuoteAttachment) => {
+    if (!sendFor) return
+    try {
+      await api.detach(sendFor.name, a.name)
+      setSendFor(x => x && {
+        ...x,
+        attachments: x.attachments.filter(f => f.name !== a.name),
+        chosen: x.chosen.filter(n => n !== a.name),
+      })
+    } catch (e: any) { setBanner(e.message) }
   }
 
   return (
@@ -275,13 +628,13 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
         }}>
           <div style={{
             backgroundColor: '#fff', borderRadius: 12, padding: 20,
-            width: '100%', maxWidth: 520, maxHeight: '86vh', overflowY: 'auto',
+            width: '100%', maxWidth: 560, maxHeight: '88vh', overflowY: 'auto',
           }}>
             <h3 style={{ margin: '0 0 3px', fontSize: 15.5, fontWeight: 700, color: INK }}>
               Send {sendFor.name}
             </h3>
             <p style={{ margin: '0 0 15px', fontSize: 12, color: MUTED }}>
-              The PDF is attached automatically.
+              The quotation PDF is attached automatically.
             </p>
 
             <F label="To" value={sendFor.to}
@@ -289,9 +642,7 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
                hint="Comma-separated for more than one." />
 
             <div style={{ marginBottom: 13 }}>
-              <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: MUTED, marginBottom: 5 }}>
-                Copied automatically
-              </label>
+              <label style={labelStyle}>Copied automatically</label>
               {sendFor.cc.length ? (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
                   {sendFor.cc.map(a => (
@@ -311,6 +662,83 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
             <F label="Subject" value={sendFor.subject}
                onChange={v => setSendFor(x => x && { ...x, subject: v })} />
 
+            <div style={{ marginBottom: 13 }}>
+              <label style={labelStyle}>Message</label>
+              <textarea
+                value={sendFor.message}
+                onChange={e => setSendFor(x => x && { ...x, message: e.target.value })}
+                rows={9}
+                spellCheck
+                style={{
+                  ...inputStyle(), fontFamily: 'ui-monospace, monospace',
+                  fontSize: 11.5, lineHeight: 1.55, resize: 'vertical',
+                }}
+              />
+              <div style={{ fontSize: 11, color: FAINT, marginTop: 3 }}>
+                HTML. Edit it freely — this is what the customer reads before
+                they open the PDF.
+              </div>
+            </div>
+
+            {/* ---- Extra documents ---------------------------------- */}
+            <div style={{ marginBottom: 15 }}>
+              <label style={labelStyle}>Attachments</label>
+              {sendFor.attachments.length === 0 && (
+                <div style={{ fontSize: 11.5, color: FAINT, marginBottom: 7 }}>
+                  Nothing extra yet. Add a spec sheet, a drawing, a certificate —
+                  it goes out with the quotation and stays on the document.
+                </div>
+              )}
+              {sendFor.attachments.map(a => {
+                const on = sendFor.chosen.includes(a.name)
+                return (
+                  <div key={a.name} style={{
+                    display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6,
+                    padding: '7px 9px', borderRadius: 7, border: `1px solid ${LINE}`,
+                    backgroundColor: on ? '#F7F4EA' : '#fff',
+                  }}>
+                    <input type="checkbox" checked={on}
+                      onChange={() => setSendFor(x => x && {
+                        ...x,
+                        chosen: on ? x.chosen.filter(n => n !== a.name) : [...x.chosen, a.name],
+                      })} />
+                    <Paperclip size={13} style={{ color: FAINT, flexShrink: 0 }} />
+                    <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: INK, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {a.fileName}
+                    </span>
+                    {a.sizeBytes != null && (
+                      <span style={{ fontSize: 11, color: FAINT, whiteSpace: 'nowrap' }}>
+                        {(a.sizeBytes / 1024).toFixed(0)} KB
+                      </span>
+                    )}
+                    <button type="button" onClick={() => removeAttachment(a)} title="Remove from the quotation"
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: FAINT, padding: 2, display: 'flex' }}>
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                )
+              })}
+              <input ref={fileInput} type="file" style={{ display: 'none' }}
+                onChange={e => {
+                  const f = e.target.files?.[0]
+                  e.target.value = ''
+                  if (f) uploadAttachment(f)
+                }} />
+              <button type="button" disabled={attaching} onClick={() => fileInput.current?.click()}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 5, marginTop: 4,
+                  padding: '7px 12px', fontSize: 12.5, fontFamily: 'inherit',
+                  border: `1px solid ${LINE}`, borderRadius: 7,
+                  cursor: attaching ? 'wait' : 'pointer', background: '#fff', color: MUTED,
+                }}>
+                <Plus size={14} /> {attaching ? 'Uploading…' : 'Attach a file'}
+              </button>
+              <div style={{ fontSize: 11, color: FAINT, marginTop: 5 }}>
+                Up to {limits?.attachMaxMb ?? 15} MB each. Unticked files stay on the
+                quotation but are not emailed.
+              </div>
+            </div>
+
             <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
               <button
                 disabled={sending || !sendFor.to.trim()}
@@ -320,10 +748,13 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
                   try {
                     const r = await api.send(sendFor.name, {
                       to: sendFor.to, subject: sendFor.subject,
+                      message: sendFor.message,
+                      attachments: sendFor.chosen,
                     })
                     setSent(
                       `${sendFor.name} sent to ${r.to.join(', ')}` +
                       (r.cc.length ? `, copied to ${r.cc.length}` : '') +
+                      (r.attached?.length ? `, with ${r.attached.length} attachment(s)` : '') +
                       (r.note ? ` — ${r.note}` : ''))
                     setSendFor(null)
                   } catch (e: any) { setBanner(e.message) } finally { setSending(false) }
@@ -376,7 +807,8 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
 
       <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 700, color: INK }}>Quotations</h1>
       <p style={{ margin: '0 0 16px', fontSize: 12.5, color: MUTED }}>
-        Enter the customer's DG rating; the matching GreenX model is selected automatically.
+        Enter the customer's DG rating; the matching GreenX model is selected
+        automatically. Add a machine for every set they need.
       </p>
 
       {banner && (
@@ -391,10 +823,11 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
             <Check size={16} /> {made.erpName} created in ERPNext
           </div>
           <div style={{ fontSize: 11.5, opacity: 0.9, marginTop: 4 }}>
-            {made.model} × {made.qty} · net {rupees(made.netTotal)}
+            {made.model} × {made.qty}
+            {made.lineCount > 1 ? ` and ${made.lineCount - 1} more machine${made.lineCount > 2 ? 's' : ''}` : ''}
+            {' · net '}{rupees(made.netTotal)}
             {' · GST '}{rupees(made.totalTax)} · total {rupees(made.grandTotal)}
             {made.totalCommission ? ` · commission ${rupees(made.totalCommission)}` : ''}
-            {made.customer?.matchedOn === 'created' ? ' · new customer created' : ''}
           </div>
           {made.taxWarning && (
             <div style={{
@@ -429,51 +862,66 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
         </div>
       )}
 
-      <div style={{ maxWidth: 620 }}>
-        <Card title="Machine">
-          <div style={{ display: 'flex', gap: 10 }}>
-            <div style={{ flex: 2 }}>
-              <F label="DG rating (kVA)" value={kva} onChange={setKva} placeholder="e.g. 70" type="number" />
-            </div>
-            <div style={{ flex: 1 }}>
-              <F label="Quantity" value={qty} onChange={v => setQty(Math.max(1, Number(v) || 1))} type="number" />
-            </div>
-          </div>
+      <div style={{ maxWidth: 660 }}>
+        <Card
+          title={lines.length > 1 ? `Machines (${lines.length})` : 'Machine'}
+          right={
+            <button type="button" onClick={() => setLines(ls => [...ls, blankLine()])}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 5,
+                padding: '6px 11px', fontSize: 12.5, fontFamily: 'inherit',
+                border: `1px solid ${LINE}`, borderRadius: 7, cursor: 'pointer',
+                background: '#fff', color: MUTED,
+              }}>
+              <Plus size={14} /> Add machine
+            </button>
+          }
+        >
+          {lines.map((l, i) => (
+            <MachineLine
+              key={l.id}
+              line={l}
+              index={i}
+              count={lines.length}
+              maxDiscount={maxDiscount}
+              specFields={specFields}
+              api={api}
+              onChange={patch => patchLine(l.id, patch)}
+              onRemove={() => setLines(ls => ls.filter(x => x.id !== l.id))}
+            />
+          ))}
 
-          {resolving && <div style={{ fontSize: 12, color: FAINT, marginBottom: 13 }}>Resolving…</div>}
-
-          {res && !resolving && (
-            res.resolved ? (
-              <div style={{ padding: '11px 12px', marginBottom: 13, borderRadius: 8, backgroundColor: '#F2F6F2', border: `1px solid #CFE0D4` }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13.5, fontWeight: 700, color: INK }}>
-                  <Zap size={14} /> {res.modelCode}
-                </div>
-                <div style={{ fontSize: 11.5, color: MUTED, marginTop: 3 }}>
-                  covers DG up to {res.coversUptoKva} kVA · GST {res.gstRate}%
-                </div>
-                <div style={{ fontSize: 15, fontWeight: 700, color: INK, marginTop: 6 }}>
-                  {rupees(res.rate)} <span style={{ fontSize: 11, fontWeight: 500, color: FAINT }}>
-                    per unit, ex-GST{qty > 1 ? ` · ${qty} units = ${rupees(Number(res.rate ?? 0) * qty)}` : ''}
-                  </span>
-                </div>
-                {res.rateSource === 'price_book' && (
-                  <div style={{ fontSize: 11, color: WARN_FG, marginTop: 5 }}>
-                    ERPNext has no price for this item — using the CRM price book.
+          {filled.length > 0 && (totals.discount > 0 || totals.amc > 0 || filled.length > 1) && (
+            <div style={{
+              marginBottom: 13, padding: '10px 12px', borderRadius: 7,
+              backgroundColor: '#F7F4EA', border: `1px solid ${LINE}`, fontSize: 12, color: INK,
+            }}>
+              {filled.map(l => {
+                const m = lineMaths(l)
+                return (
+                  <div key={l.id} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                    <span>{l.res?.resolved ? l.res.modelCode : `${l.kva} kVA`} × {l.qty}</span>
+                    <span>{rupees(m.machineAmt)}</span>
                   </div>
-                )}
-                {res.rateMismatch && (
-                  <div style={{ fontSize: 11, color: WARN_FG, marginTop: 5, display: 'flex', gap: 4 }}>
-                    <AlertCircle size={12} />
-                    ERPNext says {rupees(res.rate)}, the CRM price book says {rupees(res.priceBookMrp)}. ERPNext wins.
-                  </div>
-                )}
+                )
+              })}
+              {totals.discount > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 3, color: WARN_FG }}>
+                  <span>Less discount</span><span>− {rupees(totals.discount)}</span>
+                </div>
+              )}
+              {totals.amc > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 3 }}>
+                  <span>AMC</span><span>{rupees(totals.amc)}</span>
+                </div>
+              )}
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, paddingTop: 6, borderTop: `1px solid ${LINE}`, fontWeight: 700 }}>
+                <span>Net, before GST</span><span>{rupees(netEstimate)}</span>
               </div>
-            ) : (
-              <div style={{ padding: '11px 12px', marginBottom: 13, borderRadius: 8, backgroundColor: WARN_BG, color: WARN_FG, fontSize: 12.5, display: 'flex', gap: 6 }}>
-                <AlertCircle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
-                <span>{res.message}</span>
+              <div style={{ fontSize: 10.5, color: FAINT, marginTop: 4 }}>
+                Estimate — ERPNext computes the binding figures.
               </div>
-            )
+            </div>
           )}
         </Card>
 
@@ -501,7 +949,22 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
           ) : addingCust ? (
             <div style={{ marginBottom: 13, padding: 12, borderRadius: 8, border: `1px dashed ${LINE}`, backgroundColor: '#FCFBF7' }}>
               <div style={{ fontSize: 12.5, fontWeight: 700, color: INK, marginBottom: 10 }}>New customer</div>
-              <F label="Name" value={newCust.name} onChange={v => setNewCust(c => ({ ...c, name: v }))} />
+
+              <div style={{ marginBottom: 13 }}>
+                <label style={labelStyle}>They are</label>
+                <select value={newCust.entityType}
+                  onChange={e => setNewCust(c => ({ ...c, entityType: e.target.value }))}
+                  style={{ ...inputStyle(), appearance: 'auto' }}>
+                  <option value="Company">A company or firm</option>
+                  <option value="Individual">An individual</option>
+                </select>
+                <div style={{ fontSize: 11, color: FAINT, marginTop: 3 }}>
+                  Recorded as the customer type in ERPNext.
+                </div>
+              </div>
+
+              <F label={newCust.entityType === 'Individual' ? 'Full name' : 'Name'}
+                 value={newCust.name} onChange={v => setNewCust(c => ({ ...c, name: v }))} />
               {custErrors.name && <div style={{ fontSize: 11.5, color: DANGER, marginTop: -8, marginBottom: 10 }}>{custErrors.name}</div>}
               <F label="GSTIN" value={newCust.gstin} placeholder="27AAECC3132G1Z1"
                  onChange={v => setNewCust(c => ({ ...c, gstin: v.toUpperCase() }))} />
@@ -516,8 +979,8 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
               </div>
               {custErrors.state && <div style={{ fontSize: 11.5, color: DANGER, marginTop: -8, marginBottom: 10 }}>{custErrors.state}</div>}
               <div style={{ fontSize: 11, color: FAINT, marginBottom: 10 }}>
-                A GSTIN or a state is required — without one, GST cannot be worked out
-                and the quotation would go out with no tax.
+                Without a GSTIN, ERPNext cannot work out where they are — set the
+                GST below by hand, or the quotation goes out with no tax.
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button type="button" onClick={addCustomer} style={{
@@ -533,9 +996,7 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
             </div>
           ) : (
             <div style={{ marginBottom: 13 }}>
-              <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: MUTED, marginBottom: 5 }}>
-                Search existing customers
-              </label>
+              <label style={labelStyle}>Search existing customers</label>
               <input value={custQuery} onChange={e => setCustQuery(e.target.value)}
                 placeholder="Name or GSTIN — at least 2 characters" style={inputStyle()} />
               {custSearching && <div style={{ fontSize: 11.5, color: FAINT, marginTop: 5 }}>Searching…</div>}
@@ -572,113 +1033,45 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
               </div>
             </div>
           )}
+
+          {/* GST treatment. Derived by default; chosen when nothing can
+              derive it — an individual with no GSTIN and no address. */}
+          <div style={{ marginBottom: 13 }}>
+            <label style={labelStyle}>GST</label>
+            <select value={taxMode} onChange={e => setTaxMode(e.target.value as any)}
+              style={{ ...inputStyle(), appearance: 'auto' }}>
+              <option value="auto">Work it out from the customer's GSTIN</option>
+              <option value="in_state">CGST + SGST — same state as SGT</option>
+              <option value="out_state">IGST — another state</option>
+            </select>
+            <div style={{ fontSize: 11, color: FAINT, marginTop: 3 }}>
+              {taxMode === 'auto'
+                ? 'Uses the GSTIN or billing address ERPNext holds. Pick by hand if they have neither.'
+                : 'Chosen by hand — this overrides whatever ERPNext would have derived.'}
+            </div>
+          </div>
         </Card>
 
         {showPartnerPicker && (
           <Card title="Partner">
             <div style={{ marginBottom: 13 }}>
-              <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: MUTED, marginBottom: 5 }}>
-                Raised through
-              </label>
+              <label style={labelStyle}>Raised through</label>
               <select value={orgId ?? ''} onChange={e => setOrgId(e.target.value ? Number(e.target.value) : null)}
                 style={{ ...inputStyle(), appearance: 'auto' }}>
                 <option value="">SGT direct — no partner</option>
                 {partners.map(p => <option key={p.id} value={p.id}>{p.legal_name} ({p.code})</option>)}
               </select>
               <div style={{ fontSize: 11, color: FAINT, marginTop: 3 }}>
-                Sets the sales partner on the ERPNext quotation so their commission is computed.
+                Sets the sales partner on the ERPNext quotation so their commission is
+                computed, and prints their bank account as the one to pay.
               </div>
             </div>
           </Card>
         )}
 
-        <Card title="Commercials">
-          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-            <div style={{ flex: 1 }}>
-              <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: MUTED, marginBottom: 5 }}>
-                Discount on {res?.resolved ? res.modelCode : 'the unit'}
-              </label>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <select value={discountMode}
-                  onChange={e => { setDiscountMode(e.target.value as 'pct' | 'amount'); setDiscountPct(''); setDiscountAmt('') }}
-                  style={{ ...inputStyle(), appearance: 'auto', width: 92, flexShrink: 0 }}>
-                  <option value="pct">%</option>
-                  <option value="amount">₹</option>
-                </select>
-                {discountMode === 'pct' ? (
-                  <input type="number" value={discountPct} min={0} max={maxDiscount} step="0.5"
-                    onChange={e => setDiscountPct(e.target.value)}
-                    placeholder="0" style={inputStyle(overCap)} />
-                ) : (
-                  <input type="number" value={discountAmt} min={0} step="1000"
-                    onChange={e => setDiscountAmt(e.target.value)}
-                    placeholder="0" style={inputStyle(overCap)} />
-                )}
-              </div>
-              <div style={{ fontSize: 11, color: overCap ? DANGER : FAINT, marginTop: 3 }}>
-                {overCap
-                  ? `${effectivePct}% is over your ${maxDiscount}% limit — most you can give is ${rupees(Math.floor(machineAmt * maxDiscount / 100))}.`
-                  : discountMode === 'amount' && discountValue > 0
-                    ? `${effectivePct}% of the unit line. Limit ${maxDiscount}%.`
-                    : `Up to ${maxDiscount}%, on the unit only — never the AMC.`}
-              </div>
-            </div>
-
-            <div style={{ flex: 1 }}>
-              <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: MUTED, marginBottom: 5 }}>
-                AMC
-              </label>
-              <select value={amcYears} onChange={e => setAmcYears(Number(e.target.value))}
-                style={{ ...inputStyle(amcMissing), appearance: 'auto' }}>
-                <option value={0}>Not included</option>
-                {(res?.amcOptions ?? [{ years: 1 }, { years: 2 }, { years: 3 }] as any).map((o: any) => (
-                  <option key={o.years} value={o.years}>
-                    {o.years} year{o.years > 1 ? 's' : ''}{o.rate ? ` — ${rupees(o.rate)}` : ''}
-                  </option>
-                ))}
-              </select>
-              <div style={{ fontSize: 11, color: amcMissing ? DANGER : FAINT, marginTop: 3 }}>
-                {amcMissing
-                  ? 'No price in ERPNext for this AMC — run the AMC matrix script.'
-                  : 'Priced per model. Not discounted.'}
-              </div>
-            </div>
-          </div>
-
-          {res?.resolved && (discountValue > 0 || amcAmt > 0) && (
-            <div style={{
-              marginTop: 13, marginBottom: 13, padding: '10px 12px', borderRadius: 7,
-              backgroundColor: '#F7F4EA', border: `1px solid ${LINE}`, fontSize: 12, color: INK,
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span>{res.modelCode} × {qty}</span><span>{rupees(machineAmt)}</span>
-              </div>
-              {discountValue > 0 && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 3, color: WARN_FG }}>
-                  <span>Less discount ({effectivePct}%)</span><span>− {rupees(discountValue)}</span>
-                </div>
-              )}
-              {amcAmt > 0 && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 3 }}>
-                  <span>AMC · {amcYears} yr{amcYears > 1 ? 's' : ''}{qty > 1 ? ` × ${qty}` : ''}</span>
-                  <span>{rupees(amcAmt)}</span>
-                </div>
-              )}
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, paddingTop: 6, borderTop: `1px solid ${LINE}`, fontWeight: 700 }}>
-                <span>Net, before GST</span><span>{rupees(netEstimate)}</span>
-              </div>
-              <div style={{ fontSize: 10.5, color: FAINT, marginTop: 4 }}>
-                Estimate — ERPNext computes the binding figures.
-              </div>
-            </div>
-          )}
-        </Card>
-
         <Card title="Terms and conditions">
           <div style={{ marginBottom: 13 }}>
-            <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: MUTED, marginBottom: 5 }}>
-              Template
-            </label>
+            <label style={labelStyle}>Template</label>
             <select
               value={termsName}
               onChange={e => { setTermsName(e.target.value); setTermsEdited(false) }}
@@ -759,7 +1152,9 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
           backgroundColor: canCreate ? INK : '#D8D3C4',
           color: canCreate ? '#fff' : '#8C887E',
         }}>
-          {busy ? 'Creating in ERPNext…' : 'Create quotation'}
+          {busy
+            ? 'Creating in ERPNext…'
+            : `Create quotation${filled.length > 1 ? ` · ${filled.length} machines` : ''}`}
         </button>
 
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 10 }}>
@@ -798,6 +1193,7 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
                     </div>
                     <div style={{ fontSize: 11.5, color: MUTED, marginTop: 2 }}>
                       {q.erp_name} · {q.model_code}{q.qty > 1 ? ` × ${q.qty}` : ''}
+                      {q.line_count > 1 ? ` +${q.line_count - 1} more` : ''}
                       {q.input_kva ? ` · ${Number(q.input_kva)} kVA` : ''}
                       {q.org_code ? ` · ${q.org_code}` : ' · SGT direct'}
                       {q.mine === false && q.raised_by_name ? ` · ${q.raised_by_name}` : ''}
@@ -815,39 +1211,19 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
                       try { setPdfFor({ name: q.erp_name, url: await api.pdfUrl(q.erp_name) }) }
                       catch (e: any) { setBanner(e.message) }
                     }}
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: MUTED, fontSize: 11.5, fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <Eye size={13} /> Preview
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 5,
+                      background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                      color: MUTED, fontSize: 12, fontFamily: 'inherit',
+                    }}>
+                    <FileText size={13} /> Preview
                   </button>
-                  <button type="button"
-                    onClick={async () => {
-                      setBanner(null)
-                      try {
-                        const url = await api.pdfUrl(q.erp_name)
-                        const a = document.createElement('a')
-                        a.href = url; a.download = `${q.erp_name}.pdf`
-                        document.body.appendChild(a); a.click(); a.remove()
-                        setTimeout(() => URL.revokeObjectURL(url), 30000)
-                      } catch (e: any) { setBanner(e.message) }
-                    }}
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: MUTED, fontSize: 11.5, fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <Download size={13} /> Download
-                  </button>
-                  <button type="button"
-                    onClick={async () => {
-                      setBanner(null); setSent(null)
-                      try {
-                        const r = await api.recipients(q.erp_name)
-                        setSendFor({
-                          name: q.erp_name,
-                          to: r.to.join(', '),
-                          cc: r.cc,
-                          customerName: r.customerName,
-                          provider: r.provider,
-                          subject: `Quotation ${q.erp_name} from SGT HydroEdge`,
-                        })
-                      } catch (e: any) { setBanner(e.message) }
-                    }}
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: MUTED, fontSize: 11.5, fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <button type="button" onClick={() => openSend(q.erp_name)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 5,
+                      background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                      color: MUTED, fontSize: 12, fontFamily: 'inherit',
+                    }}>
                     <Send size={13} /> Send
                   </button>
                 </div>

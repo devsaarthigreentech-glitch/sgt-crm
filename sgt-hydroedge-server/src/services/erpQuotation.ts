@@ -26,6 +26,7 @@
 // =====================================================================
 
 import { erpFetch } from './erpLimit.js';
+import { renderSpecHtml, type ProductSpec } from '../domain/quoteSpec.js';
 
 const BASE = process.env.ERPNEXT_URL?.replace(/\/+$/, '') ?? '';
 const KEY = process.env.ERPNEXT_API_KEY ?? '';
@@ -41,6 +42,13 @@ const TAX_OUT_STATE = process.env.ERP_TAX_OUT_STATE ?? 'Output GST Out-state - S
 const HOME_STATE_CODE = process.env.ERP_HOME_STATE_CODE ?? '';
 /** Terms applied when the caller does not choose one. */
 const DEFAULT_TERMS = process.env.ERP_DEALER_TERMS ?? 'GreenX Dealer Quotation Terms';
+/**
+ * How long a quotation stands. MUST match the Validity clause in
+ * src/db/erp_create_dealer_terms.ts — a document whose valid_till says
+ * one thing and whose printed terms say another is one the customer can
+ * argue with, and they would be right.
+ */
+const DEFAULT_VALID_DAYS = Number(process.env.ERP_QUOTE_VALID_DAYS ?? '30');
 
 function authHeaders() {
   return {
@@ -309,6 +317,12 @@ export interface CustomerInput {
   gstin?: string | null;
   state?: string | null;
   city?: string | null;
+  /**
+   * ERPNext's own distinction. A person buying in their own name is an
+   * Individual; defaulting everyone to Company put proprietors into the
+   * master data as firms that do not exist.
+   */
+  entityType?: 'Company' | 'Individual' | null;
 }
 
 export interface CustomerResult {
@@ -375,7 +389,7 @@ export async function ensureQuotationCustomer(input: CustomerInput): Promise<Cus
   const doc: Record<string, unknown> = {
     doctype: 'Customer',
     customer_name: name,
-    customer_type: 'Company',
+    customer_type: input.entityType === 'Individual' ? 'Individual' : 'Company',
     customer_group: CUSTOMER_GROUP,
     territory: TERRITORY,
   };
@@ -452,29 +466,72 @@ async function homeStateCode(): Promise<string | null> {
 }
 
 /**
- * In-state (CGST+SGST) when the customer's state code matches SGT's,
- * inter-state (IGST) otherwise. When neither GSTIN is known we cannot
- * tell, so we return null and let ERPNext apply its own default rather
- * than guess a tax treatment.
+ * Which GST applies: CGST+SGST when the customer is in SGT's own state,
+ * IGST otherwise.
+ *
+ * `mode` lets the caller decide instead of deriving it. That is not a
+ * convenience — it is the only way to tax a customer ERPNext cannot place.
+ * An individual buyer with no GSTIN and no address has no state code
+ * anywhere, and the derived path can only return null, which produces a
+ * quotation with no GST on it at all. Someone who knows where the customer
+ * is picks it, and `tax_mode` on our mirror records that they did.
+ *
+ * 'auto' derives, and still returns null when nothing knows the state.
  */
-export async function pickTaxTemplate(customerStateCodeValue?: string | null): Promise<string | null> {
+export type TaxMode = 'auto' | 'in_state' | 'out_state';
+
+export async function pickTaxTemplate(
+  customerStateCodeValue?: string | null,
+  mode: TaxMode = 'auto',
+): Promise<string | null> {
+  if (mode === 'in_state') return TAX_IN_STATE;
+  if (mode === 'out_state') return TAX_OUT_STATE;
   const home = await homeStateCode();
   const cust = String(customerStateCodeValue ?? '').trim();
   if (!home || cust.length !== 2) return null;
   return cust === home ? TAX_IN_STATE : TAX_OUT_STATE;
 }
 
-export interface CreateQuotationInput {
-  /** An ERPNext Customer that already exists. Never created here. */
-  customerErpName: string;
+/**
+ * One machine on the quotation, with its own price, discount and AMC.
+ *
+ * A plant room is rarely one set. Quoting three ratings used to mean
+ * three quotations, so the customer compared three documents and the
+ * commercial terms were agreed three times.
+ */
+export interface CreateQuotationLine {
   itemCode: string;
   qty: number;
   /** Omit to let ERPNext price it from the selling price list. */
   rate?: string | number | null;
+  /**
+   * Discount on THIS line only, already checked against the caller's cap.
+   * Per line rather than per document, so it never silently discounts a
+   * sibling machine or an AMC alongside it.
+   */
+  discountPct?: number | null;
+  /** PER UNIT, in rupees — ERPNext's `discount_amount` is per unit. */
+  discountAmountPerUnit?: number | null;
+  /** An AMC line for this machine. Priced by ERPNext from its Item Price. */
+  amc?: { itemCode: string; qty: number } | null;
+  /** Optional specification, printed under the line. */
+  spec?: ProductSpec | null;
+}
+
+export interface CreateQuotationInput {
+  /** An ERPNext Customer that already exists. Never created here. */
+  customerErpName: string;
+  /** At least one. Order is preserved on the document. */
+  lines: CreateQuotationLine[];
   /** Partner code, e.g. EDINGX001-SS01. Omitted for a direct SGT quote. */
   salesPartner?: string | null;
   commissionRate?: number | null;
   validDays?: number;
+  /**
+   * Override the derived CGST+SGST / IGST decision. See pickTaxTemplate —
+   * the only way to tax a customer whose state nothing knows.
+   */
+  taxMode?: TaxMode;
   /**
    * Who actually raised this, for the custom attribution fields.
    * ERPNext's own `owner` is always the API key's user, so it cannot
@@ -489,20 +546,13 @@ export interface CreateQuotationInput {
     address?: string | null;
     contact?: string | null;
     gstin?: string | null;
+    /**
+     * Where the customer pays. SGT no longer collects directly — the
+     * partner does — so the account has to be ON the document the
+     * customer is given, not in a follow-up mail.
+     */
+    bank?: string | null;
   } | null;
-  /**
-   * Discount on the MACHINE LINE only, already checked against the
-   * caller's cap. Applied per line rather than to the document, so it
-   * never silently discounts the AMC alongside it.
-   */
-  discountPct?: number | null;
-  /**
-   * PER UNIT, in rupees. ERPNext's `discount_amount` field is per unit,
-   * not per line — the route divides the entered figure by quantity.
-   */
-  discountAmountPerUnit?: number | null;
-  /** An AMC line. Priced by ERPNext from its own Item Price. */
-  amc?: { itemCode: string; qty: number } | null;
   /** Terms template name. Falls back to the configured default. */
   termsTemplate?: string | null;
   /** Overrides the template's text for this quotation only. */
@@ -516,6 +566,8 @@ export interface CreateQuotationResult {
   grandTotal: string | null;
   discountAmount: string | null;
   taxTemplate: string | null;
+  /** Whether the tax was derived or chosen. Stored on the mirror. */
+  taxMode: TaxMode;
   termsTemplate: string | null;
   termsWarning: string | null;
   totalTax: string | null;
@@ -529,9 +581,9 @@ export interface CreateQuotationResult {
  * The discount fields for a quotation line. Which combination works is
  * not obvious and is not symmetrical — see the note at the call site.
  */
-function discountFields(input: CreateQuotationInput): Record<string, number> {
-  const list = Number(input.rate ?? 0);
-  const perUnit = Number(input.discountAmountPerUnit ?? 0);
+function discountFields(line: CreateQuotationLine): Record<string, number> {
+  const list = Number(line.rate ?? 0);
+  const perUnit = Number(line.discountAmountPerUnit ?? 0);
 
   if (perUnit > 0 && list > 0) {
     const rate = Math.round((list - perUnit) * 100) / 100;
@@ -541,23 +593,81 @@ function discountFields(input: CreateQuotationInput): Record<string, number> {
       rate: rate < 0 ? 0 : rate,
     };
   }
-  if (input.discountPct && input.discountPct > 0) {
-    return { discount_percentage: input.discountPct };
+  if (line.discountPct && line.discountPct > 0) {
+    return { discount_percentage: line.discountPct };
   }
   return {};
+}
+
+/**
+ * One machine line, plus its AMC when there is one.
+ *
+ * The AMC follows its machine rather than being collected at the end of
+ * the document: on a three-set quotation the customer has to be able to
+ * see which cover belongs to which set.
+ */
+function itemRows(line: CreateQuotationLine): Record<string, unknown>[] {
+  const specHtml = renderSpecHtml(line.spec);
+  return [
+    {
+      item_code: line.itemCode,
+      qty: line.qty,
+      ...(line.rate != null && line.rate !== '' ? { price_list_rate: Number(line.rate) } : {}),
+      // How ERPNext wants a line discount, established by probing a real
+      // site rather than reasoning about it:
+      //
+      //   percentage -> price_list_rate + discount_percentage. ERPNext
+      //                 derives rate and discount_amount itself.
+      //   amount     -> price_list_rate + discount_amount + rate. The
+      //                 rate MUST be sent: a bare discount_amount with no
+      //                 pricing rule is silently discarded and the line
+      //                 comes out at full price with the discount columns
+      //                 reading zero.
+      //
+      // Sending rate alongside the amount also keeps the exact rupee
+      // figure the user typed, instead of drifting through a rounded
+      // percentage (₹8,501 becoming ₹8,500.80).
+      ...discountFields(line),
+      // The specification, printed under the item name. Sent only when
+      // something was filled in — an empty description would replace the
+      // Item master's own text with nothing.
+      ...(specHtml ? { description: specHtml } : {}),
+      // india_compliance derives gst_treatment from the tax rows it finds.
+      // With none present it settles on "Nil-Rated" and zeroes the GST —
+      // which is how the first two quotations came out at 0% tax. GreenX is
+      // taxable at 18%, so say so rather than let it be inferred.
+      gst_treatment: 'Taxable',
+    },
+    // No rate: the AMC item carries its own Item Price, so ERPNext prices
+    // it and the list rate on the printed line equals the charge. It is
+    // deliberately NOT discounted — the discount is on the machine.
+    ...(line.amc
+      ? [{
+          item_code: line.amc.itemCode,
+          qty: line.amc.qty,
+          gst_treatment: 'Taxable',
+        }]
+      : []),
+  ];
 }
 
 export async function createQuotation(input: CreateQuotationInput): Promise<CreateQuotationResult> {
   if (!BASE || !KEY || !SECRET) throw new Error('ERPNext is not configured on this server');
 
+  if (!input.lines?.length) throw new Error('A quotation needs at least one line');
+
   const customer: CustomerResult = { erpName: input.customerErpName, matchedOn: 'name' };
   // Ask ERPNext where this customer is. The customer record is authoritative;
-  // there is no form field to fall back on any more.
-  const custState = await customerStateCode(customer.erpName, null);
-  const taxTemplate = await pickTaxTemplate(custState);
+  // there is no form field to fall back on any more. A caller who chose the
+  // tax by hand skips the lookup entirely.
+  const taxMode = input.taxMode ?? 'auto';
+  const custState = taxMode === 'auto'
+    ? await customerStateCode(customer.erpName, null)
+    : null;
+  const taxTemplate = await pickTaxTemplate(custState, taxMode);
 
   const today = new Date().toISOString().slice(0, 10);
-  const validDays = input.validDays ?? 15;
+  const validDays = input.validDays ?? DEFAULT_VALID_DAYS;
   const validTill = new Date(Date.now() + validDays * 86400000).toISOString().slice(0, 10);
 
   const doc: Record<string, unknown> = {
@@ -569,43 +679,7 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
     selling_price_list: SELLING_PRICE_LIST,
     transaction_date: today,
     valid_till: validTill,
-    items: [
-      {
-        item_code: input.itemCode,
-        qty: input.qty,
-        ...(input.rate != null && input.rate !== '' ? { price_list_rate: Number(input.rate) } : {}),
-        // How ERPNext wants a line discount, established by probing a real
-        // site rather than reasoning about it:
-        //
-        //   percentage -> price_list_rate + discount_percentage. ERPNext
-        //                 derives rate and discount_amount itself.
-        //   amount     -> price_list_rate + discount_amount + rate. The
-        //                 rate MUST be sent: a bare discount_amount with no
-        //                 pricing rule is silently discarded and the line
-        //                 comes out at full price with the discount columns
-        //                 reading zero.
-        //
-        // Sending rate alongside the amount also keeps the exact rupee
-        // figure the user typed, instead of drifting through a rounded
-        // percentage (₹8,501 becoming ₹8,500.80).
-        ...(discountFields(input)),
-        // india_compliance derives gst_treatment from the tax rows it finds.
-        // With none present it settles on "Nil-Rated" and zeroes the GST —
-        // which is how the first two quotations came out at 0% tax. GreenX is
-        // taxable at 18%, so say so rather than let it be inferred.
-        gst_treatment: 'Taxable',
-      },
-      // No rate: the AMC item carries its own Item Price, so ERPNext prices
-      // it and the list rate on the printed line equals the charge. It is
-      // deliberately NOT discounted — the discount is on the machine.
-      ...(input.amc
-        ? [{
-            item_code: input.amc.itemCode,
-            qty: input.amc.qty,
-            gst_treatment: 'Taxable',
-          }]
-        : []),
-    ],
+    items: input.lines.flatMap(itemRows),
   };
 
 
@@ -623,6 +697,7 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
   if (input.partner?.address) doc.custom_partner_address = input.partner.address;
   if (input.partner?.contact) doc.custom_partner_contact = input.partner.contact;
   if (input.partner?.gstin) doc.custom_partner_gstin = input.partner.gstin;
+  if (input.partner?.bank) doc.custom_partner_bank = input.partner.bank;
 
   // Naming the template is not enough over REST: the client-side fetch that
   // expands it into rows only runs in the UI. The rows must be sent.
@@ -640,9 +715,9 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
     }
   } else {
     taxWarning =
-      `Could not determine ${customer.erpName}'s state — no GSTIN on the customer, `
-      + `none on their addresses, and none entered here. Add a GSTIN or a billing `
-      + `address in ERPNext, or type one on the quote, so GST can be applied.`;
+      `Could not determine ${customer.erpName}'s state — no GSTIN on the customer `
+      + `and none on their addresses. Add a GSTIN or a billing address in ERPNext, `
+      + `or choose CGST+SGST / IGST by hand on the quote, so GST can be applied.`;
   }
 
   // ---- Terms ----------------------------------------------------------
@@ -683,6 +758,7 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
     grandTotal: created.grand_total != null ? String(created.grand_total) : null,
     discountAmount: created.discount_amount != null ? String(created.discount_amount) : null,
     taxTemplate,
+    taxMode,
     termsTemplate: doc.tc_name ? String(doc.tc_name) : null,
     termsWarning,
     totalTax: created.total_taxes_and_charges != null
@@ -696,4 +772,141 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
 /** Read a quotation back from ERPNext — the authoritative figures. */
 export async function fetchQuotation(erpName: string) {
   return getDoc('Quotation', erpName);
+}
+
+// =====================================================================
+// Attachments.
+//
+// Anything the customer should receive ALONGSIDE the quotation PDF — a
+// spec sheet, a layout drawing, a compliance certificate.
+//
+// They are stored as ERPNext Files attached to the Quotation itself,
+// not in our own vault, for two reasons that both matter:
+//
+//   1. The mail is sent BY ERPNext (frappe...email.make), and its
+//      `attachments` argument takes File names. A file living anywhere
+//      else would have to be pushed through the webhook path only.
+//   2. "What exactly did we send this customer" stays answerable from
+//      the document, next to the Communication that recorded the send.
+//
+// Private on purpose: an ERPNext public file is world-readable to
+// anyone with the URL, and these are customer documents.
+// =====================================================================
+
+export interface QuotationAttachment {
+  /** The File doctype name — what email.make wants. */
+  name: string;
+  fileName: string;
+  fileUrl: string;
+  sizeBytes: number | null;
+  createdAt: string | null;
+}
+
+function attachmentRow(f: any): QuotationAttachment {
+  return {
+    name: String(f.name),
+    fileName: String(f.file_name ?? f.name),
+    fileUrl: String(f.file_url ?? ''),
+    sizeBytes: f.file_size != null ? Number(f.file_size) : null,
+    createdAt: f.creation ?? null,
+  };
+}
+
+export async function listQuotationAttachments(erpName: string): Promise<QuotationAttachment[]> {
+  const rows = await get('File', {
+    filters: [
+      ['attached_to_doctype', '=', 'Quotation'],
+      ['attached_to_name', '=', erpName],
+    ],
+    fields: ['name', 'file_name', 'file_url', 'file_size', 'creation'],
+    limit_page_length: 50,
+    order_by: 'creation asc',
+  });
+  return rows.map(attachmentRow);
+}
+
+/**
+ * Upload one file and attach it to the quotation.
+ *
+ * Uses /api/method/upload_file with multipart, which is the only
+ * endpoint that both stores the bytes and creates the File row. Posting
+ * to /api/resource/File with base64 `content` also works, but silently
+ * truncates on some Frappe versions when the payload is large.
+ */
+export async function uploadQuotationAttachment(
+  erpName: string,
+  fileName: string,
+  contentType: string,
+  bytes: Buffer,
+): Promise<QuotationAttachment> {
+  if (!BASE || !KEY || !SECRET) throw new Error('ERPNext is not configured on this server');
+
+  const form = new FormData();
+  form.append('file', new Blob([new Uint8Array(bytes)], { type: contentType || 'application/octet-stream' }), fileName);
+  form.append('doctype', 'Quotation');
+  form.append('docname', erpName);
+  form.append('is_private', '1');
+
+  // No Content-Type header of our own: fetch must set the multipart
+  // boundary, and overriding it produces an empty upload with no error.
+  const res = await erpFetch(`${BASE}/api/method/upload_file`, {
+    method: 'POST',
+    headers: { Authorization: `token ${KEY}:${SECRET}`, Accept: 'application/json' },
+    body: form,
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    let msg = text.slice(0, 400);
+    try {
+      const j = JSON.parse(text);
+      msg = j.exception ?? j._server_messages ?? msg;
+    } catch { /* keep the raw text */ }
+    throw new Error(`ERPNext rejected the attachment: ${String(msg).slice(0, 300)}`);
+  }
+  const data = JSON.parse(text).message ?? JSON.parse(text).data;
+  if (!data?.name) throw new Error('ERPNext accepted the upload but returned no File record');
+  return attachmentRow(data);
+}
+
+/**
+ * Detach a file. Scoped by the caller: this checks the file really is on
+ * THIS quotation before deleting, so a guessed File name cannot remove
+ * an attachment from someone else's document.
+ */
+export async function deleteQuotationAttachment(
+  erpName: string, fileDocName: string,
+): Promise<boolean> {
+  const mine = await get('File', {
+    filters: [
+      ['name', '=', fileDocName],
+      ['attached_to_doctype', '=', 'Quotation'],
+      ['attached_to_name', '=', erpName],
+    ],
+    fields: ['name'], limit_page_length: 1,
+  });
+  if (!mine.length) return false;
+
+  const res = await erpFetch(
+    `${BASE}/api/resource/File/${encodeURIComponent(fileDocName)}`,
+    { method: 'DELETE', headers: authHeaders() });
+  if (!res.ok) {
+    throw new Error(`ERPNext could not delete the attachment (HTTP ${res.status})`);
+  }
+  return true;
+}
+
+/**
+ * The bytes of an attached file. Only used by the n8n mail path, which
+ * has to carry the attachments itself — ERPNext is not doing the sending
+ * there, so it cannot attach them.
+ */
+export async function fetchAttachmentBytes(
+  fileUrl: string,
+): Promise<ArrayBuffer> {
+  const url = fileUrl.startsWith('http') ? fileUrl : `${BASE}${fileUrl}`;
+  const res = await erpFetch(url, {
+    headers: { Authorization: `token ${KEY}:${SECRET}` },
+  });
+  if (!res.ok) throw new Error(`Could not read ${fileUrl} (HTTP ${res.status})`);
+  return res.arrayBuffer();
 }

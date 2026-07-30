@@ -1,7 +1,9 @@
 // Quotation API for SGT staff. The portal has its own adapter pointing at
 // /portal/quotes — same shape, so QuoteScreen serves both.
 
-import type { QuoteApi, Resolution } from './QuoteScreen'
+import type {
+  QuoteApi, Resolution, SpecField, QuoteAttachment, RecipientPlan,
+} from './QuoteScreen'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3004/api/v1'
 
@@ -50,17 +52,57 @@ export function makeQuoteApi(prefix: string, withPartners: boolean): QuoteApi {
     list: () => request<{ data: any[] }>(`${prefix}`).then(r => r.data),
 
     recipients: (erpName: string) =>
-      request<{ data: { to: string[]; cc: string[]; customerName: string; provider: string } }>(
+      request<{ data: RecipientPlan }>(
         `${prefix}/${encodeURIComponent(erpName)}/recipients`).then(r => r.data),
 
-    send: (erpName: string, body: { to?: string; subject?: string; message?: string }) =>
-      request<{ data: { provider: string; to: string[]; cc: string[]; loggedToErp: boolean; note?: string } }>(
+    send: (erpName: string, body: {
+      to?: string; subject?: string; message?: string; attachments?: string[]
+    }) =>
+      request<{ data: { provider: string; to: string[]; cc: string[]; loggedToErp: boolean; note?: string; attached?: string[] } }>(
         `${prefix}/${encodeURIComponent(erpName)}/send`,
         { method: 'POST', body: JSON.stringify(body) }).then(r => r.data),
 
     limits: () =>
-      request<{ data: { discountCaps: Record<string, number>; maxDiscount?: number; amcPct: number } }>(
+      request<{ data: { discountCaps: Record<string, number>; maxDiscount?: number; amcPct: number; attachMaxMb?: number } }>(
         `${prefix}/limits`).then(r => r.data),
+
+    /** The optional product-spec form, defined once on the server. */
+    specFields: () =>
+      request<{ data: SpecField[] }>(`${prefix}/spec-fields`).then(r => r.data),
+
+    attachments: (erpName: string) =>
+      request<{ data: QuoteAttachment[] }>(
+        `${prefix}/${encodeURIComponent(erpName)}/attachments`).then(r => r.data),
+
+    /**
+     * Base64 rather than multipart: the server takes JSON on this route
+     * and raises its own body limit to suit, so there is no upload
+     * pipeline to maintain on either side for what is a handful of PDFs.
+     */
+    attach: (erpName: string, file: File) =>
+      new Promise<QuoteAttachment>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onerror = () => reject(new Error(`Could not read ${file.name}`))
+        reader.onload = () => {
+          const url = String(reader.result ?? '')
+          request<{ data: QuoteAttachment }>(
+            `${prefix}/${encodeURIComponent(erpName)}/attachments`,
+            {
+              method: 'POST',
+              body: JSON.stringify({
+                filename: file.name,
+                contentType: file.type || 'application/octet-stream',
+                base64: url.slice(url.indexOf(',') + 1),
+              }),
+            }).then(r => resolve(r.data), reject)
+        }
+        reader.readAsDataURL(file)
+      }),
+
+    detach: (erpName: string, fileName: string) =>
+      request<{ data: { removed: string } }>(
+        `${prefix}/${encodeURIComponent(erpName)}/attachments/${encodeURIComponent(fileName)}`,
+        { method: 'DELETE' }).then(r => r.data),
 
     termsList: () =>
       request<{ data: { templates: string[]; default: string } }>(`${prefix}/terms`)

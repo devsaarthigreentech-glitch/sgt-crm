@@ -6,6 +6,12 @@
 // dealer may not be GST-registered or have a company bank account yet, and
 // blocking on that means they never get onboarded.
 //
+// A dealer may be a PERSON rather than a firm. Pick "an individual" and the
+// firm-shaped questions stop being asked: no trade name, no industries
+// list. Their address becomes required instead, because for a person it is
+// the only thing that locates them. The required set is decided by the
+// server (domain/partnerValidation.ts) — this form only mirrors it.
+//
 // Optional is not the same as unchecked: a supplied GSTIN, PAN, IFSC, PIN or
 // email is still validated. Wrong data that looks real is worse than none.
 //
@@ -239,6 +245,7 @@ export default function DealerRegistration() {
 
   // ---- Form ---------------------------------------------------------------
   const editable = form.status === 'draft'
+  const individual = (form.entity_type ?? 'company') === 'individual'
   return (
     <div style={{ backgroundColor: PAPER, height: '100%', overflowY: 'auto' }}>
       <div style={{
@@ -284,9 +291,35 @@ export default function DealerRegistration() {
             </div>
           </Card>
 
-          <Card title="Business">
-            <Field label="Business name" required value={form.legal_name} onChange={v => set('legal_name', v)} error={errors.legal_name} />
-            <Field label="Trade name" value={form.trade_name} onChange={v => set('trade_name', v)} />
+          <Card title="Company or individual" hint="A dealer can be a firm, or a person trading in their own name.">
+            <div style={{ marginBottom: 13 }}>
+              <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: MUTED, marginBottom: 5 }}>
+                They are<span style={{ color: DANGER }}> *</span>
+              </label>
+              <select value={form.entity_type ?? 'company'} onChange={e => set('entity_type', e.target.value)}
+                style={{ ...inputStyle(!!errors.entity_type), appearance: 'auto' }}>
+                <option value="company">A company or firm</option>
+                <option value="individual">An individual</option>
+              </select>
+              <div style={{ fontSize: 11, color: FAINT, marginTop: 4 }}>
+                {individual
+                  ? 'Name, contact and address are all that is needed. GST and bank details stay optional.'
+                  : 'The full business form. GST and bank details are still optional.'}
+              </div>
+              {errors.entity_type && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 4, fontSize: 11.5, color: DANGER }}>
+                  <AlertCircle size={12} /> {errors.entity_type}
+                </div>
+              )}
+            </div>
+          </Card>
+
+          <Card title={individual ? 'Person' : 'Business'}>
+            <Field label={individual ? 'Full name' : 'Business name'} required
+              value={form.legal_name} onChange={v => set('legal_name', v)} error={errors.legal_name} />
+            {!individual && (
+              <Field label="Trade name" value={form.trade_name} onChange={v => set('trade_name', v)} />
+            )}
           </Card>
 
           <Card title="Contact" hint="The person you deal with.">
@@ -295,6 +328,9 @@ export default function DealerRegistration() {
             <Field label="Email" type="email" value={form.contact_email} onChange={v => set('contact_email', v)} error={errors.contact_email} />
           </Card>
 
+          {/* A question about a firm's book of business. Not put to a person —
+              and the server does not require it of one either. */}
+          {!individual && (
           <Card title="Industries of operation" hint="Which sectors they sell into.">
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 13 }}>
               {(ref?.industries ?? []).map(o => {
@@ -319,6 +355,7 @@ export default function DealerRegistration() {
               </div>
             )}
           </Card>
+          )}
 
           <Card title="Tax details" hint="Optional — leave blank if they are not registered yet.">
             <Field label="GSTIN" value={form.gstin} placeholder="08AABCC1234D1ZB" onChange={onGstin} error={errors.gstin} />
@@ -336,17 +373,35 @@ export default function DealerRegistration() {
             <Field label="PAN" value={form.pan} placeholder="AABCC1234D" onChange={v => set('pan', v.toUpperCase())} error={errors.pan} />
           </Card>
 
-          <Card title="Location" hint="Optional.">
-            <Field label="Address" value={form.address_line1} onChange={v => set('address_line1', v)} />
-            <Field label="City" value={form.city} onChange={v => set('city', v)} />
+          <Card title="Location"
+                hint={individual ? 'Required — it is what locates them.' : 'Optional.'}>
+            <Field label="Address" required={individual} value={form.address_line1}
+              onChange={v => set('address_line1', v)} error={errors.address_line1} />
+            <Field label="City" required={individual} value={form.city}
+              onChange={v => set('city', v)} error={errors.city} />
             <div style={{ marginBottom: 13 }}>
-              <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: MUTED, marginBottom: 5 }}>State</label>
-              <select value={form.state ?? ''} onChange={e => set('state', e.target.value)} style={{ ...inputStyle(), appearance: 'auto' }}>
+              <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: MUTED, marginBottom: 5 }}>
+                State{individual && <span style={{ color: DANGER }}> *</span>}
+              </label>
+              <select value={form.state ?? ''} onChange={e => set('state', e.target.value)}
+                style={{ ...inputStyle(!!errors.state), appearance: 'auto' }}>
                 <option value="">Select…</option>
                 {(ref?.states ?? []).map(s => <option key={s.code} value={s.name}>{s.name} ({s.code})</option>)}
               </select>
+              {errors.state && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 4, fontSize: 11.5, color: DANGER }}>
+                  <AlertCircle size={12} /> {errors.state}
+                </div>
+              )}
             </div>
             <Field label="PIN code" value={form.pincode} onChange={v => set('pincode', v)} error={errors.pincode} />
+          </Card>
+
+          <Card title="Bank details" hint="Optional now, but needed before they can be paid — this account is printed on their quotations as the one the customer pays into.">
+            <Field label="Account holder" value={form.bank_account_name} onChange={v => set('bank_account_name', v)} />
+            <Field label="Account number" value={form.bank_account_number} onChange={v => set('bank_account_number', v)} />
+            <Field label="IFSC" value={form.bank_ifsc} placeholder="HDFC0001234" onChange={v => set('bank_ifsc', v.toUpperCase())} error={errors.bank_ifsc} />
+            <Field label="Bank" value={form.bank_name} onChange={v => set('bank_name', v)} />
           </Card>
 
           <Card title="Background" hint="Optional — useful when SGT reviews.">
@@ -365,7 +420,9 @@ export default function DealerRegistration() {
           </button>
         )}
         <p style={{ fontSize: 11, color: FAINT, textAlign: 'center', marginTop: 10 }}>
-          Saves as you type. Only name, contact and industries are required.
+          Saves as you type. {individual
+            ? 'Only name, contact and address are required.'
+            : 'Only name, contact and industries are required.'}
         </p>
       </div>
     </div>

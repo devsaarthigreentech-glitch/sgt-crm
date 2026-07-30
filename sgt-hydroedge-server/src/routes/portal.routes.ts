@@ -41,10 +41,13 @@ import {
 } from '../domain/quoteDiscount.js'
 import {
   itemPrice, listTermsTemplates, fetchTerms, searchCustomers, fetchQuotationPdf,
+  listQuotationAttachments, deleteQuotationAttachment,
 } from '../services/erpQuotation.js'
+import { SPEC_FIELDS } from '../domain/quoteSpec.js'
 import {
   performQuotation, createCustomerChecked, reconcileQuotations,
-  buildRecipients, performSend, type QuoteBody,
+  buildRecipients, performSend, performAttach, ATTACH_MAX_BYTES,
+  type QuoteBody,
 } from './quotes.routes.js'
 import { mailProvider } from '../services/quoteMail.js'
 
@@ -207,8 +210,17 @@ export default async function portalRoutes(app: FastifyInstance) {
         maxDiscount: DISCOUNT_CAPS[actor],
         amcPct: AMC_PCT,
         amcTerms: AMC_TERMS,
+        attachMaxMb: Math.round(ATTACH_MAX_BYTES / 1048576),
       },
     })
+  })
+
+  // The same specification form the CRM gets — one definition, so a
+  // dealer's quotation carries the same fields as SGT's.
+  app.get('/quotes/spec-fields', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    return reply.send({ data: SPEC_FIELDS })
   })
 
   app.get('/quotes/customers', { preHandler: requireAuth }, async (req, reply) => {
@@ -246,6 +258,56 @@ export default async function portalRoutes(app: FastifyInstance) {
     }
     const r = await buildRecipients(erpName)
     return reply.send({ data: { ...r, provider: mailProvider() } })
+  })
+
+  // Attachments, scoped exactly like the PDF and the send: a partner may
+  // only touch a quotation from their own org tree.
+  app.get('/quotes/:erpName/attachments', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { erpName } = req.params as { erpName: string }
+    if (!await ownsQuotation(erpName, me.orgId)) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } })
+    }
+    return reply.send({ data: await listQuotationAttachments(erpName) })
+  })
+
+  app.post('/quotes/:erpName/attachments', {
+    preHandler: requireAuth,
+    bodyLimit: ATTACH_MAX_BYTES * 2,
+  }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { erpName } = req.params as { erpName: string }
+    if (!await ownsQuotation(erpName, me.orgId)) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } })
+    }
+    try {
+      const r = await performAttach(erpName, (req.body ?? {}) as Record<string, any>)
+      if (!r.ok) return reply.code(r.code).send(r.payload)
+      return reply.code(201).send(r.payload)
+    } catch (e: any) {
+      req.log.error({ err: e, erpName }, 'portal attachment upload failed')
+      return reply.code(502).send({
+        error: { code: 'attach_failed', message: String(e?.message ?? e).slice(0, 300) },
+      })
+    }
+  })
+
+  app.delete('/quotes/:erpName/attachments/:fileName', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { erpName, fileName } = req.params as { erpName: string; fileName: string }
+    if (!await ownsQuotation(erpName, me.orgId)) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } })
+    }
+    const gone = await deleteQuotationAttachment(erpName, fileName)
+    if (!gone) {
+      return reply.code(404).send({
+        error: { code: 'not_found', message: 'No such attachment on this quotation' },
+      })
+    }
+    return reply.send({ data: { removed: fileName } })
   })
 
   app.post('/quotes/:erpName/send', { preHandler: requireAuth }, async (req, reply) => {
@@ -315,7 +377,7 @@ export default async function portalRoutes(app: FastifyInstance) {
       `select q.id, q.erp_name, q.input_kva, q.model_code, q.qty, q.unit_rate,
               q.net_total, q.grand_total, q.commission_rate,
               q.customer_name, q.customer_state, q.status, q.created_at,
-              q.raised_by_name,
+              q.raised_by_name, q.line_count, q.tax_mode,
               o.code as org_code,
               coalesce(o.trade_name, o.legal_name) as org_name,
               (q.org_id = $1) as mine
@@ -340,7 +402,7 @@ export default async function portalRoutes(app: FastifyInstance) {
   // subtree) AND must not be the caller's own org, so a distributor cannot
   // edit themselves through this route.
   const DEALER_WRITABLE = [
-    'legal_name', 'trade_name', 'territory', 'gstin', 'pan',
+    'legal_name', 'trade_name', 'territory', 'gstin', 'pan', 'entity_type',
     'address_line1', 'address_line2', 'city', 'state', 'state_code', 'pincode',
     'contact_name', 'contact_designation', 'contact_mobile', 'contact_email',
     'bank_account_name', 'bank_account_number', 'bank_ifsc', 'bank_name', 'bank_branch',
@@ -355,6 +417,9 @@ export default async function portalRoutes(app: FastifyInstance) {
     const e: Record<string, string> = {}
     const s = (k: string) => (p[k] == null ? '' : String(p[k]).trim())
     if ('legal_name' in p && !s('legal_name')) e.legal_name = 'Name cannot be blank'
+    if ('entity_type' in p && !['company', 'individual'].includes(s('entity_type'))) {
+      e.entity_type = 'Choose Company or Individual'
+    }
     if (s('gstin')) {
       const g = inspectGstin(s('gstin'))
       if (!g.valid) e.gstin = g.message ?? 'GSTIN is not valid'
@@ -473,7 +538,7 @@ export default async function portalRoutes(app: FastifyInstance) {
   // =========================================================================
 
   const PORTAL_WRITABLE = [
-    'dealer_type',
+    'dealer_type', 'entity_type',
     'legal_name', 'trade_name', 'constitution', 'years_in_business',
     'gstin', 'pan', 'state_code',
     'address_line1', 'address_line2', 'city', 'state', 'pincode',

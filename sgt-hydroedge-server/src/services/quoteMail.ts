@@ -23,7 +23,10 @@
 // =====================================================================
 
 import { erpFetch } from './erpLimit.js';
-import { fetchQuotationPdf, quotePrintFormat } from './erpQuotation.js';
+import {
+  fetchQuotationPdf, quotePrintFormat, fetchAttachmentBytes,
+  type QuotationAttachment,
+} from './erpQuotation.js';
 
 const BASE = process.env.ERPNEXT_URL?.replace(/\/+$/, '') ?? '';
 const KEY = process.env.ERPNEXT_API_KEY ?? '';
@@ -38,6 +41,12 @@ export interface SendQuoteInput {
   cc: string[];
   subject: string;
   message: string;
+  /**
+   * Extra documents to send with the quotation PDF — a spec sheet, a
+   * drawing. Already attached to the Quotation in ERPNext; this is the
+   * subset the sender chose to include on THIS mail.
+   */
+  attachments?: QuotationAttachment[];
 }
 
 export interface SendQuoteResult {
@@ -135,6 +144,11 @@ async function sendViaErpNext(input: SendQuoteInput): Promise<SendQuoteResult> {
         print_format: printFormat,
         print_letterhead: 1,
         send_me_a_copy: 0,
+        // File doctype NAMES, not URLs — that is what email.make resolves.
+        // Frappe attaches these on top of the rendered print format.
+        ...(input.attachments?.length
+          ? { attachments: input.attachments.map(a => a.name) }
+          : {}),
       }),
     },
   );
@@ -162,8 +176,23 @@ async function sendViaN8n(input: SendQuoteInput): Promise<SendQuoteResult> {
       'QUOTE_MAIL_PROVIDER is n8n but QUOTE_MAIL_N8N_URL is not set.');
   }
   // The PDF is fetched here rather than in n8n: n8n would need an ERPNext
-  // credential to render it, and handing one out defeats the point.
+  // credential to render it, and handing one out defeats the point. The
+  // chosen attachments come the same way, and for the same reason.
   const pdf = await fetchQuotationPdf(input.erpName);
+  const extras: { filename: string; contentType: string; base64: string }[] = [];
+  for (const a of input.attachments ?? []) {
+    try {
+      const bytes = await fetchAttachmentBytes(a.fileUrl);
+      extras.push({
+        filename: a.fileName,
+        contentType: 'application/octet-stream',
+        base64: Buffer.from(bytes).toString('base64'),
+      });
+    } catch {
+      // One unreadable attachment must not block a quotation going out.
+      // The caller is told which made it, below.
+    }
+  }
   const res = await fetch(N8N_URL, {
     method: 'POST',
     headers: {
@@ -190,6 +219,9 @@ async function sendViaN8n(input: SendQuoteInput): Promise<SendQuoteResult> {
         contentType: 'application/pdf',
         base64: Buffer.from(pdf).toString('base64'),
       },
+      // Same encoding as `attachment`, and the same n8n caveat applies:
+      // each needs a "Convert to File" node before a mail node will take it.
+      attachments: extras,
     }),
   });
   if (!res.ok) {
@@ -197,20 +229,73 @@ async function sendViaN8n(input: SendQuoteInput): Promise<SendQuoteResult> {
       `n8n webhook returned ${res.status}: ${(await res.text()).slice(0, 250)}`);
   }
   const logged = await logCommunication(input, 'n8n');
+  const missed = (input.attachments?.length ?? 0) - extras.length;
+  const notes = [
+    logged ? null : 'the copy could not be logged against the quotation in ERPNext',
+    missed > 0 ? `${missed} attachment(s) could not be read and were not sent` : null,
+  ].filter(Boolean);
   return {
     provider: 'n8n',
     to: input.to,
     cc: input.cc,
     loggedToErp: logged,
-    note: logged
-      ? undefined
-      : 'Sent, but the copy could not be logged against the quotation in ERPNext.',
+    note: notes.length ? `Sent, but ${notes.join('; ')}.` : undefined,
   };
 }
 
 export async function sendQuotation(input: SendQuoteInput): Promise<SendQuoteResult> {
   if (!input.to.length) throw new Error('At least one recipient is required');
   return PROVIDER === 'n8n' ? sendViaN8n(input) : sendViaErpNext(input);
+}
+
+// ---------------------------------------------------------------------
+// The covering note.
+//
+// The old default was three flat lines that read like a system had
+// generated them, because one had. This is the letter a salesperson
+// would write: thanks them for the enquiry, says what is attached, and
+// asks for the business.
+//
+// It is a STARTING POINT, not a template the sender cannot change — the
+// send dialog loads it into an editable field. Both the CRM and the
+// portal use this one function so a dealer's covering note reads the
+// same as SGT's.
+// ---------------------------------------------------------------------
+
+export interface QuoteMessageContext {
+  erpName: string;
+  customerName?: string | null;
+  /** The partner raising it, when one did. Signs the note. */
+  partnerName?: string | null;
+  /** Extra documents named in the body, so the reader looks for them. */
+  attachmentNames?: string[];
+}
+
+export function defaultQuoteSubject(ctx: QuoteMessageContext): string {
+  return `Quotation ${ctx.erpName} from SGT HydroEdge`;
+}
+
+export function defaultQuoteMessage(ctx: QuoteMessageContext): string {
+  const who = String(ctx.customerName ?? '').trim();
+  const extras = (ctx.attachmentNames ?? []).filter(Boolean);
+  const signature = String(ctx.partnerName ?? '').trim();
+
+  return [
+    `<p>Dear ${who || 'Sir/Madam'},</p>`,
+    `<p>Thank you for your enquiry and for the opportunity to quote.</p>`,
+    `<p>Please find attached our quotation <strong>${ctx.erpName}</strong> for your kind ` +
+    `consideration. It covers the equipment, the commercial terms and the scope of supply ` +
+    `in full.` +
+    (extras.length
+      ? ` Also attached: ${extras.map(n => `<em>${n}</em>`).join(', ')}.`
+      : '') +
+    `</p>`,
+    `<p>We look forward to being associated with you, and to serving you to your complete ` +
+    `satisfaction. Should you need any clarification on the specification, the pricing or ` +
+    `the delivery schedule, please do write back or call — we would be glad to help.</p>`,
+    `<p>We hope to receive your valued order.</p>`,
+    `<p>Warm regards,<br>${signature ? `${signature}<br>` : ''}SGT HydroEdge Private Limited</p>`,
+  ].join('');
 }
 
 export const mailProvider = (): 'erpnext' | 'n8n' =>

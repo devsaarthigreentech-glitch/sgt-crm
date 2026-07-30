@@ -34,7 +34,7 @@ const director = requireRole('director')
 // than rejected, so an over-eager client cannot touch workflow columns
 // (status, allotted_code, approved_by, created_org_id…) by adding a key.
 const WRITABLE = [
-  'partner_type', 'dealer_type', 'parent_org_id',
+  'partner_type', 'dealer_type', 'entity_type', 'parent_org_id',
   'legal_name', 'trade_name', 'constitution', 'incorporation_date', 'years_in_business',
   'gstin', 'pan', 'gst_category', 'state_code', 'udyam_number', 'tan',
   'address_line1', 'address_line2', 'city', 'state', 'pincode', 'country',
@@ -133,7 +133,7 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
   // =========================================================================
 
   const ORG_WRITABLE = [
-    'legal_name', 'trade_name', 'territory', 'gstin', 'pan',
+    'legal_name', 'trade_name', 'territory', 'gstin', 'pan', 'entity_type',
     'address_line1', 'address_line2', 'city', 'state', 'state_code', 'pincode', 'country',
     'contact_name', 'contact_designation', 'contact_mobile', 'contact_email',
     'bank_account_name', 'bank_account_number', 'bank_ifsc', 'bank_name', 'bank_branch',
@@ -153,6 +153,9 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
     const e: Record<string, string> = {}
     const s = (k: string) => (p[k] == null ? '' : String(p[k]).trim())
     if ('legal_name' in p && !s('legal_name')) e.legal_name = 'Legal name cannot be blank'
+    if ('entity_type' in p && !['company', 'individual'].includes(s('entity_type'))) {
+      e.entity_type = 'Choose Company or Individual'
+    }
     if (s('gstin')) {
       const g = inspectGstin(s('gstin'))
       if (!g.valid) e.gstin = g.message ?? 'GSTIN is not valid'
@@ -679,11 +682,11 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
       const { rows: [org] } = await client.query(
         `insert into quote_service.org
            (code, legal_name, trade_name, org_type, dealer_type, parent_id,
-            territory, gstin, pan, is_active,
+            territory, gstin, pan, is_active, entity_type,
             address_line1, address_line2, city, state, state_code, pincode, country,
             contact_name, contact_designation, contact_mobile, contact_email,
             bank_account_name, bank_account_number, bank_ifsc, bank_name, bank_branch)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, true,
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, coalesce($26, 'company'),
                  $10, $11, $12, $13, $14, $15, coalesce($16, 'India'),
                  $17, $18, $19, $20,
                  $21, $22, $23, $24, $25)
@@ -694,7 +697,7 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
          reg.pincode, reg.country,
          reg.contact_name, reg.contact_designation, reg.contact_mobile, reg.contact_email,
          reg.bank_account_name, reg.bank_account_number, reg.bank_ifsc,
-         reg.bank_name, reg.bank_branch])
+         reg.bank_name, reg.bank_branch, reg.entity_type])
 
       const { rows: [updated] } = await client.query(
         `update partner_service.registration

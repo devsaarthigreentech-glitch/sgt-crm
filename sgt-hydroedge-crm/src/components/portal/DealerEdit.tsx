@@ -114,7 +114,23 @@ export default function DealerEdit({ dealerId, onBack }: { dealerId: number; onB
         </p>
 
         <Card title="Business">
-          <F label="Name" value={form.legal_name} onChange={v => set('legal_name', v)} error={errors.legal_name} />
+          <div style={{ marginBottom: 13 }}>
+            <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: MUTED, marginBottom: 5 }}>
+              They are
+            </label>
+            <select value={form.entity_type ?? 'company'} onChange={e => set('entity_type', e.target.value)}
+              style={{ ...inputStyle(!!errors.entity_type), appearance: 'auto' }}>
+              <option value="company">A company or firm</option>
+              <option value="individual">An individual</option>
+            </select>
+            {errors.entity_type && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 4, fontSize: 11.5, color: DANGER }}>
+                <AlertCircle size={12} /> {errors.entity_type}
+              </div>
+            )}
+          </div>
+          <F label={(form.entity_type ?? 'company') === 'individual' ? 'Full name' : 'Name'}
+             value={form.legal_name} onChange={v => set('legal_name', v)} error={errors.legal_name} />
           <F label="Trade name" value={form.trade_name} onChange={v => set('trade_name', v)} />
           <F label="Territory" value={form.territory} onChange={v => set('territory', v)} />
         </Card>
@@ -138,7 +154,7 @@ export default function DealerEdit({ dealerId, onBack }: { dealerId: number; onB
           <F label="PIN code" value={form.pincode} onChange={v => set('pincode', v)} error={errors.pincode} />
         </Card>
 
-        <Card title="Banking">
+        <Card title="Banking" hint="Printed on their quotations as the account the customer pays into. Check it carefully.">
           <F label="Account holder" value={form.bank_account_name} onChange={v => set('bank_account_name', v)} />
           <F label="Account number" value={form.bank_account_number} onChange={v => set('bank_account_number', v)} />
           <F label="IFSC" value={form.bank_ifsc} placeholder="HDFC0001234" onChange={v => set('bank_ifsc', v.toUpperCase())} error={errors.bank_ifsc} />

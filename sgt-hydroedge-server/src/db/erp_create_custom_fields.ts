@@ -107,6 +107,19 @@ const FIELDS: FieldDef[] = [
     insert_after: 'custom_partner_contact',
     description: 'Partner GSTIN, snapshotted. Informational only — SGT is the supplier of record.',
   },
+  // Payment no longer comes to SGT. The partner invoices the customer and
+  // is paid by them, so the account has to be ON the quotation the
+  // customer receives — not sent afterwards in a mail that can be
+  // intercepted or mistyped. Snapshotted like the rest of the block: a
+  // reprinted quotation must show the account that was quoted, even if
+  // the partner has since changed banks.
+  {
+    fieldname: 'custom_partner_bank',
+    label: 'Payment To',
+    fieldtype: 'Small Text',
+    insert_after: 'custom_partner_gstin',
+    description: 'Partner bank account the customer pays into, snapshotted when the quotation was raised.',
+  },
 ];
 
 const DOCTYPE = 'Quotation';

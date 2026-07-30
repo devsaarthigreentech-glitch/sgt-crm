@@ -383,6 +383,7 @@ export default function PartnerOnboarding() {
 
   // ---- Which conditional sections apply -----------------------------------
   const isDealer = form.partner_type === 'dealer'
+  const isIndividual = (form.entity_type ?? 'company') === 'individual'
   const sells = !isDealer || form.dealer_type === 'SS' || form.dealer_type === 'SM'
   const services = isDealer && form.dealer_type === 'SS'
   const editable = form.status === 'draft'
@@ -688,18 +689,35 @@ export default function PartnerOnboarding() {
                 />
               </>
             )}
+            {/* A partner can be a person trading in their own name. The
+                firm-shaped questions below disappear when they are, and the
+                server stops requiring them — see partnerValidation.ts. */}
+            <Select
+              label="Company or individual" required value={form.entity_type ?? 'company'}
+              onChange={v => set('entity_type', v)}
+              error={errors.entity_type}
+              options={[
+                { value: 'company', label: 'A company or firm' },
+                { value: 'individual', label: 'An individual' },
+              ]}
+            />
           </Section>
 
-          <Section title="Business identity">
-            <Text label="Legal name" required value={form.legal_name} onChange={v => set('legal_name', v)} error={errors.legal_name} />
-            <Text label="Trade name" value={form.trade_name} onChange={v => set('trade_name', v)} />
-            <Select
-              label="Constitution" value={form.constitution}
-              onChange={v => set('constitution', v)} error={errors.constitution}
-              options={(ref?.constitutions ?? []).map(c => ({ value: c, label: c }))}
-            />
-            <Text label="Years in business" type="number" value={form.years_in_business}
-                  onChange={v => set('years_in_business', v === '' ? null : Number(v))} />
+          <Section title={isIndividual ? 'Identity' : 'Business identity'}>
+            <Text label={isIndividual ? 'Full name' : 'Legal name'} required
+                  value={form.legal_name} onChange={v => set('legal_name', v)} error={errors.legal_name} />
+            {!isIndividual && (
+              <>
+                <Text label="Trade name" value={form.trade_name} onChange={v => set('trade_name', v)} />
+                <Select
+                  label="Constitution" value={form.constitution}
+                  onChange={v => set('constitution', v)} error={errors.constitution}
+                  options={(ref?.constitutions ?? []).map(c => ({ value: c, label: c }))}
+                />
+                <Text label="Years in business" type="number" value={form.years_in_business}
+                      onChange={v => set('years_in_business', v === '' ? null : Number(v))} />
+              </>
+            )}
           </Section>
 
           <Section title="Tax identity" hint="The GSTIN's own checksum is verified as you type — no external lookup, nothing metered.">
@@ -729,11 +747,12 @@ export default function PartnerOnboarding() {
             <Text label="Udyam number" value={form.udyam_number} onChange={v => set('udyam_number', v)} />
           </Section>
 
-          <Section title="Registered address">
-            <Text label="Address" value={form.address_line1} onChange={v => set('address_line1', v)} error={errors.address_line1} />
+          {/* Required for an individual: it is the only thing locating them. */}
+          <Section title={isIndividual ? 'Address' : 'Registered address'}>
+            <Text label="Address" required={isIndividual} value={form.address_line1} onChange={v => set('address_line1', v)} error={errors.address_line1} />
             <Text label="Address line 2" value={form.address_line2} onChange={v => set('address_line2', v)} />
-            <Text label="City" value={form.city} onChange={v => set('city', v)} error={errors.city} />
-            <Select label="State" value={form.state} onChange={v => set('state', v)}
+            <Text label="City" required={isIndividual} value={form.city} onChange={v => set('city', v)} error={errors.city} />
+            <Select label="State" required={isIndividual} value={form.state} onChange={v => set('state', v)}
                     error={errors.state} options={stateOptions} />
             <Text label="PIN code" value={form.pincode} onChange={v => set('pincode', v)} error={errors.pincode} />
           </Section>
@@ -862,7 +881,7 @@ export default function PartnerOnboarding() {
             )}
           </Section>
 
-          <Section title="Banking" hint="Must match the cancelled cheque uploaded later.">
+          <Section title="Banking" hint="Must match the cancelled cheque uploaded later. This account is printed on their quotations as the one the customer pays into.">
             <Text label="Account holder name" value={form.bank_account_name} onChange={v => set('bank_account_name', v)} error={errors.bank_account_name} />
             <Text label="Account number" value={form.bank_account_number} onChange={v => set('bank_account_number', v)} error={errors.bank_account_number} />
             <Text label="IFSC" value={form.bank_ifsc} placeholder="HDFC0001234"
@@ -879,9 +898,13 @@ export default function PartnerOnboarding() {
               <>
                 <Text label="Proposed territory" value={form.proposed_territory}
                       onChange={v => set('proposed_territory', v)} error={errors.proposed_territory} />
-                <Chips label="Industries of operation" required values={form.customer_segments ?? []}
-                       onChange={v => set('customer_segments', v)} error={errors.customer_segments}
-                       options={['Industrial', 'Commercial', 'Infrastructure', 'Mining', 'Marine', 'Hospitality', 'Healthcare', 'Data centre']} />
+                {/* A question about a firm's book of business — not asked of a
+                    person, and not required of one by the server either. */}
+                {!isIndividual && (
+                  <Chips label="Industries of operation" required values={form.customer_segments ?? []}
+                         onChange={v => set('customer_segments', v)} error={errors.customer_segments}
+                         options={['Industrial', 'Commercial', 'Infrastructure', 'Mining', 'Marine', 'Hospitality', 'Healthcare', 'Data centre']} />
+                )}
                 <Text label="Sales team size" type="number" value={form.profile?.sales_team_size}
                       onChange={v => setProfile('sales_team_size', v === '' ? null : Number(v))}
                       error={errors['profile.sales_team_size']} />

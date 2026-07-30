@@ -24,11 +24,16 @@ import {
   checkDiscount, checkDiscountAmount, actorFor, DISCOUNT_CAPS,
   amcItemCode, AMC_PCT, AMC_TERMS,
 } from '../domain/quoteDiscount.js'
-import { sendQuotation, mailProvider, isEmail } from '../services/quoteMail.js'
+import {
+  sendQuotation, mailProvider, isEmail,
+  defaultQuoteSubject, defaultQuoteMessage,
+} from '../services/quoteMail.js'
+import { cleanSpec, SPEC_FIELDS } from '../domain/quoteSpec.js'
 import {
   createQuotation, itemPrice, fetchQuotation, listTermsTemplates, fetchTerms,
   searchCustomers, ensureQuotationCustomer, fetchQuotationPdf, fetchQuotationSummaries,
-  type CreateQuotationInput,
+  listQuotationAttachments, uploadQuotationAttachment, deleteQuotationAttachment,
+  type CreateQuotationInput, type CreateQuotationLine,
 } from '../services/erpQuotation.js'
 
 const staff = requireRole('director', 'sales')
@@ -37,10 +42,32 @@ function actor(req: FastifyRequest) {
   return { id: req.user?.sub ?? null, name: req.user?.name ?? null }
 }
 
-export interface QuoteBody {
+/**
+ * One machine the customer is being quoted for.
+ *
+ * A quotation may carry several — three DGs of three different ratings is
+ * one enquiry and should be one document, not three.
+ */
+export interface QuoteLineBody {
   kva?: number | string
   qty?: number
   rate?: string | number | null
+  /** Either a percentage OR a rupee amount. Percentage wins if both. */
+  discountPct?: number | string | null
+  discountAmount?: number | string | null
+  /** 1, 2 or 3 — adds that model's AMC item. */
+  amcYears?: number | null
+  /** Optional make/model/dimensions, printed under the line. */
+  spec?: Record<string, unknown> | null
+}
+
+export interface QuoteBody extends QuoteLineBody {
+  /**
+   * The lines. When absent, the top-level kva/qty/discount/amc fields are
+   * read as a single line instead — every client that predates multi-line
+   * quoting keeps working unchanged, and there is one code path below.
+   */
+  lines?: QuoteLineBody[]
   orgId?: number | null
   /** An existing ERPNext Customer. Required — quoting never creates one. */
   customerErpName?: string
@@ -48,11 +75,12 @@ export interface QuoteBody {
   validDays?: number
   termsTemplate?: string | null
   termsHtml?: string | null
-  /** Either a percentage OR a rupee amount. Percentage wins if both. */
-  discountPct?: number | string | null
-  discountAmount?: number | string | null
-  /** 1, 2 or 3 — adds that model's AMC item. */
-  amcYears?: number | null
+  /**
+   * 'auto' derives CGST+SGST vs IGST from the customer's GSTIN. The
+   * explicit values are for customers ERPNext cannot place — an
+   * individual with no GSTIN and no address on file.
+   */
+  taxMode?: 'auto' | 'in_state' | 'out_state'
 }
 
 /**
@@ -73,12 +101,49 @@ function snapshotPartner(o: Record<string, any>): CreateQuotationInput['partner'
     .map(x => String(x ?? '').trim()).filter(Boolean).join(', ')
   const contact = [o.contact_name, o.contact_mobile, o.contact_email]
     .map(x => String(x ?? '').trim()).filter(Boolean).join(' · ')
+
+  // Where the customer pays. SGT no longer collects centrally — the
+  // partner invoices and is paid — so the account has to be ON the
+  // document rather than in a follow-up mail.
+  //
+  // Labelled, not just concatenated: an account number and an IFSC next
+  // to each other with no labels is how money goes to the wrong place.
+  // Omitted entirely when there is no account number, because a bank
+  // block naming a branch and no account is worse than none at all.
+  const bank = String(o.bank_account_number ?? '').trim()
+    ? [
+        o.bank_account_name ? `Account name: ${o.bank_account_name}` : null,
+        `Account no: ${String(o.bank_account_number).trim()}`,
+        o.bank_ifsc ? `IFSC: ${String(o.bank_ifsc).trim().toUpperCase()}` : null,
+        [o.bank_name, o.bank_branch].map(x => String(x ?? '').trim()).filter(Boolean).join(', ') || null,
+      ].filter(Boolean).join('\n')
+    : null
+
   return {
     name: `${o.legal_name}${o.code ? ` (${o.code})` : ''}`,
     address: addr || null,
     contact: contact || null,
     gstin: o.gstin ?? null,
+    bank,
   }
+}
+
+/**
+ * Turn the request into lines, whatever shape it arrived in.
+ *
+ * Blank rows are dropped rather than rejected: the form starts a new line
+ * empty, and a user who adds one and changes their mind should not get a
+ * validation error for a row they never filled in.
+ */
+function readLines(body: QuoteBody): QuoteLineBody[] {
+  const raw = Array.isArray(body.lines) && body.lines.length
+    ? body.lines
+    : [{
+        kva: body.kva, qty: body.qty, rate: body.rate,
+        discountPct: body.discountPct, discountAmount: body.discountAmount,
+        amcYears: body.amcYears, spec: body.spec,
+      }]
+  return raw.filter(l => String(l?.kva ?? '').trim() !== '')
 }
 
 export async function performQuotation(
@@ -87,7 +152,6 @@ export async function performQuotation(
   opts: { forcedOrgId?: number | null; via: 'crm' | 'portal' },
 ) {
   const who = actor(req)
-  const qty = Math.max(1, Math.floor(Number(body.qty ?? 1)))
 
   // A quotation attaches to a customer that ALREADY exists. Creating one is
   // a separate, deliberate act via POST /quotes/customers — otherwise a
@@ -105,8 +169,32 @@ export async function performQuotation(
     }
   }
 
-  const resolution = await resolveForKva(body.kva, { erpRate: itemPrice })
-  if (!resolution.resolved) return { ok: false as const, code: 422, payload: resolution }
+  const lineBodies = readLines(body)
+  if (!lineBodies.length) {
+    return {
+      ok: false as const, code: 400,
+      payload: {
+        error: { code: 'no_lines', message: 'Add at least one machine, with its kVA rating.' },
+      },
+    }
+  }
+
+  // Resolve every line before creating anything. One unresolvable rating
+  // fails the whole request — a partial quotation, silently missing the
+  // 750 kVA set the customer asked about, is worse than none.
+  const resolutions = await Promise.all(
+    lineBodies.map(l => resolveForKva(l.kva, { erpRate: itemPrice })))
+  const badIndex = resolutions.findIndex(r => !r.resolved)
+  if (badIndex >= 0) {
+    const bad = resolutions[badIndex] as Extract<typeof resolutions[number], { resolved: false }>
+    return {
+      ok: false as const, code: 422,
+      payload: lineBodies.length === 1
+        ? bad
+        : { ...bad, lineIndex: badIndex, message: `Line ${badIndex + 1}: ${bad.message}` },
+    }
+  }
+  const resolved = resolutions as Extract<typeof resolutions[number], { resolved: true }>[]
 
   const orgId = opts.forcedOrgId !== undefined ? opts.forcedOrgId : (body.orgId ?? null)
 
@@ -120,7 +208,9 @@ export async function performQuotation(
     const { rows } = await query(
       `select code, org_type, legal_name, trade_name, gstin,
               address_line1, address_line2, city, state, pincode,
-              contact_name, contact_mobile, contact_email
+              contact_name, contact_mobile, contact_email,
+              bank_account_name, bank_account_number, bank_ifsc,
+              bank_name, bank_branch
          from quote_service.org where id = $1 and is_active`, [orgId])
     if (!rows.length) {
       return {
@@ -141,52 +231,91 @@ export async function performQuotation(
   // Either form is accepted. The cap is a PERCENTAGE either way: an amount
   // is measured against the machine line so "₹2,00,000 off" cannot walk
   // past a 7% limit just because it was typed in rupees.
+  //
+  // And it is checked PER LINE, against that line's own machine value.
+  // Checking it against the document total would let a deep discount on
+  // one set hide behind two full-price ones.
   const actorKind = actorFor(orgType)
-  const machineLine = (Number(body.rate ?? resolution.rate) || 0) * qty
-  const usingAmount = body.discountPct == null || body.discountPct === ''
-  const discount = usingAmount
-    ? checkDiscountAmount(body.discountAmount, machineLine, actorKind)
-    : checkDiscount(body.discountPct, actorKind)
-  if (!discount.ok) {
-    return {
-      ok: false as const, code: 422,
-      payload: {
-        error: { code: 'discount_too_high', message: discount.message },
-        fields: usingAmount
-          ? { discountAmount: discount.message }
-          : { discountPct: discount.message },
-      },
+  const lines: CreateQuotationLine[] = []
+  /** What we mirror locally, so our own screens can show the breakdown. */
+  const lineSnapshots: Record<string, unknown>[] = []
+
+  for (let i = 0; i < lineBodies.length; i++) {
+    const l = lineBodies[i]
+    const r = resolved[i]
+    const qty = Math.max(1, Math.floor(Number(l.qty ?? 1)))
+    const rate = l.rate ?? r.rate
+    const machineLine = (Number(rate) || 0) * qty
+
+    const usingAmount = l.discountPct == null || l.discountPct === ''
+    const discount = usingAmount
+      ? checkDiscountAmount(l.discountAmount, machineLine, actorKind)
+      : checkDiscount(l.discountPct, actorKind)
+    if (!discount.ok) {
+      const message = lineBodies.length === 1
+        ? discount.message
+        : `Line ${i + 1} (${r.modelCode}): ${discount.message}`
+      return {
+        ok: false as const, code: 422,
+        payload: {
+          error: { code: 'discount_too_high', message },
+          lineIndex: i,
+          fields: usingAmount ? { discountAmount: message } : { discountPct: message },
+        },
+      }
     }
+
+    // The user types a discount for the WHOLE line; ERPNext's discount_amount
+    // is PER UNIT. Divide before sending, or a qty of 3 would take the figure
+    // off three times over.
+    const discountAmount = usingAmount ? Number((discount as any).amount ?? 0) : 0
+    const discountPerUnit = discountAmount > 0 && qty > 0
+      ? Math.round((discountAmount / qty) * 100) / 100
+      : 0
+
+    const amcYears = l.amcYears && AMC_TERMS.includes(Number(l.amcYears))
+      ? Number(l.amcYears) : null
+    const spec = cleanSpec(l.spec)
+
+    lines.push({
+      itemCode: r.modelCode,
+      qty,
+      rate,
+      discountPct: usingAmount ? null : (discount.pct || null),
+      discountAmountPerUnit: discountPerUnit || null,
+      // Its own priced item per model per term, so the printed line shows a
+      // list rate rather than a discount off zero.
+      amc: amcYears ? { itemCode: amcItemCode(r.modelCode, amcYears), qty } : null,
+      spec,
+    })
+
+    lineSnapshots.push({
+      kva: Number(l.kva),
+      modelId: r.modelId,
+      modelCode: r.modelCode,
+      ratingLabel: r.ratingLabel,
+      qty,
+      unitRate: rate ?? null,
+      discountPct: discount.pct || null,
+      discountAmount: discountAmount || null,
+      amcYears,
+      spec,
+    })
   }
-  // The user types a discount for the WHOLE line; ERPNext's discount_amount
-  // is PER UNIT. Divide before sending, or a qty of 3 would take the figure
-  // off three times over.
-  const discountAmount = usingAmount ? Number((discount as any).amount ?? 0) : 0
-  const discountPerUnit = discountAmount > 0 && qty > 0
-    ? Math.round((discountAmount / qty) * 100) / 100
-    : 0
 
   const input: CreateQuotationInput = {
     customerErpName,
-    itemCode: resolution.modelCode,
-    qty,
-    rate: body.rate ?? resolution.rate,
+    lines,
     salesPartner,
     commissionRate,
     validDays: body.validDays,
+    taxMode: body.taxMode ?? 'auto',
     termsTemplate: body.termsTemplate ?? null,
     termsHtml: body.termsHtml ?? null,
     raisedBy: who.name ? `${who.name}${who.id ? ` (user ${who.id})` : ''}` : null,
     raisedByOrg: salesPartner,
     raisedVia: opts.via === 'portal' ? 'Partner portal' : 'SGT CRM',
     partner: partnerSnapshot,
-    discountPct: usingAmount ? null : (discount.pct || null),
-    discountAmountPerUnit: discountPerUnit || null,
-    // Its own priced item per model per term, so the printed line shows a
-    // list rate rather than a discount off zero.
-    amc: body.amcYears && AMC_TERMS.includes(Number(body.amcYears))
-      ? { itemCode: amcItemCode(resolution.modelCode, Number(body.amcYears)), qty }
-      : null,
   }
 
   const created = await createQuotation(input)
@@ -194,13 +323,18 @@ export async function performQuotation(
   // Mirror it locally. A failure here must NOT lose the quotation — it
   // already exists in ERPNext, which is the system of record.
   let mirrored = true
+  // The flat columns describe the FIRST line — that is what the list
+  // screens have always shown, and they keep showing it. The full
+  // breakdown goes in `lines` alongside.
+  const first = lineSnapshots[0]
   try {
     await pool.query(
       `insert into quote_service.quotation_ref
          (erp_name, org_id, input_kva, model_id, model_code, qty, unit_rate,
           net_total, grand_total, commission_rate, erp_customer, customer_name,
-          customer_gstin, customer_state, status, raised_by, raised_by_name, raised_via)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'draft',$15,$16,$17)
+          customer_gstin, customer_state, status, raised_by, raised_by_name, raised_via,
+          line_count, lines, tax_mode)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'draft',$15,$16,$17,$18,$19,$20)
        on conflict (erp_name) do update set
           org_id = excluded.org_id, input_kva = excluded.input_kva,
           model_id = excluded.model_id, model_code = excluded.model_code,
@@ -211,11 +345,14 @@ export async function performQuotation(
           customer_gstin = excluded.customer_gstin, customer_state = excluded.customer_state,
           status = excluded.status, raised_by = excluded.raised_by,
           raised_by_name = excluded.raised_by_name, raised_via = excluded.raised_via,
+          line_count = excluded.line_count, lines = excluded.lines,
+          tax_mode = excluded.tax_mode,
           updated_at = now()`,
-      [created.erpName, orgId, Number(body.kva), resolution.modelId, resolution.modelCode,
-       qty, input.rate ?? null, created.netTotal, created.grandTotal, commissionRate,
+      [created.erpName, orgId, first.kva, first.modelId, first.modelCode,
+       first.qty, first.unitRate ?? null, created.netTotal, created.grandTotal, commissionRate,
        created.customer.erpName, created.customer.erpName, body.customer?.gstin ?? null,
-       body.customer?.state ?? null, who.id, who.name, opts.via],
+       body.customer?.state ?? null, who.id, who.name, opts.via,
+       lineSnapshots.length, JSON.stringify(lineSnapshots), created.taxMode],
     )
   } catch (err) {
     mirrored = false
@@ -227,17 +364,22 @@ export async function performQuotation(
     payload: {
       data: {
         erpName: created.erpName,
-        model: resolution.modelCode,
-        ratingLabel: resolution.ratingLabel,
-        coversUptoKva: resolution.coversUptoKva,
-        qty,
-        rate: input.rate,
+        // First line at the top level, as it has always been, so the
+        // success banner and anything else reading this keeps working.
+        model: resolved[0].modelCode,
+        ratingLabel: resolved[0].ratingLabel,
+        coversUptoKva: resolved[0].coversUptoKva,
+        qty: first.qty,
+        rate: first.unitRate,
+        lineCount: lineSnapshots.length,
+        lines: lineSnapshots,
         netTotal: created.netTotal,
         grandTotal: created.grandTotal,
-        discountPct: discount.pct || null,
-        discountAmount: discountAmount || created.discountAmount,
-        amcYears: body.amcYears ?? null,
+        discountPct: first.discountPct,
+        discountAmount: first.discountAmount ?? created.discountAmount,
+        amcYears: first.amcYears,
         taxTemplate: created.taxTemplate,
+        taxMode: created.taxMode,
         termsTemplate: created.termsTemplate,
         termsWarning: created.termsWarning,
         totalTax: created.totalTax,
@@ -264,6 +406,12 @@ export async function createCustomerChecked(b: Record<string, string>) {
   const name = String(b.name ?? '').trim()
   const gstin = String(b.gstin ?? '').trim().toUpperCase()
   const state = String(b.state ?? '').trim()
+  // A person buying in their own name. ERPNext's Customer carries this
+  // distinction natively, and defaulting everyone to Company was putting
+  // proprietors into the master data as firms that do not exist.
+  const entityType = String(b.entityType ?? '').trim() === 'Individual'
+    ? 'Individual' as const
+    : 'Company' as const
 
   const fields: Record<string, string> = {}
   if (!name) fields.name = 'Customer name is required'
@@ -284,6 +432,7 @@ export async function createCustomerChecked(b: Record<string, string>) {
 
   const created = await ensureQuotationCustomer({
     name, gstin: gstin || null, state: state || null, city: b.city ?? null,
+    entityType,
   })
   return { ok: true as const, payload: { data: created } }
 }
@@ -358,7 +507,8 @@ export async function buildRecipients(erpName: string, overrideTo?: string) {
 
   // The partner who raised it, and their parent if there is one.
   const { rows } = await query(
-    `select o.contact_email as own, p.contact_email as parent
+    `select o.contact_email as own, o.legal_name as partner_name,
+            p.contact_email as parent
        from quote_service.quotation_ref q
        join quote_service.org o on o.id = q.org_id
        left join quote_service.org p on p.id = o.parent_id
@@ -367,16 +517,38 @@ export async function buildRecipients(erpName: string, overrideTo?: string) {
     if (r.own) cc.add(String(r.own).trim())
     if (r.parent) cc.add(String(r.parent).trim())
   }
+  const partnerName: string | null = rows[0]?.partner_name ?? null
 
   // Never copy someone we are already writing to.
   for (const t of to) cc.delete(t)
+
+  // Everything already attached to the document. The dialog ticks them
+  // on by default — a file someone deliberately attached to a quotation
+  // is one they meant the customer to have.
+  let attachments: Awaited<ReturnType<typeof listQuotationAttachments>> = []
+  try {
+    attachments = await listQuotationAttachments(erpName)
+  } catch {
+    // Never block a send on the attachment list.
+  }
+
+  const customerName = doc?.customer_name ?? ''
+  const ctx = {
+    erpName, customerName, partnerName,
+    attachmentNames: attachments.map(a => a.fileName),
+  }
 
   return {
     to: to.filter(isEmail),
     cc: [...cc].filter(isEmail),
     rejected: [...to, ...cc].filter(a => a && !isEmail(a)),
-    customerName: doc?.customer_name ?? '',
+    customerName,
     grandTotal: doc?.grand_total ?? null,
+    attachments,
+    // Offered to the sender for editing, rather than applied behind
+    // their back. Both surfaces get the identical wording.
+    suggestedSubject: defaultQuoteSubject(ctx),
+    suggestedMessage: defaultQuoteMessage(ctx),
   }
 }
 
@@ -395,18 +567,91 @@ export async function performSend(erpName: string, body: Record<string, any>) {
     }
   }
 
-  const subject = String(body.subject ?? '').trim() ||
-    `Quotation ${erpName} from SGT HydroEdge`
-  const message = String(body.message ?? '').trim() ||
-    `<p>Dear ${built.customerName || 'Sir/Madam'},</p>` +
-    `<p>Please find attached our quotation ${erpName} for your consideration.</p>` +
-    `<p>We would be glad to answer any questions.</p>` +
-    `<p>Regards,<br>SGT HydroEdge</p>`
+  // `attachments` is a list of File names the sender ticked. Absent means
+  // "all of them" — the common case, and what the dialog sends back
+  // untouched. An explicit empty array means "none", which is why this
+  // checks for the key rather than for truthiness.
+  const chosen: string[] | null = Array.isArray(body.attachments)
+    ? body.attachments.map((x: unknown) => String(x))
+    : null
+  const attachments = chosen === null
+    ? built.attachments
+    : built.attachments.filter(a => chosen.includes(a.name))
+
+  const subject = String(body.subject ?? '').trim() || built.suggestedSubject
+  const message = String(body.message ?? '').trim() || built.suggestedMessage
 
   const result = await sendQuotation({
-    erpName, to: built.to, cc: built.cc, subject, message,
+    erpName, to: built.to, cc: built.cc, subject, message, attachments,
   })
-  return { ok: true as const, payload: { data: { ...result, rejected: built.rejected } } }
+  return {
+    ok: true as const,
+    payload: {
+      data: {
+        ...result,
+        rejected: built.rejected,
+        attached: attachments.map(a => a.fileName),
+      },
+    },
+  }
+}
+
+/**
+ * Take one uploaded file and put it on the quotation.
+ *
+ * Shared by the CRM and the portal so the size cap, the type list and the
+ * error wording cannot drift between them.
+ *
+ * Sent as base64 JSON rather than multipart: it needs no new dependency,
+ * and the route raises its own body limit to suit. The 15 MB ceiling is
+ * on the DECODED bytes — what actually leaves as an email attachment.
+ */
+export const ATTACH_MAX_BYTES = Number(process.env.QUOTE_ATTACH_MAX_MB ?? '15') * 1024 * 1024
+
+export async function performAttach(erpName: string, body: Record<string, any>) {
+  const fileName = String(body.filename ?? body.fileName ?? '').trim()
+  const base64 = String(body.base64 ?? body.content ?? '')
+  const contentType = String(body.contentType ?? body.mimeType ?? 'application/octet-stream')
+
+  if (!fileName) {
+    return {
+      ok: false as const, code: 400,
+      payload: { error: { code: 'bad_request', message: 'A filename is required' } },
+    }
+  }
+  if (!base64) {
+    return {
+      ok: false as const, code: 400,
+      payload: { error: { code: 'bad_request', message: 'The file is empty' } },
+    }
+  }
+
+  // Browsers hand back a data: URL from FileReader; accept either form.
+  const raw = base64.includes(',') && base64.slice(0, 60).includes('base64,')
+    ? base64.slice(base64.indexOf(',') + 1)
+    : base64
+  const bytes = Buffer.from(raw, 'base64')
+  if (!bytes.length) {
+    return {
+      ok: false as const, code: 400,
+      payload: { error: { code: 'bad_request', message: 'The file could not be decoded' } },
+    }
+  }
+  if (bytes.length > ATTACH_MAX_BYTES) {
+    return {
+      ok: false as const, code: 413,
+      payload: {
+        error: {
+          code: 'too_large',
+          message: `${fileName} is ${(bytes.length / 1048576).toFixed(1)} MB — the limit is ` +
+                   `${Math.round(ATTACH_MAX_BYTES / 1048576)} MB. Most mail servers reject more.`,
+        },
+      },
+    }
+  }
+
+  const saved = await uploadQuotationAttachment(erpName, fileName, contentType, bytes)
+  return { ok: true as const, payload: { data: saved } }
 }
 
 export default async function quotesRoutes(app: FastifyInstance) {
@@ -452,8 +697,18 @@ export default async function quotesRoutes(app: FastifyInstance) {
   // ---- Commercial limits the UI needs to label its controls -------------
   app.get('/limits', { preHandler: staff }, async (_req, reply) => {
     return reply.send({
-      data: { discountCaps: DISCOUNT_CAPS, amcPct: AMC_PCT, amcTerms: AMC_TERMS },
+      data: {
+        discountCaps: DISCOUNT_CAPS, amcPct: AMC_PCT, amcTerms: AMC_TERMS,
+        attachMaxMb: Math.round(ATTACH_MAX_BYTES / 1048576),
+      },
     })
+  })
+
+  // ---- The specification form, generated from one definition ------------
+  // Served rather than duplicated in the frontend: these fields will be
+  // revised, and a form built from this list changes with it.
+  app.get('/spec-fields', { preHandler: staff }, async (_req, reply) => {
+    return reply.send({ data: SPEC_FIELDS })
   })
 
   // ---- Customers: search, and explicit creation ------------------------
@@ -486,6 +741,44 @@ export default async function quotesRoutes(app: FastifyInstance) {
         error: { code: 'pdf_failed', message: String(e?.message ?? e).slice(0, 300) },
       })
     }
+  })
+
+  // ---- Attachments -----------------------------------------------------
+  // Extra documents that go out WITH the quotation PDF. Held on the
+  // ERPNext Quotation itself, so what was sent stays visible next to the
+  // document six months later.
+  app.get('/:erpName/attachments', { preHandler: staff }, async (req, reply) => {
+    const { erpName } = req.params as { erpName: string }
+    return reply.send({ data: await listQuotationAttachments(erpName) })
+  })
+
+  app.post('/:erpName/attachments', {
+    preHandler: staff,
+    // Base64 inflates by a third, and Fastify's default cap is 1 MB.
+    bodyLimit: ATTACH_MAX_BYTES * 2,
+  }, async (req, reply) => {
+    const { erpName } = req.params as { erpName: string }
+    try {
+      const r = await performAttach(erpName, (req.body ?? {}) as Record<string, any>)
+      if (!r.ok) return reply.code(r.code).send(r.payload)
+      return reply.code(201).send(r.payload)
+    } catch (e: any) {
+      req.log.error({ err: e, erpName }, 'quotation attachment upload failed')
+      return reply.code(502).send({
+        error: { code: 'attach_failed', message: String(e?.message ?? e).slice(0, 300) },
+      })
+    }
+  })
+
+  app.delete('/:erpName/attachments/:fileName', { preHandler: staff }, async (req, reply) => {
+    const { erpName, fileName } = req.params as { erpName: string; fileName: string }
+    const gone = await deleteQuotationAttachment(erpName, fileName)
+    if (!gone) {
+      return reply.code(404).send({
+        error: { code: 'not_found', message: 'No such attachment on this quotation' },
+      })
+    }
+    return reply.send({ data: { removed: fileName } })
   })
 
   // ---- Who would this go to, before sending it -------------------------

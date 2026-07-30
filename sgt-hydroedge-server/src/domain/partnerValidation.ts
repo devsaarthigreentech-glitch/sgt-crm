@@ -29,12 +29,26 @@
 // SM sells only; SS sells and services. Type-specific answers live in
 // the `profile` JSONB rather than as nullable columns per type, so this
 // matrix can grow without a migration.
+//
+// Cutting ACROSS that matrix is entity_type. An individual is asked for
+// their name, contact and address; the firm-shaped questions are not put
+// to them at all. It changes what is ASKED, never what is ALLOWED.
 // =====================================================================
 
 import { inspectGstin } from './gstin.js';
 
 export type PartnerType = 'distributor' | 'dealer';
 export type DealerType = 'SS' | 'SM';
+/**
+ * A firm, or a person trading as themselves.
+ *
+ * Plenty of dealers are individuals — a proprietor with a mobile number
+ * and an address and no company behind them. For them `legal_name` is a
+ * person's name, there is no trade name or constitution to give, and the
+ * address is a home address. What they are asked for changes; what they
+ * may do does not.
+ */
+export type EntityType = 'company' | 'individual';
 
 /** Field path -> human-readable problem. Empty object means valid. */
 export type FieldErrors = Record<string, string>;
@@ -42,6 +56,7 @@ export type FieldErrors = Record<string, string>;
 export interface RegistrationInput {
   partner_type?: string | null;
   dealer_type?: string | null;
+  entity_type?: string | null;
   parent_org_id?: number | null;
 
   legal_name?: string | null;
@@ -122,16 +137,34 @@ export function validateForSubmit(input: RegistrationInput): FieldErrors {
     errs.dealer_type = 'A distributor cannot have a dealer type';
   }
 
-  // ---- The three genuinely required things ---------------------------
+  // ---- Company or person ---------------------------------------------
+  const entityType = (input.entity_type ?? 'company') as EntityType;
+  if (entityType !== 'company' && entityType !== 'individual') {
+    errs.entity_type = 'Choose Company or Individual';
+  }
+  const individual = entityType === 'individual';
+
+  // ---- The genuinely required things ---------------------------------
   // Owner's instruction, 2026-07-27: only name, contact details and
   // industry of operations are mandatory. A small dealer may not be GST-
   // registered, may not have a company bank account, and may not have a
   // constitution worth naming yet. Blocking them at submit means they
   // never get onboarded at all.
-  req(errs, 'legal_name', input.legal_name, 'Legal name');
+  //
+  // Owner's instruction, 2026-07-30: an INDIVIDUAL needs contact and
+  // address details and nothing more. So the address becomes required
+  // for a person — it is the only thing locating them — while the
+  // industry list, which is a question about a firm's book of business,
+  // is not asked of them at all.
+  req(errs, 'legal_name', input.legal_name,
+      individual ? 'Full name' : 'Legal name');
   req(errs, 'contact_name', input.contact_name, 'Contact name');
   req(errs, 'contact_mobile', input.contact_mobile, 'Contact mobile');
-  if (emptyList(input.customer_segments)) {
+  if (individual) {
+    req(errs, 'address_line1', input.address_line1, 'Address');
+    req(errs, 'city', input.city, 'City');
+    req(errs, 'state', input.state, 'State');
+  } else if (emptyList(input.customer_segments)) {
     errs.customer_segments = 'Select at least one industry of operation';
   }
 
