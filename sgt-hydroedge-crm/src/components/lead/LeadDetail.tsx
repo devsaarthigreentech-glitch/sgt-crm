@@ -15,9 +15,11 @@ interface Props {
   onChanged?: () => void
   /** Logged-in user's display name — used as actor on activities/deletes. */
   currentUser?: string
+  /** Logged-in user's id. Only the AUTHOR of an activity may edit it. */
+  currentUserId?: string
 }
 
-export default function LeadDetail({ lead, onBack, onDeleted, onChanged, currentUser }: Props) {
+export default function LeadDetail({ lead, onBack, onDeleted, onChanged, currentUser, currentUserId }: Props) {
   const isMobile = useIsMobile()
   const accentColor = getVerticalColor(lead.vertical ?? '')
   const [showDrawer, setShowDrawer] = useState(false)
@@ -112,19 +114,25 @@ export default function LeadDetail({ lead, onBack, onDeleted, onChanged, current
     }
   }
 
-  useEffect(() => {
+  const loadActivities = () => {
     api.getActivities(lead.id).then(res => {
       setApiActivities(res.data.map((a: any) => ({
+        id: a.id,
         type: a.type,
         who: a.who,
+        actorId: a.actorId ?? null,
         when: new Date(a.when).toLocaleDateString('en-IN'),
         summary: a.summary,
         channel: a.channel ?? a.type,
         outcome: a.outcome,
         nextStep: a.nextStep,
+        editedAt: a.editedAt ?? null,
+        editedBy: a.editedBy ?? null,
       })))
     }).catch(() => { })
-  }, [lead.id])
+  }
+
+  useEffect(loadActivities, [lead.id])
 
   const allActivities = [...localActivities, ...apiActivities]
 
@@ -319,11 +327,13 @@ export default function LeadDetail({ lead, onBack, onDeleted, onChanged, current
         {isMobile ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
             <FactsRail lead={lead} stage={stage} onEdit={() => setShowEdit(true)} onChanged={onChanged} />
-            <ActivitySection activities={allActivities} />
+            <ActivitySection activities={allActivities} leadId={lead.id}
+              currentUserId={currentUserId} onEdited={loadActivities} />
           </div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 32, maxWidth: 1000 }}>
-            <ActivitySection activities={allActivities} />
+            <ActivitySection activities={allActivities} leadId={lead.id}
+              currentUserId={currentUserId} onEdited={loadActivities} />
             <FactsRail lead={lead} stage={stage} onEdit={() => setShowEdit(true)} onChanged={onChanged} />
           </div>
         )}
@@ -1290,7 +1300,10 @@ function ContactForm({ initial, showMakePrimary, onCancel, onSave }: {
   )
 }
 
-function ActivitySection({ activities }: { activities: Activity[] }) {
+function ActivitySection({ activities, leadId, currentUserId, onEdited }: {
+  activities: Activity[]; leadId: string
+  currentUserId?: string; onEdited: () => void
+}) {
   return (
     <div>
       <SectionHeader title="Activity" meta={`${activities.length} entries`} />
@@ -1299,7 +1312,8 @@ function ActivitySection({ activities }: { activities: Activity[] }) {
           <p style={{ fontSize: 13, color: '#A39F94' }}>No activity yet.</p>
         ) : (
           activities.map((a, i) => (
-            <ActivityRow key={i} activity={a} isLast={i === activities.length - 1} />
+            <ActivityRow key={a.id ?? i} activity={a} isLast={i === activities.length - 1}
+              leadId={leadId} currentUserId={currentUserId} onEdited={onEdited} />
           ))
         )}
       </div>
@@ -1367,9 +1381,38 @@ function Fact({ label, value, mono }: {
   )
 }
 
-function ActivityRow({ activity, isLast }: {
-  activity: Activity; isLast: boolean
+function ActivityRow({ activity, isLast, leadId, currentUserId, onEdited }: {
+  activity: Activity; isLast: boolean; leadId: string
+  currentUserId?: string; onEdited: () => void
 }) {
+  const [editing, setEditing] = useState(false)
+  const [summary, setSummary] = useState(activity.summary)
+  const [outcome, setOutcome] = useState(activity.outcome ?? '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Offered only to the author. The server enforces the same rule on
+  // PATCH — this decides what is SHOWN, never what is permitted. An
+  // entry with no recorded author (logged before the actor came from the
+  // token) is not editable by anyone.
+  const mine = !!activity.id && !!activity.actorId && !!currentUserId
+    && String(activity.actorId) === String(currentUserId)
+
+  const save = async () => {
+    if (!activity.id) return
+    setSaving(true); setError(null)
+    try {
+      await api.updateActivity(leadId, activity.id, {
+        summary: summary.trim(),
+        outcome: outcome || undefined,
+      })
+      setEditing(false)
+      onEdited()
+    } catch (e: any) {
+      setError(e?.message ?? 'Could not save the correction.')
+    } finally { setSaving(false) }
+  }
+
   const colorMap: Record<string, string> = {
     email: '#1E3A6B',
     meeting: '#0E5550',
@@ -1408,13 +1451,86 @@ function ActivityRow({ activity, isLast }: {
           marginBottom: 4, flexWrap: 'wrap', gap: 4,
         }}>
           <span style={{ fontSize: 12.5, fontWeight: 600 }}>{activity.who}</span>
-          <span style={{ fontSize: 11, color: '#A39F94', fontFamily: 'monospace' }}>
-            {activity.when}
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {activity.editedAt && (
+              <span style={{ fontSize: 10.5, color: '#A39F94', fontStyle: 'italic' }}
+                    title={`Corrected by ${activity.editedBy ?? 'the author'}`}>
+                edited
+              </span>
+            )}
+            {mine && !editing && (
+              <button type="button" onClick={() => {
+                setSummary(activity.summary)
+                setOutcome(activity.outcome ?? '')
+                setError(null); setEditing(true)
+              }} style={{
+                background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                color: '#6A675F', fontSize: 11, fontFamily: 'inherit',
+                textDecoration: 'underline',
+              }}>Edit</button>
+            )}
+            <span style={{ fontSize: 11, color: '#A39F94', fontFamily: 'monospace' }}>
+              {activity.when}
+            </span>
           </span>
         </div>
-        <div style={{ fontSize: 12.5, color: '#363633', lineHeight: 1.55 }}>
-          {activity.summary}
-        </div>
+        {editing ? (
+          <div style={{
+            padding: 10, borderRadius: 6, border: '1px dashed #DDD7C6',
+            backgroundColor: '#FCFBF7',
+          }}>
+            <textarea
+              value={summary}
+              onChange={e => setSummary(e.target.value)}
+              rows={3}
+              style={{
+                width: '100%', boxSizing: 'border-box', padding: '8px 9px',
+                fontSize: 12.5, lineHeight: 1.55, fontFamily: 'inherit',
+                color: '#161614', backgroundColor: '#fff',
+                border: '1px solid #DDD7C6', borderRadius: 5, resize: 'vertical',
+              }}
+            />
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+              <select value={outcome} onChange={e => setOutcome(e.target.value as any)}
+                style={{
+                  padding: '6px 8px', fontSize: 12, fontFamily: 'inherit',
+                  border: '1px solid #DDD7C6', borderRadius: 5, background: '#fff',
+                  color: '#161614',
+                }}>
+                <option value="">No outcome</option>
+                <option value="positive">positive</option>
+                <option value="neutral">neutral</option>
+                <option value="concern">concern</option>
+              </select>
+              <button type="button" disabled={saving || summary.trim().length < 3} onClick={save}
+                style={{
+                  padding: '6px 12px', fontSize: 12, fontWeight: 600, fontFamily: 'inherit',
+                  border: 'none', borderRadius: 5,
+                  cursor: saving || summary.trim().length < 3 ? 'not-allowed' : 'pointer',
+                  backgroundColor: saving || summary.trim().length < 3 ? '#D8D3C4' : '#161614',
+                  color: saving || summary.trim().length < 3 ? '#8C887E' : '#fff',
+                }}>
+                {saving ? 'Saving…' : 'Save correction'}
+              </button>
+              <button type="button" onClick={() => { setEditing(false); setError(null) }}
+                style={{
+                  padding: '6px 12px', fontSize: 12, fontFamily: 'inherit',
+                  border: '1px solid #DDD7C6', borderRadius: 5, cursor: 'pointer',
+                  background: '#fff', color: '#6A675F',
+                }}>Cancel</button>
+            </div>
+            {error && (
+              <div style={{ marginTop: 7, fontSize: 11.5, color: '#A6301C' }}>{error}</div>
+            )}
+            <div style={{ marginTop: 7, fontSize: 10.5, color: '#A39F94' }}>
+              The entry will be marked as edited. Only you can change it.
+            </div>
+          </div>
+        ) : (
+          <div style={{ fontSize: 12.5, color: '#363633', lineHeight: 1.55 }}>
+            {activity.summary}
+          </div>
+        )}
         <div style={{ marginTop: 5, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           <span style={{
             fontSize: 10.5, color: '#6A675F',

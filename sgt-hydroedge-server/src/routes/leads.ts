@@ -467,7 +467,9 @@ export async function leadsRoutes(fastify: FastifyInstance) {
   })
   
   // GET /leads/:id/activities
-  fastify.get<{ Params: { id: string } }>('/leads/:id/activities', async (request, reply) => {
+  // Guarded alongside POST — this is customer-conversation detail, and it
+  // was reachable without a token until 2026-07-31.
+  fastify.get<{ Params: { id: string } }>('/leads/:id/activities', { preHandler: requireAuth }, async (request, reply) => {
     const result = await query(
       `SELECT * FROM lead_service.lead_activities
        WHERE lead_id = $1
@@ -480,6 +482,10 @@ export async function leadsRoutes(fastify: FastifyInstance) {
         id: r.id,
         type: r.type,
         who: r.actor_name,
+        // The screen compares this with the signed-in user to decide
+        // whether to offer Edit. The server checks it again on PATCH —
+        // this only governs what is OFFERED, never what is allowed.
+        actorId: r.actor_id,
         when: r.occurred_at,
         summary: r.summary,
         channel: r.channel,
@@ -491,14 +497,31 @@ export async function leadsRoutes(fastify: FastifyInstance) {
           due: r.next_step_due_date,
         } : null,
         createdAt: r.created_at,
+        editedAt: r.edited_at ?? null,
+        editedBy: r.edited_by ?? null,
       })),
     })
   })
 
   // POST /leads/:id/activities
-  fastify.post<{ Params: { id: string } }>('/leads/:id/activities', async (request, reply) => {
+  //
+  // requireAuth, and the ACTOR IS TAKEN FROM THE TOKEN.
+  //
+  // Both changed on 2026-07-31, when editing was added. Until then this
+  // route was unauthenticated and read actorId/actorName straight off the
+  // request body — so anyone who could reach the API could log an activity
+  // in anyone's name. That was tolerable while an activity was only ever
+  // appended; it is not tolerable now that authorship decides who may
+  // change one. A rule enforced against a value the caller supplies is
+  // not a rule.
+  //
+  // actorName/actorId in LogActivitySchema are still accepted and now
+  // ignored, so the existing frontend keeps working unchanged.
+  fastify.post<{ Params: { id: string } }>('/leads/:id/activities', { preHandler: requireAuth }, async (request, reply) => {
     const body = LogActivitySchema.parse(request.body)
     const { id } = request.params
+    const actorId = request.user?.sub ?? null
+    const actorName = request.user?.name ?? body.actorName ?? 'Unknown'
 
     // Verify lead exists
     const lead = await query(
@@ -522,8 +545,8 @@ export async function leadsRoutes(fastify: FastifyInstance) {
       ) RETURNING *`,
       [
         id,
-        body.actorName ?? 'Unknown',
-        body.actorId ?? null,
+        actorName,
+        actorId,
         'USER',
         body.type,
         body.channel ?? null,
@@ -541,6 +564,93 @@ export async function leadsRoutes(fastify: FastifyInstance) {
     // automatically because momentum is derived from MAX(occurred_at) on read.
     return reply.status(201).send({ data: result.rows[0] })
   })
+
+  // PATCH /leads/:id/activities/:activityId
+  //
+  // Correcting an entry that has already been logged. AUTHOR ONLY —
+  // not the director, not the lead owner, not an admin.
+  //
+  // That is narrower than most permissions in this codebase and it is
+  // deliberate. An activity is a first-hand account of something that
+  // person did: "met the MD, he confirmed the order". Somebody else
+  // rewriting it does not correct the record, it fabricates one, and the
+  // log stops being evidence of anything. If a manager disagrees with an
+  // entry, the answer is to log their own.
+  //
+  // The edit is marked. See migrate_owner_05_activity_edit.ts.
+  fastify.patch<{ Params: { id: string; activityId: string } }>(
+    '/leads/:id/activities/:activityId',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const body = LogActivitySchema.partial().parse(request.body)
+      const { id, activityId } = request.params
+      const userId = request.user?.sub ?? null
+
+      const existing = await query(
+        `SELECT id, actor_id, actor_name FROM lead_service.lead_activities
+          WHERE id = $1 AND lead_id = $2`,
+        [activityId, id]
+      )
+      if (existing.rows.length === 0) {
+        return reply.status(404).send({ error: 'Activity not found on this lead' })
+      }
+
+      const row = existing.rows[0]
+      // No actor_id means the entry predates authorship being stamped from
+      // the token. Nobody can prove they wrote it, so nobody may edit it.
+      if (!row.actor_id) {
+        return reply.status(403).send({
+          error: 'This entry has no recorded author, so it cannot be edited. Log a new activity instead.',
+        })
+      }
+      if (String(row.actor_id) !== String(userId)) {
+        return reply.status(403).send({
+          error: `Only ${row.actor_name} can edit this entry. Log your own activity instead.`,
+        })
+      }
+
+      // Whitelist. actor_id, actor_name, lead_id and created_at are not
+      // here on purpose — an edit corrects WHAT happened, never WHO
+      // recorded it or WHICH lead it belongs to.
+      const COLUMNS: Record<string, string> = {
+        type: 'type',
+        channel: 'channel',
+        summary: 'summary',
+        outcome: 'outcome',
+        direction: 'direction',
+        durationMin: 'duration_min',
+        nextStepDescription: 'next_step_description',
+        nextStepDueDate: 'next_step_due_date',
+        occurredAt: 'occurred_at',
+      }
+
+      const sets: string[] = []
+      const values: unknown[] = []
+      for (const [key, column] of Object.entries(COLUMNS)) {
+        if (!(key in body)) continue
+        const raw = (body as Record<string, unknown>)[key]
+        values.push(key === 'occurredAt' && raw ? new Date(String(raw)) : raw ?? null)
+        sets.push(`${column} = $${values.length}`)
+      }
+      if (sets.length === 0) {
+        return reply.status(400).send({ error: 'Nothing to change' })
+      }
+
+      values.push(request.user?.name ?? userId)
+      sets.push(`edited_by = $${values.length}`)
+      sets.push('edited_at = NOW()')
+
+      values.push(activityId)
+      const result = await query(
+        `UPDATE lead_service.lead_activities
+            SET ${sets.join(', ')}
+          WHERE id = $${values.length}
+        RETURNING *`,
+        values
+      )
+      return reply.send({ data: result.rows[0] })
+    }
+  )
 
   // POST /leads/:id/advance
   fastify.post<{ Params: { id: string } }>('/leads/:id/advance', { preHandler: requireAuth }, async (request, reply) => {

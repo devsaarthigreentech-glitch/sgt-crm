@@ -158,6 +158,7 @@ export default function App() {
           <LeadDetail
             lead={selectedLead}
             currentUser={user.name}
+            currentUserId={String(user.id)}
             onBack={() => setSelectedLead(null)}
             onChanged={() => refreshSelectedLead(selectedLead.id)}
             onDeleted={async () => {

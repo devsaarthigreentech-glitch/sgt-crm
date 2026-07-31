@@ -128,6 +128,13 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  /** Correct an entry. Author only — the server checks, not just the UI. */
+  updateActivity: (leadId: string, activityId: string, body: any) =>
+    request<{ data: any }>(`/leads/${leadId}/activities/${activityId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+
   // Stage transitions
   advanceStage: (leadId: string, body: { toStage: string; reason?: string }) =>
     request<{ data: any }>(`/leads/${leadId}/advance`, {

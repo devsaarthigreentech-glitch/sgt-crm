@@ -30,8 +30,12 @@ export interface Protection {
 }
 
 export interface Activity {
+  /** Absent on optimistic local entries that have not been saved yet. */
+  id?: string
   type: ActivityType
   who: string
+  /** Author. Compared with the signed-in user to decide who may edit. */
+  actorId?: string | null
   when: string
   summary: string
   channel: string
@@ -40,6 +44,9 @@ export interface Activity {
     description: string
     due: string
   }
+  /** Set once corrected, so the row can say so. */
+  editedAt?: string | null
+  editedBy?: string | null
 }
 
 export interface Lead {
