@@ -24,8 +24,28 @@
 // would mean a flag at every call site.
 // =====================================================================
 
-/** The stamp block appended under every set of terms. Configurable. */
-const STAMP_URL = process.env.ERP_COMPANY_STAMP_URL?.trim() ?? '';
+/**
+ * The images printed under the terms — signatures, stamps, or both.
+ *
+ * A COMMA-SEPARATED LIST, rendered side by side in the order given:
+ *
+ *   ERP_TERMS_STAMP_URLS=/files/sign.jpg,/files/cps-sign.png
+ *
+ * A list rather than a single value so adding or removing one is a
+ * config change and a restart, not an edit to this file. The older
+ * single-value ERP_COMPANY_STAMP_URL still works and is read as a list
+ * of one.
+ */
+const STAMP_URLS = String(
+  process.env.ERP_TERMS_STAMP_URLS ?? process.env.ERP_COMPANY_STAMP_URL ?? '',
+)
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+/** Gap between them, in px. */
+const STAMP_GAP = Number(process.env.ERP_TERMS_STAMP_GAP ?? '30');
+
 const END_LABEL = process.env.ERP_TERMS_END_LABEL?.trim() || 'End of Terms';
 
 const ENTITIES: Record<string, string> = {
@@ -126,11 +146,19 @@ export function withTermsFooter(html: string): string {
     `letter-spacing:0.12em;text-transform:uppercase;color:#8a867c;">` +
     `— ${esc(END_LABEL)} —</div>`;
 
-  const stamp = STAMP_URL
-    ? `<div style="margin-top:10px;text-align:center;">` +
-      `<img src="${esc(STAMP_URL)}" alt="" ` +
-      `style="max-height:110px;max-width:210px;width:auto;"></div>`
+  // Side by side, bottom-aligned, on one line. `white-space:nowrap` and
+  // `vertical-align:bottom` are what keep two images of different
+  // heights sitting on the same baseline instead of one dropping below
+  // the other — and stop them wrapping when the page is tight.
+  const stamps = STAMP_URLS.length
+    ? `<div style="margin-top:10px;text-align:center;white-space:nowrap;">` +
+      STAMP_URLS.map((url, i) =>
+        `<img src="${esc(url)}" alt="" style="max-height:110px;max-width:210px;` +
+        `width:auto;vertical-align:bottom;` +
+        `${i < STAMP_URLS.length - 1 ? `margin-right:${STAMP_GAP}px;` : ''}">`,
+      ).join('') +
+      `</div>`
     : '';
 
-  return `${html}<div class="sgt-terms-end">${rule}${stamp}</div>`;
+  return `${html}<div class="sgt-terms-end">${rule}${stamps}</div>`;
 }
