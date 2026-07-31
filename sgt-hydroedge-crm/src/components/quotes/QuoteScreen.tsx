@@ -104,10 +104,13 @@ export interface QuoteApi {
     taxMode?: 'auto' | 'in_state' | 'out_state'
     orgId?: number | null
     termsTemplate?: string | null
-    termsHtml?: string | null
+    /** Plain text; the server turns it into the document's markup. */
+    termsText?: string | null
   }): Promise<any>
   searchCustomers(q: string): Promise<ErpCustomer[]>
   createCustomer(body: Record<string, string>): Promise<{ erpName: string; matchedOn: string }>
+  updateCustomer(erpName: string, body: Record<string, string>):
+    Promise<{ erpName: string; changed: string[]; note?: string }>
   pdfUrl(erpName: string): Promise<string>
   recipients(erpName: string): Promise<RecipientPlan>
   send(erpName: string, body: {
@@ -439,6 +442,8 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
   const [custHits, setCustHits] = useState<ErpCustomer[]>([])
   const [custSearching, setCustSearching] = useState(false)
   const [addingCust, setAddingCust] = useState(false)
+  const [editCust, setEditCust] = useState<{ gstin: string; entityType: string } | null>(null)
+  const [custNote, setCustNote] = useState<string | null>(null)
   const [newCust, setNewCust] = useState({ name: '', gstin: '', state: '', city: '', entityType: 'Company' })
   const [custErrors, setCustErrors] = useState<Record<string, string>>({})
   const [taxMode, setTaxMode] = useState<'auto' | 'in_state' | 'out_state'>('auto')
@@ -562,7 +567,7 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
         taxMode,
         ...(showPartnerPicker ? { orgId } : {}),
         termsTemplate: termsName || null,
-        termsHtml: termsEdited && termsHtml.trim() ? termsHtml : null,
+        termsText: termsEdited && termsHtml.trim() ? termsHtml : null,
       })
       setMade(r.data ?? r)
       setLines([blankLine()])
@@ -939,25 +944,100 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
 
         <Card title="Customer">
           {picked ? (
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 10, marginBottom: 13,
-              padding: '10px 12px', borderRadius: 7,
-              backgroundColor: '#F2F6F2', border: '1px solid #CFE0D4',
-            }}>
-              <Check size={15} style={{ color: OK, flexShrink: 0 }} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13.5, fontWeight: 600, color: INK }}>
-                  {picked.customer_name || picked.name}
+            <>
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 10, marginBottom: 13,
+                padding: '10px 12px', borderRadius: 7,
+                backgroundColor: '#F2F6F2', border: '1px solid #CFE0D4',
+              }}>
+                <Check size={15} style={{ color: OK, flexShrink: 0 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 600, color: INK }}>
+                    {picked.customer_name || picked.name}
+                  </div>
+                  <div style={{ fontSize: 11.5, color: MUTED, marginTop: 2 }}>
+                    {picked.gstin ? `GSTIN ${picked.gstin}` : 'No GSTIN on record'}
+                  </div>
                 </div>
-                <div style={{ fontSize: 11.5, color: MUTED, marginTop: 2 }}>
-                  {picked.gstin ? `GSTIN ${picked.gstin}` : 'No GSTIN on record'}
-                </div>
+                <button type="button"
+                  onClick={() => {
+                    setCustErrors({}); setCustNote(null)
+                    setEditCust(e => e ? null : { gstin: picked.gstin ?? '', entityType: 'Company' })
+                  }}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: MUTED, fontSize: 12, fontFamily: 'inherit' }}>
+                  {editCust ? 'Cancel' : 'Fix details'}
+                </button>
+                <button type="button" onClick={() => { setPicked(null); setCustQuery(''); setEditCust(null) }}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: MUTED, fontSize: 12, fontFamily: 'inherit' }}>
+                  Change
+                </button>
               </div>
-              <button type="button" onClick={() => { setPicked(null); setCustQuery('') }}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: MUTED, fontSize: 12, fontFamily: 'inherit' }}>
-                Change
-              </button>
-            </div>
+
+              {/* Corrects the customer in ERPNext. The name is not editable
+                  here — on most setups the Customer is named BY it, so a
+                  change would rename the record and every document linked
+                  to it. That is an ERPNext admin job, not a typo fix. */}
+              {editCust && (
+                <div style={{ marginBottom: 13, padding: 12, borderRadius: 8, border: `1px dashed ${LINE}`, backgroundColor: '#FCFBF7' }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 700, color: INK, marginBottom: 10 }}>
+                    Correct {picked.customer_name || picked.name}
+                  </div>
+                  <F label="GSTIN" value={editCust.gstin} placeholder="27AAECC3132G1Z1"
+                     onChange={v => setEditCust(c => c && { ...c, gstin: v.toUpperCase() })} />
+                  {custErrors.gstin && <div style={{ fontSize: 11.5, color: DANGER, marginTop: -8, marginBottom: 10 }}>{custErrors.gstin}</div>}
+
+                  <div style={{ marginBottom: 13 }}>
+                    <label style={labelStyle}>They are</label>
+                    <select value={editCust.entityType}
+                      onChange={e => setEditCust(c => c && { ...c, entityType: e.target.value })}
+                      style={{ ...inputStyle(), appearance: 'auto' }}>
+                      <option value="Company">A company or firm</option>
+                      <option value="Individual">An individual</option>
+                    </select>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button type="button"
+                      onClick={async () => {
+                        if (!editCust || !picked) return
+                        setCustErrors({}); setBanner(null); setCustNote(null)
+                        try {
+                          const r = await api.updateCustomer(picked.name, {
+                            gstin: editCust.gstin.trim(),
+                            entityType: editCust.entityType,
+                          })
+                          setPicked(p => p && { ...p, gstin: editCust.gstin.trim() || null })
+                          setEditCust(null)
+                          setCustNote(r.note ?? 'Customer updated.')
+                        } catch (e: any) {
+                          if (e?.fields) setCustErrors(e.fields)
+                          else setBanner(e.message)
+                        }
+                      }}
+                      style={{
+                        padding: '8px 14px', fontSize: 12.5, fontWeight: 600, fontFamily: 'inherit',
+                        border: 'none', borderRadius: 6, cursor: 'pointer', backgroundColor: INK, color: '#fff',
+                      }}>Save to ERPNext</button>
+                    <button type="button" onClick={() => { setEditCust(null); setCustErrors({}) }} style={{
+                      padding: '8px 14px', fontSize: 12.5, fontFamily: 'inherit',
+                      border: `1px solid ${LINE}`, borderRadius: 6, cursor: 'pointer',
+                      background: '#fff', color: MUTED,
+                    }}>Cancel</button>
+                  </div>
+                </div>
+              )}
+
+              {custNote && (
+                <div style={{
+                  marginBottom: 13, padding: '9px 11px', borderRadius: 7, fontSize: 11.5,
+                  backgroundColor: WARN_BG, color: WARN_FG,
+                  display: 'flex', alignItems: 'flex-start', gap: 5,
+                }}>
+                  <AlertCircle size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+                  <span>{custNote}</span>
+                </div>
+              )}
+            </>
           ) : addingCust ? (
             <div style={{ marginBottom: 13, padding: 12, borderRadius: 8, border: `1px dashed ${LINE}`, backgroundColor: '#FCFBF7' }}>
               <div style={{ fontSize: 12.5, fontWeight: 700, color: INK, marginBottom: 10 }}>New customer</div>
@@ -1113,27 +1193,24 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
 
               {showTerms && (
                 <>
-                  <div
-                    style={{
-                      marginTop: 8, padding: '10px 12px', borderRadius: 7,
-                      border: `1px solid ${LINE}`, backgroundColor: '#FCFBF7',
-                      fontSize: 12, color: INK, maxHeight: 190, overflowY: 'auto',
-                    }}
-                    dangerouslySetInnerHTML={{ __html: termsHtml || '<em>Nothing to show.</em>' }}
-                  />
+                  {/* Plain text, like the covering note. One blank line
+                      between clauses; the server rebuilds the numbered
+                      list, and appends the closing rule and stamp. */}
                   <textarea
                     value={termsHtml}
                     onChange={e => { setTermsHtml(e.target.value); setTermsEdited(true) }}
-                    rows={7}
-                    spellCheck={false}
+                    rows={16}
+                    spellCheck
                     style={{
-                      ...inputStyle(), marginTop: 8, fontFamily: 'ui-monospace, monospace',
-                      fontSize: 11.5, lineHeight: 1.5, resize: 'vertical',
+                      ...inputStyle(), marginTop: 8,
+                      fontSize: 13, lineHeight: 1.6, resize: 'vertical',
                     }}
                   />
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 5 }}>
                     <span style={{ fontSize: 11, color: FAINT }}>
-                      Edits apply to this quotation only — the template is unchanged.
+                      One clause per paragraph — leave a blank line between them.
+                      Numbering is added automatically, and <code>**text**</code> comes
+                      out bold. Edits apply to this quotation only; the template is unchanged.
                     </span>
                     {termsEdited && (
                       <button

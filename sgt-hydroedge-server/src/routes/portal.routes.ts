@@ -44,10 +44,12 @@ import {
   listQuotationAttachments, deleteQuotationAttachment,
 } from '../services/erpQuotation.js'
 import { SPEC_FIELDS } from '../domain/quoteSpec.js'
+import { termsToText } from '../domain/quoteTerms.js'
 import { decodeLogo, LOGO_MAX_BYTES } from '../domain/partnerLogo.js'
 import { readLogo, saveLogo, clearLogo } from '../services/partnerLogoStore.js'
 import {
-  performQuotation, createCustomerChecked, reconcileQuotations,
+  performQuotation, createCustomerChecked, updateCustomerChecked,
+  reconcileQuotations,
   buildRecipients, performSend, performAttach, ATTACH_MAX_BYTES,
   type QuoteBody,
 } from './quotes.routes.js'
@@ -197,7 +199,7 @@ export default async function portalRoutes(app: FastifyInstance) {
     if (html === null) {
       return reply.code(404).send({ error: { code: 'not_found', message: 'No such terms template' } })
     }
-    return reply.send({ data: { name, terms: html } })
+    return reply.send({ data: { name, terms: html, text: termsToText(html) } })
   })
 
   app.get('/quotes/limits', { preHandler: requireAuth }, async (req, reply) => {
@@ -238,6 +240,25 @@ export default async function portalRoutes(app: FastifyInstance) {
     const result = await createCustomerChecked((req.body ?? {}) as Record<string, string>)
     if (!result.ok) return reply.code(result.code).send(result.payload)
     return reply.code(201).send(result.payload)
+  })
+
+  // A partner may correct a customer they can already quote for. Not
+  // scoped further on purpose: ERPNext's customer master is shared, and
+  // the same partner could equally have created this one a minute ago.
+  app.patch('/quotes/customers/:erpName', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { erpName } = req.params as { erpName: string }
+    try {
+      const r = await updateCustomerChecked(erpName, (req.body ?? {}) as Record<string, unknown>)
+      if (!r.ok) return reply.code(r.code).send(r.payload)
+      return reply.send(r.payload)
+    } catch (e: any) {
+      req.log.error({ err: e, erpName }, 'portal customer update failed')
+      return reply.code(502).send({
+        error: { code: 'update_failed', message: String(e?.message ?? e).slice(0, 300) },
+      })
+    }
   })
 
   // Sending is scoped exactly like the PDF: a partner may only send a

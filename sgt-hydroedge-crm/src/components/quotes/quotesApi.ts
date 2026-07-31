@@ -118,6 +118,12 @@ export function makeQuoteApi(prefix: string, withPartners: boolean): QuoteApi {
         method: 'POST', body: JSON.stringify(body),
       }).then(r => r.data),
 
+    updateCustomer: (erpName: string, body: Record<string, string>) =>
+      request<{ data: { erpName: string; changed: string[]; note?: string } }>(
+        `${prefix}/customers/${encodeURIComponent(erpName)}`, {
+          method: 'PATCH', body: JSON.stringify(body),
+        }).then(r => r.data),
+
     /** Fetched as a blob because the PDF route needs the bearer token. */
     pdfUrl: async (erpName: string) => {
       const token = getToken()
@@ -131,9 +137,11 @@ export function makeQuoteApi(prefix: string, withPartners: boolean): QuoteApi {
       return URL.createObjectURL(await res.blob())
     },
 
+    /** The editable form — plain text, one clause per paragraph. */
     termsBody: (name: string) =>
-      request<{ data: { name: string; terms: string } }>(
-        `${prefix}/terms/${encodeURIComponent(name)}`).then(r => r.data.terms),
+      request<{ data: { name: string; terms: string; text?: string } }>(
+        `${prefix}/terms/${encodeURIComponent(name)}`)
+        .then(r => r.data.text ?? r.data.terms),
 
     ...(withPartners
       ? {

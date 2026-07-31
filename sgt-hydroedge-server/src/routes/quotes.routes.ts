@@ -29,9 +29,11 @@ import {
   defaultQuoteSubject, defaultQuoteMessage, defaultQuoteMessageText, textToHtml,
 } from '../services/quoteMail.js'
 import { cleanSpec, SPEC_FIELDS } from '../domain/quoteSpec.js'
+import { termsToText, textToTerms } from '../domain/quoteTerms.js'
 import {
   createQuotation, itemPrice, fetchQuotation, listTermsTemplates, fetchTerms,
-  searchCustomers, ensureQuotationCustomer, fetchQuotationPdf, fetchQuotationSummaries,
+  searchCustomers, ensureQuotationCustomer, updateQuotationCustomer,
+  fetchQuotationPdf, fetchQuotationSummaries, type CustomerPatch,
   listQuotationAttachments, uploadQuotationAttachment, deleteQuotationAttachment,
   uploadPublicImage,
   type CreateQuotationInput, type CreateQuotationLine,
@@ -75,7 +77,14 @@ export interface QuoteBody extends QuoteLineBody {
   customer?: { name?: string; gstin?: string; state?: string; city?: string }
   validDays?: number
   termsTemplate?: string | null
+  /** Raw markup. Sent by anything predating the plain-text editor. */
   termsHtml?: string | null
+  /**
+   * The terms as the user edited them: one clause per paragraph.
+   * Converted here, so the screen never handles markup. Wins over
+   * termsHtml when both arrive.
+   */
+  termsText?: string | null
   /**
    * 'auto' derives CGST+SGST vs IGST from the customer's GSTIN. The
    * explicit values are for customers ERPNext cannot place — an
@@ -337,7 +346,10 @@ export async function performQuotation(
     validDays: body.validDays,
     taxMode: body.taxMode ?? 'auto',
     termsTemplate: body.termsTemplate ?? null,
-    termsHtml: body.termsHtml ?? null,
+    // Text wins: it is what the person actually read and approved.
+    termsHtml: body.termsText?.trim()
+      ? textToTerms(body.termsText)
+      : (body.termsHtml ?? null),
     raisedBy: who.name ? `${who.name}${who.id ? ` (user ${who.id})` : ''}` : null,
     raisedByOrg: salesPartner,
     raisedVia: opts.via === 'portal' ? 'Partner portal' : 'SGT CRM',
@@ -461,6 +473,61 @@ export async function createCustomerChecked(b: Record<string, string>) {
     entityType,
   })
   return { ok: true as const, payload: { data: created } }
+}
+
+/**
+ * Correct an existing customer — in practice, a mistyped GSTIN.
+ *
+ * Shared by the CRM and the portal so a partner can fix their own
+ * customer's details without anyone reaching into ERPNext.
+ *
+ * What this does NOT do is retrospectively fix quotations already
+ * raised. A quotation captured the customer's tax position when it was
+ * created; correcting the master now changes the NEXT one. The caller
+ * is told so rather than left to discover it.
+ */
+export async function updateCustomerChecked(
+  erpName: string, b: Record<string, unknown>,
+) {
+  const patch: CustomerPatch = {}
+  const fields: Record<string, string> = {}
+
+  if ('gstin' in b) {
+    const gstin = String(b.gstin ?? '').trim().toUpperCase()
+    if (gstin) {
+      const g = inspectGstin(gstin)
+      if (!g.valid) fields.gstin = g.message ?? 'GSTIN is not valid'
+    }
+    patch.gstin = gstin || null
+  }
+  if ('entityType' in b) {
+    patch.entityType = String(b.entityType ?? '') === 'Individual' ? 'Individual' : 'Company'
+  }
+
+  if (Object.keys(fields).length) {
+    return {
+      ok: false as const, code: 422,
+      payload: { error: { code: 'validation_failed', message: 'Some fields need attention' }, fields },
+    }
+  }
+  if (!Object.keys(patch).length) {
+    return {
+      ok: false as const, code: 400,
+      payload: { error: { code: 'bad_request', message: 'Nothing to change' } },
+    }
+  }
+
+  const r = await updateQuotationCustomer(erpName, patch)
+  return {
+    ok: true as const,
+    payload: {
+      data: {
+        ...r,
+        note: 'Quotations already raised keep the details they were created with. ' +
+              'Raise a new one for the corrected figures.',
+      },
+    },
+  }
 }
 
 /**
@@ -735,7 +802,9 @@ export default async function quotesRoutes(app: FastifyInstance) {
     if (html === null) {
       return reply.code(404).send({ error: { code: 'not_found', message: 'No such terms template' } })
     }
-    return reply.send({ data: { name, terms: html } })
+    // Both forms: `text` is what the editor shows, `terms` is what the
+    // document carries. The screen edits the first and never sees the second.
+    return reply.send({ data: { name, terms: html, text: termsToText(html) } })
   })
 
   // ---- Commercial limits the UI needs to label its controls -------------
@@ -766,6 +835,21 @@ export default async function quotesRoutes(app: FastifyInstance) {
     const result = await createCustomerChecked(b)
     if (!result.ok) return reply.code(result.code).send(result.payload)
     return reply.code(201).send(result.payload)
+  })
+
+  // Fix a customer's details — a mistyped GSTIN, usually.
+  app.patch('/customers/:erpName', { preHandler: staff }, async (req, reply) => {
+    const { erpName } = req.params as { erpName: string }
+    try {
+      const r = await updateCustomerChecked(erpName, (req.body ?? {}) as Record<string, unknown>)
+      if (!r.ok) return reply.code(r.code).send(r.payload)
+      return reply.send(r.payload)
+    } catch (e: any) {
+      req.log.error({ err: e, erpName }, 'customer update failed')
+      return reply.code(502).send({
+        error: { code: 'update_failed', message: String(e?.message ?? e).slice(0, 300) },
+      })
+    }
   })
 
   // ---- The rendered PDF, proxied ---------------------------------------

@@ -27,6 +27,7 @@
 
 import { erpFetch } from './erpLimit.js';
 import { renderSpecHtml, type ProductSpec } from '../domain/quoteSpec.js';
+import { withTermsFooter } from '../domain/quoteTerms.js';
 
 const BASE = process.env.ERPNEXT_URL?.replace(/\/+$/, '') ?? '';
 const KEY = process.env.ERPNEXT_API_KEY ?? '';
@@ -399,6 +400,56 @@ export async function ensureQuotationCustomer(input: CustomerInput): Promise<Cus
 }
 
 /**
+ * Correct a customer ERPNext already holds.
+ *
+ * The case this exists for: a GSTIN typed wrong at creation. Until now
+ * there was no way to fix one from the CRM — the customer had to be
+ * opened in ERPNext, which external partners cannot reach at all.
+ *
+ * `customer_name` is NOT writable here on purpose. On most ERPNext
+ * setups the Customer is named BY that field, so changing it renames
+ * the document and every link to it — quotations, orders, invoices.
+ * That is a data-migration operation, not a typo fix, and it belongs to
+ * whoever administers ERPNext.
+ */
+export interface CustomerPatch {
+  gstin?: string | null;
+  entityType?: 'Company' | 'Individual' | null;
+}
+
+export async function updateQuotationCustomer(
+  erpName: string, patch: CustomerPatch,
+): Promise<{ erpName: string; changed: string[] }> {
+  if (!BASE || !KEY || !SECRET) throw new Error('ERPNext is not configured on this server');
+
+  const body: Record<string, unknown> = {};
+  if (patch.gstin !== undefined) {
+    const g = String(patch.gstin ?? '').trim().toUpperCase();
+    // Both fields: india_compliance reads `gstin`, stock ERPNext reads
+    // `tax_id`, and a site with one but not the other must still update.
+    body.gstin = g || null;
+    body.tax_id = g || null;
+  }
+  if (patch.entityType) body.customer_type = patch.entityType;
+
+  if (!Object.keys(body).length) return { erpName, changed: [] };
+
+  const res = await erpFetch(
+    `${BASE}/api/resource/Customer/${encodeURIComponent(erpName)}`,
+    { method: 'PUT', headers: authHeaders(), body: JSON.stringify(body) });
+  const text = await res.text();
+  if (!res.ok) {
+    let msg = text.slice(0, 400);
+    try {
+      const j = JSON.parse(text);
+      msg = j.exception ?? j._server_messages ?? msg;
+    } catch { /* keep the raw text */ }
+    throw new Error(`ERPNext would not update the customer: ${String(msg).slice(0, 300)}`);
+  }
+  return { erpName, changed: Object.keys(body) };
+}
+
+/**
  * The state code to tax against, for a customer ERPNext already knows.
  *
  * The GSTIN typed into our form is the LAST resort, not the first. A user
@@ -730,16 +781,19 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
   // ---- Terms ----------------------------------------------------------
   // Named template AND its text, for the same reason the tax rows are sent
   // explicitly. An edited body wins over the template it came from.
+  //
+  // The closing rule and the company stamp are appended HERE, not stored
+  // in the template and not shown in the editor — see withTermsFooter.
   const termsTemplate = input.termsTemplate ?? DEFAULT_TERMS;
   let termsWarning: string | null = null;
   if (input.termsHtml && input.termsHtml.trim()) {
-    doc.terms = input.termsHtml;
+    doc.terms = withTermsFooter(input.termsHtml);
     if (termsTemplate) doc.tc_name = termsTemplate;
   } else if (termsTemplate) {
     const text = await fetchTerms(termsTemplate);
     if (text) {
       doc.tc_name = termsTemplate;
-      doc.terms = text;
+      doc.terms = withTermsFooter(text);
     } else {
       termsWarning =
         `Terms template "${termsTemplate}" was not found or is empty, so the ` +
