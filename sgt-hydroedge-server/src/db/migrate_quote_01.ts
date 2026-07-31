@@ -151,8 +151,10 @@ const GREENX: CatalogueRow[] = [
   { modelCode: 'GreenX-1250', ratingLabel: '1250',             coversUptoKva: '1250', mrp: '1190112', dealerNet: '708400'  },
   { modelCode: 'GreenX-1500', ratingLabel: '1500',             coversUptoKva: '1500', mrp: '1317624', dealerNet: '784300'  },
   { modelCode: 'GreenX-1800', ratingLabel: '1700 / 1750 / 1800', coversUptoKva: '1800', mrp: '1572648', dealerNet: '936100' },
-  // ⚠ Price inversion, seeded as published — see the warning logged below.
-  { modelCode: 'GreenX-2000', ratingLabel: '2000',             coversUptoKva: '2000', mrp: '1386000', dealerNet: '825000'  },
+  // Repriced by the 1 July 2026 list (SGT/GreenX/PL/2026-27/CPS-01), which
+  // also resolves the inversion this row used to carry: it was ₹13,86,000,
+  // BELOW the 1800's ₹15,72,648. The curve now rises all the way.
+  { modelCode: 'GreenX-2000', ratingLabel: '2000',             coversUptoKva: '2000', mrp: '1722000', dealerNet: '1025000' },
   { modelCode: 'GreenX-2500', ratingLabel: '2500',             coversUptoKva: '2500', mrp: '2040192', dealerNet: '1214400' },
 ];
 
@@ -280,10 +282,30 @@ async function main() {
     console.log('✔ migrate_quote_01 complete:', counts);
     console.log(`  (seeded ${lineCount} price lines this run)`);
     console.log('');
-    console.log('  ⚠ GreenX-2000 is seeded as published and inverts the curve:');
-    console.log('    GreenX-2000 MRP ₹13,86,000 < GreenX-1800 MRP ₹15,72,648.');
-    console.log('    The resolver will therefore quote an 1,850 kVA DG MORE than a 1,950 kVA one.');
-    console.log('    Confirm this is intentional in price list v1.1 before Round 4 goes live.');
+    console.log('  Prices are those of the 1 July 2026 list, SGT/GreenX/PL/2026-27/CPS-01.');
+
+    // The old inversion — GreenX-2000 priced below GreenX-1800 — was fixed by
+    // that list. Checked rather than assumed, because the resolver picks the
+    // next model UP and an inverted curve makes a bigger DG quote cheaper.
+    const { rows: curve } = await client.query<{ model_code: string; unit_price: string }>(/* sql */ `
+      select pm.model_code, pl.unit_price::text
+        from quote_service.price_line pl
+        join quote_service.product_model pm on pm.id = pl.model_id
+        join quote_service.price_book pb on pb.id = pl.price_book_id
+       where pb.code = $1 and pm.is_active
+       order by pm.covers_upto_kva asc
+    `, [MRP_BOOK]);
+
+    const inversions = curve.filter((r, i) =>
+      i > 0 && Number(r.unit_price) < Number(curve[i - 1].unit_price));
+    if (inversions.length) {
+      console.log('');
+      console.log(`  ⚠ ${inversions.length} price inversion(s) — a larger model costs LESS than`);
+      console.log('    the one below it, so the resolver will quote the bigger DG cheaper:');
+      for (const r of inversions) console.log(`      · ${r.model_code} at ₹${Number(r.unit_price).toLocaleString('en-IN')}`);
+    } else {
+      console.log('  Price curve rises monotonically — no inversions.');
+    }
   } catch (err) {
     await client.query('rollback');
     console.error('✗ migrate_quote_01: failed —', err);
