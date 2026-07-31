@@ -31,7 +31,8 @@ import {
 import { cleanSpec, SPEC_FIELDS } from '../domain/quoteSpec.js'
 import { termsToText, textToTerms } from '../domain/quoteTerms.js'
 import {
-  createQuotation, itemPrice, fetchQuotation, listTermsTemplates, fetchTerms,
+  createQuotation, updateQuotation, quotationIsDraft,
+  itemPrice, fetchQuotation, listTermsTemplates, fetchTerms,
   searchCustomers, ensureQuotationCustomer, updateQuotationCustomer,
   findCustomerAddress, upsertCustomerAddress, hasAddress,
   fetchQuotationPdf, fetchQuotationSummaries,
@@ -161,7 +162,18 @@ function readLines(body: QuoteBody): QuoteLineBody[] {
 export async function performQuotation(
   req: FastifyRequest,
   body: QuoteBody,
-  opts: { forcedOrgId?: number | null; via: 'crm' | 'portal' },
+  opts: {
+    forcedOrgId?: number | null
+    via: 'crm' | 'portal'
+    /**
+     * Set to an existing quotation's name to REWRITE it rather than
+     * create one. Everything below is identical either way — that is the
+     * point: an edited quotation must be resolved, capped, taxed and
+     * termed by exactly the code that produced the original, or the two
+     * drift and nobody notices until a customer does.
+     */
+    updating?: string
+  },
 ) {
   const who = actor(req)
 
@@ -208,7 +220,15 @@ export async function performQuotation(
   }
   const resolved = resolutions as Extract<typeof resolutions[number], { resolved: true }>[]
 
-  const orgId = opts.forcedOrgId !== undefined ? opts.forcedOrgId : (body.orgId ?? null)
+  // On an edit with no partner supplied, keep the one the quotation was
+  // raised under. Silently dropping it would strip the sales partner,
+  // and with it the commission, from a document nobody meant to change.
+  let orgId = opts.forcedOrgId !== undefined ? opts.forcedOrgId : (body.orgId ?? null)
+  if (opts.updating && opts.forcedOrgId === undefined && body.orgId === undefined) {
+    const { rows } = await query(
+      `select org_id from quote_service.quotation_ref where erp_name = $1`, [opts.updating])
+    orgId = rows[0]?.org_id ?? null
+  }
 
   // A partner code goes on the quotation as sales_partner so ERPNext
   // computes their commission. No org means SGT quoted directly.
@@ -358,7 +378,24 @@ export async function performQuotation(
     partner: partnerSnapshot,
   }
 
-  const created = await createQuotation(input)
+  let created: Awaited<ReturnType<typeof createQuotation>>
+  try {
+    created = opts.updating
+      ? await updateQuotation(opts.updating, input)
+      : await createQuotation(input)
+  } catch (e: any) {
+    // A submitted quotation is refused by updateQuotation with an
+    // explanation; that is a 409, not a 502 — the caller did nothing
+    // wrong, the document simply moved on.
+    const message = String(e?.message ?? e)
+    if (opts.updating && /submitted/i.test(message)) {
+      return {
+        ok: false as const, code: 409,
+        payload: { error: { code: 'not_editable', message } },
+      }
+    }
+    throw e
+  }
 
   // Mirror it locally. A failure here must NOT lose the quotation — it
   // already exists in ERPNext, which is the system of record.
@@ -430,6 +467,7 @@ export async function performQuotation(
         customer: created.customer,
         salesPartner,
         mirrored,
+        updated: !!opts.updating,
       },
     },
   }
@@ -587,6 +625,64 @@ export async function updateCustomerChecked(
         erpName, changed,
         note: 'Quotations already raised keep the details they were created with. ' +
               'Raise a new one for the corrected address and figures.',
+      },
+    },
+  }
+}
+
+/**
+ * Reload a quotation into the shape the create form uses.
+ *
+ * Read from OUR mirror, not from ERPNext. ERPNext stores the outcome —
+ * item codes, rates, amounts — but not the question: which kVA was
+ * typed, whether the discount was entered as a percentage or in rupees,
+ * what the specification said. Rebuilding the form from item codes would
+ * lose all of it, so `lines` was written for exactly this.
+ */
+export async function loadForEdit(erpName: string) {
+  const { rows } = await query(
+    `select q.erp_name, q.org_id, q.lines, q.line_count, q.tax_mode,
+            q.erp_customer, q.customer_name, q.status,
+            o.code as org_code
+       from quote_service.quotation_ref q
+       left join quote_service.org o on o.id = q.org_id
+      where q.erp_name = $1`, [erpName])
+  const row = rows[0]
+  if (!row) {
+    return {
+      ok: false as const, code: 404,
+      payload: { error: { code: 'not_found', message: `${erpName} is not in the CRM's records` } },
+    }
+  }
+
+  const draft = await quotationIsDraft(erpName)
+  if (draft === null) {
+    return {
+      ok: false as const, code: 404,
+      payload: { error: { code: 'not_found', message: `${erpName} no longer exists in ERPNext` } },
+    }
+  }
+
+  const doc = await fetchQuotation(erpName).catch(() => null)
+
+  return {
+    ok: true as const,
+    payload: {
+      data: {
+        erpName,
+        editable: draft,
+        // Said plainly, because "why is Save greyed out" is the next question.
+        reason: draft ? null
+          : `${erpName} has been submitted in ERPNext, so it can no longer be ` +
+            `changed. Cancel and amend it there, or raise a new quotation.`,
+        orgId: row.org_id ?? null,
+        orgCode: row.org_code ?? null,
+        taxMode: row.tax_mode ?? 'auto',
+        customerErpName: row.erp_customer,
+        customerName: row.customer_name,
+        lines: Array.isArray(row.lines) ? row.lines : [],
+        lineCount: row.line_count ?? 1,
+        termsTemplate: doc?.tc_name ?? null,
       },
     },
   }
@@ -1023,6 +1119,26 @@ export default async function quotesRoutes(app: FastifyInstance) {
     const result = await performQuotation(req, (req.body ?? {}) as QuoteBody, { via: 'crm' })
     if (!result.ok) return reply.code(result.code).send(result.payload)
     return reply.code(201).send(result.payload)
+  })
+
+  // ---- Edit a draft ------------------------------------------------------
+  // Our mirror holds what was asked for — the kVA, the discounts, the
+  // specification — which ERPNext never stores. That is what the edit
+  // screen reloads, so the form comes back as it was filled in rather
+  // than reverse-engineered from item codes.
+  app.get('/:erpName/edit', { preHandler: staff }, async (req, reply) => {
+    const { erpName } = req.params as { erpName: string }
+    const r = await loadForEdit(erpName)
+    if (!r.ok) return reply.code(r.code).send(r.payload)
+    return reply.send(r.payload)
+  })
+
+  app.put('/:erpName', { preHandler: staff }, async (req, reply) => {
+    const { erpName } = req.params as { erpName: string }
+    const result = await performQuotation(
+      req, (req.body ?? {}) as QuoteBody, { via: 'crm', updating: erpName })
+    if (!result.ok) return reply.code(result.code).send(result.payload)
+    return reply.send(result.payload)
   })
 
   // ---- List from the mirror --------------------------------------------

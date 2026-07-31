@@ -18,7 +18,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import {
-  Check, AlertCircle, Zap, FileText, Send, Plus, X, Paperclip, Trash2,
+  Check, AlertCircle, Zap, FileText, Send, Plus, X, Paperclip, Trash2, Pencil,
 } from 'lucide-react'
 
 const INK = '#161614'
@@ -129,6 +129,13 @@ export interface QuoteApi {
   termsList(): Promise<{ templates: string[]; default: string }>
   termsBody(name: string): Promise<string>
   list(): Promise<any[]>
+  loadForEdit(erpName: string): Promise<{
+    erpName: string; editable: boolean; reason: string | null
+    orgId: number | null; taxMode: 'auto' | 'in_state' | 'out_state'
+    customerErpName: string; customerName: string
+    lines: any[]; termsTemplate?: string | null
+  }>
+  update(erpName: string, body: any): Promise<any>
   specFields(): Promise<SpecField[]>
   attachments(erpName: string): Promise<QuoteAttachment[]>
   attach(erpName: string, file: File): Promise<QuoteAttachment>
@@ -475,6 +482,8 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
   const [busy, setBusy] = useState(false)
   const [banner, setBanner] = useState<string | null>(null)
   const [made, setMade] = useState<any>(null)
+  /** Set while rewriting an existing draft rather than raising a new one. */
+  const [editing, setEditing] = useState<string | null>(null)
   const [terms, setTerms] = useState<{ templates: string[]; default: string } | null>(null)
   const [termsName, setTermsName] = useState('')
   const [termsHtml, setTermsHtml] = useState('')
@@ -571,11 +580,53 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
   const allResolved = filled.length > 0 && filled.every(l => l.res?.resolved)
   const canCreate = allResolved && !!picked && !busy && !anyOverCap
 
+  /** Reset the form to "raising a new one". */
+  const clearForm = () => {
+    setLines([blankLine()])
+    setPicked(null); setCustQuery(''); setCustHits([]); setEditCust(null)
+    setTaxMode('auto'); setTermsEdited(false); setEditing(null)
+  }
+
+  /**
+   * Load an existing draft back into this form.
+   *
+   * Rebuilt from the CRM's own record of what was ASKED for — the kVA,
+   * how the discount was entered, the specification. ERPNext keeps the
+   * outcome; it never knew the question.
+   */
+  const startEdit = async (erpName: string) => {
+    setBanner(null); setMade(null)
+    try {
+      const d = await api.loadForEdit(erpName)
+      if (!d.editable) { setBanner(d.reason ?? 'This quotation can no longer be edited.'); return }
+
+      setLines(d.lines.length ? d.lines.map((l: any) => ({
+        ...blankLine(),
+        kva: String(l.kva ?? ''),
+        qty: Number(l.qty ?? 1),
+        discountMode: l.discountPct ? 'pct' : l.discountAmount ? 'amount' : 'pct',
+        discountPct: l.discountPct ? String(l.discountPct) : '',
+        discountAmt: l.discountAmount ? String(l.discountAmount) : '',
+        amcYears: Number(l.amcYears ?? 0),
+        spec: l.spec ?? {},
+        showSpec: !!(l.spec && Object.keys(l.spec).length),
+      })) : [blankLine()])
+
+      setPicked({ name: d.customerErpName, customer_name: d.customerName })
+      setTaxMode(d.taxMode ?? 'auto')
+      if (showPartnerPicker) setOrgId(d.orgId ?? null)
+      if (d.termsTemplate) setTermsName(d.termsTemplate)
+      setTermsEdited(false)
+      setEditing(erpName)
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+    } catch (e: any) { setBanner(e.message) }
+  }
+
   const create = async () => {
     if (!canCreate) return
     setBusy(true); setBanner(null); setMade(null)
     try {
-      const r = await api.create({
+      const body = {
         lines: filled.map(l => ({
           kva: l.kva,
           qty: l.qty,
@@ -590,12 +641,12 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
         ...(showPartnerPicker ? { orgId } : {}),
         termsTemplate: termsName || null,
         termsText: termsEdited && termsHtml.trim() ? termsHtml : null,
-      })
+      }
+      const r = editing
+        ? await api.update(editing, body)
+        : await api.create(body)
       setMade(r.data ?? r)
-      setLines([blankLine()])
-      setPicked(null); setCustQuery(''); setCustHits([])
-      setTaxMode('auto')
-      setTermsEdited(false)
+      clearForm()
       refresh()
     } catch (e: any) { setBanner(e.message) } finally { setBusy(false) }
   }
@@ -850,6 +901,27 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
         automatically. Add a machine for every set they need.
       </p>
 
+      {editing && (
+        <div style={{
+          padding: '11px 13px', marginBottom: 13, borderRadius: 8,
+          backgroundColor: '#DDE8F0', color: '#1F4E6B', fontSize: 12.5,
+          display: 'flex', alignItems: 'center', gap: 10,
+        }}>
+          <FileText size={15} style={{ flexShrink: 0 }} />
+          <span style={{ flex: 1 }}>
+            Editing <strong>{editing}</strong> — saving rewrites that quotation
+            rather than creating a new one.
+          </span>
+          <button type="button" onClick={clearForm} style={{
+            background: 'none', border: '1px solid rgba(31,78,107,0.35)', borderRadius: 6,
+            padding: '4px 10px', cursor: 'pointer', color: '#1F4E6B',
+            fontSize: 12, fontFamily: 'inherit', whiteSpace: 'nowrap',
+          }}>
+            Cancel edit
+          </button>
+        </div>
+      )}
+
       {banner && (
         <div style={{ padding: '10px 12px', marginBottom: 13, borderRadius: 8, backgroundColor: '#F3DAD5', color: DANGER, fontSize: 12.5 }}>
           {banner}
@@ -859,7 +931,7 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
       {made && (
         <div style={{ padding: '13px 15px', marginBottom: 13, borderRadius: 10, backgroundColor: '#DCEBE1', color: OK }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13.5, fontWeight: 700 }}>
-            <Check size={16} /> {made.erpName} created in ERPNext
+            <Check size={16} /> {made.erpName} {made.updated ? 'updated' : 'created'} in ERPNext
           </div>
           <div style={{ fontSize: 11.5, opacity: 0.9, marginTop: 4 }}>
             {made.model} × {made.qty}
@@ -1328,8 +1400,10 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
           color: canCreate ? '#fff' : '#8C887E',
         }}>
           {busy
-            ? 'Creating in ERPNext…'
-            : `Create quotation${filled.length > 1 ? ` · ${filled.length} machines` : ''}`}
+            ? (editing ? 'Saving to ERPNext…' : 'Creating in ERPNext…')
+            : editing
+              ? `Save changes to ${editing}`
+              : `Create quotation${filled.length > 1 ? ` · ${filled.length} machines` : ''}`}
         </button>
 
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 10 }}>
@@ -1401,6 +1475,19 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
                     }}>
                     <Send size={13} /> Send
                   </button>
+                  {/* Only a draft can be rewritten. ERPNext freezes a
+                      quotation on submission, and that boundary is not
+                      ours to work around. */}
+                  {String(q.status ?? '').toLowerCase() === 'draft' && (
+                    <button type="button" onClick={() => startEdit(q.erp_name)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 5,
+                        background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                        color: MUTED, fontSize: 12, fontFamily: 'inherit',
+                      }}>
+                      <Pencil size={13} /> Edit
+                    </button>
+                  )}
                 </div>
               </div>
             ))}

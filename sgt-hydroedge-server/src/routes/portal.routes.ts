@@ -49,7 +49,7 @@ import { decodeLogo, LOGO_MAX_BYTES } from '../domain/partnerLogo.js'
 import { readLogo, saveLogo, clearLogo } from '../services/partnerLogoStore.js'
 import {
   performQuotation, createCustomerChecked, updateCustomerChecked, customerDetail,
-  reconcileQuotations,
+  loadForEdit, reconcileQuotations,
   buildRecipients, performSend, performAttach, ATTACH_MAX_BYTES,
   type QuoteBody,
 } from './quotes.routes.js'
@@ -395,6 +395,33 @@ export default async function portalRoutes(app: FastifyInstance) {
     const result = await performQuotation(req, body, { forcedOrgId: me.orgId, via: 'portal' })
     if (!result.ok) return reply.code(result.code).send(result.payload)
     return reply.code(201).send(result.payload)
+  })
+
+  // Editing a draft, scoped exactly like the PDF and the send.
+  app.get('/quotes/:erpName/edit', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { erpName } = req.params as { erpName: string }
+    if (!await ownsQuotation(erpName, me.orgId)) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } })
+    }
+    const r = await loadForEdit(erpName)
+    if (!r.ok) return reply.code(r.code).send(r.payload)
+    return reply.send(r.payload)
+  })
+
+  app.put('/quotes/:erpName', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { erpName } = req.params as { erpName: string }
+    if (!await ownsQuotation(erpName, me.orgId)) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } })
+    }
+    const result = await performQuotation(
+      req, (req.body ?? {}) as QuoteBody,
+      { forcedOrgId: me.orgId, via: 'portal', updating: erpName })
+    if (!result.ok) return reply.code(result.code).send(result.payload)
+    return reply.send(result.payload)
   })
 
   app.get('/quotes', { preHandler: requireAuth }, async (req, reply) => {

@@ -849,7 +849,71 @@ function itemRows(line: CreateQuotationLine): Record<string, unknown>[] {
   ];
 }
 
-export async function createQuotation(input: CreateQuotationInput): Promise<CreateQuotationResult> {
+/**
+ * Rewrite a quotation that has not been submitted yet.
+ *
+ * WHY ONLY A DRAFT. Frappe treats submission as the point a document
+ * becomes a record: at docstatus 1 the fields are frozen and the only
+ * way to change one is cancel-and-amend, which mints a new name and
+ * leaves the old document cancelled beside it. That is a deliberate
+ * accounting boundary and this must not work around it — so a submitted
+ * quotation is refused with an explanation rather than half-edited.
+ *
+ * The whole body is recomputed and PUT, not patched. Frappe replaces a
+ * child table wholesale when one is supplied, so sending three items
+ * where there were five leaves three — which is what editing a
+ * quotation means. Patching individual rows would leave the discarded
+ * ones behind.
+ */
+export async function updateQuotation(
+  erpName: string, input: CreateQuotationInput,
+): Promise<CreateQuotationResult> {
+  if (!BASE || !KEY || !SECRET) throw new Error('ERPNext is not configured on this server');
+
+  const existing = await getDoc('Quotation', erpName).catch(() => null);
+  if (!existing) throw new Error(`${erpName} no longer exists in ERPNext`);
+  if (Number(existing.docstatus) !== 0) {
+    throw new Error(
+      `${erpName} has been submitted, so it can no longer be edited. ` +
+      `Cancel and amend it in ERPNext, or raise a new quotation.`);
+  }
+
+  const built = await buildQuotationDoc(input);
+  const res = await erpFetch(
+    `${BASE}/api/resource/Quotation/${encodeURIComponent(erpName)}`,
+    { method: 'PUT', headers: authHeaders(), body: JSON.stringify(built.doc) });
+  const text = await res.text();
+  if (!res.ok) {
+    let msg = text.slice(0, 400);
+    try {
+      const j = JSON.parse(text);
+      msg = j.exception ?? j._server_messages ?? msg;
+    } catch { /* keep the raw text */ }
+    throw new Error(`ERPNext could not update ${erpName}: ${String(msg).slice(0, 350)}`);
+  }
+  const updated = JSON.parse(text).data;
+  return finishQuotation(updated, built, input);
+}
+
+/**
+ * Everything that turns our inputs into an ERPNext Quotation body.
+ *
+ * Split out of createQuotation so that EDITING a draft runs the exact
+ * same resolution — taxes, address, terms, partner snapshot — rather
+ * than a second implementation that drifts. The only difference between
+ * creating and editing is POST versus PUT.
+ */
+interface BuiltQuotation {
+  doc: Record<string, unknown>;
+  customer: CustomerResult;
+  taxMode: TaxMode;
+  taxTemplate: string | null;
+  taxWarning: string | null;
+  termsWarning: string | null;
+  addressWarning: string | null;
+}
+
+async function buildQuotationDoc(input: CreateQuotationInput): Promise<BuiltQuotation> {
   if (!BASE || !KEY || !SECRET) throw new Error('ERPNext is not configured on this server');
 
   if (!input.lines?.length) throw new Error('A quotation needs at least one line');
@@ -960,17 +1024,28 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
     }
   }
 
-  const created = await post('Quotation', doc);
+  return {
+    doc, customer, taxMode, taxTemplate, taxWarning, termsWarning, addressWarning,
+  };
+}
+
+/** Read the figures back off whatever ERPNext stored, and warn on them. */
+function finishQuotation(
+  created: any, built: BuiltQuotation, input: CreateQuotationInput,
+): CreateQuotationResult {
+  const { customer, taxMode, taxTemplate, termsWarning, addressWarning } = built;
+  let taxWarning = built.taxWarning;
 
   // Verify against what ERPNext actually stored, not what we sent. A
   // document that looks complete but carries zero tax is worse than an
   // error, so surface it rather than let it reach a customer.
   if (!taxWarning && Number(created.total_taxes_and_charges ?? 0) === 0) {
     taxWarning =
-      `${created.name} was created with zero tax despite template "${taxTemplate}". ` +
+      `${created.name} carries zero tax despite template "${taxTemplate}". ` +
       `Check the item's GST treatment in ERPNext before sending it.`;
   }
 
+  const doc = built.doc;
   return {
     erpName: created.name,
     customer,
@@ -990,9 +1065,25 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
   };
 }
 
+export async function createQuotation(input: CreateQuotationInput): Promise<CreateQuotationResult> {
+  const built = await buildQuotationDoc(input);
+  const created = await post('Quotation', built.doc);
+  return finishQuotation(created, built, input);
+}
+
 /** Read a quotation back from ERPNext — the authoritative figures. */
 export async function fetchQuotation(erpName: string) {
   return getDoc('Quotation', erpName);
+}
+
+/** Draft or not. An edit is only possible while docstatus is 0. */
+export async function quotationIsDraft(erpName: string): Promise<boolean | null> {
+  try {
+    const doc = await getDoc('Quotation', erpName);
+    return Number(doc?.docstatus) === 0;
+  } catch {
+    return null;
+  }
 }
 
 // =====================================================================

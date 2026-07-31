@@ -1,7 +1,7 @@
 import { useIsMobile } from '../hooks/useIsMobile'
-import { LayoutGrid, Inbox, Plus, BarChart3, LayoutDashboard, User, LogOut, Building2, Send, Handshake, FileText } from 'lucide-react'
+import { LayoutGrid, Inbox, Plus, BarChart3, LayoutDashboard, User, LogOut, Building2, Send, Handshake, FileText , KeyRound } from 'lucide-react'
 
-type Page = 'home' | 'my-dashboard' | 'pipeline' | 'triage' | 'capture' | 'customers' | 'outreach' | 'onboarding' | 'quotes'
+type Page = 'home' | 'my-dashboard' | 'pipeline' | 'triage' | 'capture' | 'customers' | 'outreach' | 'onboarding' | 'quotes' | 'users'
 
 interface Props {
   current: Page
@@ -32,6 +32,9 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'quotes', label: 'Quotations', short: 'Quotes', icon: FileText, roles: ['director', 'sales'] },
   // Director-only until the partner_ops role and its route whitelist land.
   { id: 'onboarding', label: 'Partner onboarding', short: 'Partners', icon: Handshake, roles: ['director'] },
+  // Creating a login is the same class of act as allotting a partner code,
+  // so it stays with the director. See services/userAccounts.ts.
+  { id: 'users', label: 'Logins', short: 'Logins', icon: KeyRound, roles: ['director'] },
 ]
 
 function initials(name: string): string {

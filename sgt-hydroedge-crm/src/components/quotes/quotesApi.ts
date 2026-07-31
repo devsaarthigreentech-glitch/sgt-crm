@@ -51,6 +51,15 @@ export function makeQuoteApi(prefix: string, withPartners: boolean): QuoteApi {
 
     list: () => request<{ data: any[] }>(`${prefix}`).then(r => r.data),
 
+    loadForEdit: (erpName: string) =>
+      request<{ data: any }>(`${prefix}/${encodeURIComponent(erpName)}/edit`)
+        .then(r => r.data),
+
+    update: (erpName: string, body: any) =>
+      request<any>(`${prefix}/${encodeURIComponent(erpName)}`, {
+        method: 'PUT', body: JSON.stringify(body),
+      }),
+
     recipients: (erpName: string) =>
       request<{ data: RecipientPlan }>(
         `${prefix}/${encodeURIComponent(erpName)}/recipients`).then(r => r.data),
