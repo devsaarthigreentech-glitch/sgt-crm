@@ -48,7 +48,7 @@ import { termsToText } from '../domain/quoteTerms.js'
 import { decodeLogo, LOGO_MAX_BYTES } from '../domain/partnerLogo.js'
 import { readLogo, saveLogo, clearLogo } from '../services/partnerLogoStore.js'
 import {
-  performQuotation, createCustomerChecked, updateCustomerChecked,
+  performQuotation, createCustomerChecked, updateCustomerChecked, customerDetail,
   reconcileQuotations,
   buildRecipients, performSend, performAttach, ATTACH_MAX_BYTES,
   type QuoteBody,
@@ -240,6 +240,13 @@ export default async function portalRoutes(app: FastifyInstance) {
     const result = await createCustomerChecked((req.body ?? {}) as Record<string, string>)
     if (!result.ok) return reply.code(result.code).send(result.payload)
     return reply.code(201).send(result.payload)
+  })
+
+  app.get('/quotes/customers/:erpName', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { erpName } = req.params as { erpName: string }
+    return reply.send({ data: await customerDetail(erpName) })
   })
 
   // A partner may correct a customer they can already quote for. Not

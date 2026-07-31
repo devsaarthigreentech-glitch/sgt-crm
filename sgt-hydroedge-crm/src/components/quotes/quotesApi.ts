@@ -118,7 +118,11 @@ export function makeQuoteApi(prefix: string, withPartners: boolean): QuoteApi {
         method: 'POST', body: JSON.stringify(body),
       }).then(r => r.data),
 
-    updateCustomer: (erpName: string, body: Record<string, string>) =>
+    customerDetail: (erpName: string) =>
+      request<{ data: any }>(`${prefix}/customers/${encodeURIComponent(erpName)}`)
+        .then(r => r.data),
+
+    updateCustomer: (erpName: string, body: Record<string, any>) =>
       request<{ data: { erpName: string; changed: string[]; note?: string } }>(
         `${prefix}/customers/${encodeURIComponent(erpName)}`, {
           method: 'PATCH', body: JSON.stringify(body),

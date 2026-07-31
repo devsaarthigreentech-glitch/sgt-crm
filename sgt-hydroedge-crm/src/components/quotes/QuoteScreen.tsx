@@ -108,8 +108,14 @@ export interface QuoteApi {
     termsText?: string | null
   }): Promise<any>
   searchCustomers(q: string): Promise<ErpCustomer[]>
-  createCustomer(body: Record<string, string>): Promise<{ erpName: string; matchedOn: string }>
-  updateCustomer(erpName: string, body: Record<string, string>):
+  createCustomer(body: Record<string, any>):
+    Promise<{ erpName: string; matchedOn: string; addressWritten?: boolean; note?: string }>
+  customerDetail(erpName: string): Promise<{
+    erpName: string; customerName: string; gstin: string | null
+    address: { line1?: string | null; line2?: string | null; city?: string | null
+              state?: string | null; pincode?: string | null } | null
+  }>
+  updateCustomer(erpName: string, body: Record<string, any>):
     Promise<{ erpName: string; changed: string[]; note?: string }>
   pdfUrl(erpName: string): Promise<string>
   recipients(erpName: string): Promise<RecipientPlan>
@@ -442,9 +448,15 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
   const [custHits, setCustHits] = useState<ErpCustomer[]>([])
   const [custSearching, setCustSearching] = useState(false)
   const [addingCust, setAddingCust] = useState(false)
-  const [editCust, setEditCust] = useState<{ gstin: string; entityType: string } | null>(null)
+  const [editCust, setEditCust] = useState<{
+    gstin: string; entityType: string
+    line1: string; city: string; state: string; pincode: string
+  } | null>(null)
   const [custNote, setCustNote] = useState<string | null>(null)
-  const [newCust, setNewCust] = useState({ name: '', gstin: '', state: '', city: '', entityType: 'Company' })
+  const [newCust, setNewCust] = useState({
+    name: '', gstin: '', entityType: 'Company',
+    line1: '', city: '', state: '', pincode: '',
+  })
   const [custErrors, setCustErrors] = useState<Record<string, string>>({})
   const [taxMode, setTaxMode] = useState<'auto' | 'in_state' | 'out_state'>('auto')
   const [pdfFor, setPdfFor] = useState<{ name: string; url: string } | null>(null)
@@ -511,17 +523,27 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
   }, [custQuery, picked])
 
   const addCustomer = async () => {
-    setCustErrors({})
+    setCustErrors({}); setCustNote(null)
     try {
       const r = await api.createCustomer({
-        name: newCust.name.trim(), gstin: newCust.gstin.trim(),
-        state: newCust.state.trim(), city: newCust.city.trim(),
+        name: newCust.name.trim(),
+        gstin: newCust.gstin.trim(),
         entityType: newCust.entityType,
+        // The address is a separate document in ERPNext. Sent at creation
+        // so the quotation has something to print — without it the
+        // address block on the PDF comes out blank.
+        address: {
+          line1: newCust.line1.trim(),
+          city: newCust.city.trim(),
+          state: newCust.state.trim(),
+          pincode: newCust.pincode.trim(),
+        },
       })
       setPicked({ name: r.erpName, customer_name: newCust.name.trim(), gstin: newCust.gstin.trim() || null })
       setAddingCust(false)
-      setNewCust({ name: '', gstin: '', state: '', city: '', entityType: 'Company' })
+      setNewCust({ name: '', gstin: '', entityType: 'Company', line1: '', city: '', state: '', pincode: '' })
       setBanner(null)
+      if (r.note) setCustNote(r.note)
     } catch (e: any) {
       if (e?.fields) setCustErrors(e.fields)
       else setBanner(e.message)
@@ -856,6 +878,16 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
               <span><strong>No GST on this quotation.</strong> {made.taxWarning}</span>
             </div>
           )}
+          {made.addressWarning && (
+            <div style={{
+              marginTop: 8, padding: '8px 10px', borderRadius: 6, fontSize: 11.5,
+              backgroundColor: WARN_BG, color: WARN_FG,
+              display: 'flex', alignItems: 'flex-start', gap: 5,
+            }}>
+              <AlertCircle size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+              <span><strong>No address on this quotation.</strong> {made.addressWarning}</span>
+            </div>
+          )}
           {made.termsWarning && (
             <div style={{
               marginTop: 8, padding: '8px 10px', borderRadius: 6, fontSize: 11.5,
@@ -960,9 +992,30 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
                   </div>
                 </div>
                 <button type="button"
-                  onClick={() => {
+                  onClick={async () => {
                     setCustErrors({}); setCustNote(null)
-                    setEditCust(e => e ? null : { gstin: picked.gstin ?? '', entityType: 'Company' })
+                    if (editCust) { setEditCust(null); return }
+                    // Prefilled from ERPNext, so saving never blanks a
+                    // field the user could not see.
+                    const blank = {
+                      gstin: picked.gstin ?? '', entityType: 'Company',
+                      line1: '', city: '', state: '', pincode: '',
+                    }
+                    setEditCust(blank)
+                    try {
+                      const d = await api.customerDetail(picked.name)
+                      setEditCust({
+                        gstin: d.gstin ?? picked.gstin ?? '',
+                        entityType: 'Company',
+                        line1: d.address?.line1 ?? '',
+                        city: d.address?.city ?? '',
+                        state: d.address?.state ?? '',
+                        pincode: d.address?.pincode ?? '',
+                      })
+                      if (!d.address) {
+                        setCustNote('This customer has no address in ERPNext — quotations for them print a blank address block. Add it here.')
+                      }
+                    } catch { /* keep the blank form */ }
                   }}
                   style={{ background: 'none', border: 'none', cursor: 'pointer', color: MUTED, fontSize: 12, fontFamily: 'inherit' }}>
                   {editCust ? 'Cancel' : 'Fix details'}
@@ -996,6 +1049,24 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
                     </select>
                   </div>
 
+                  <F label="Address" value={editCust.line1} placeholder="Plot / building, street, area"
+                     onChange={v => setEditCust(c => c && { ...c, line1: v })} />
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    <div style={{ flex: 2 }}>
+                      <F label="City" value={editCust.city}
+                         onChange={v => setEditCust(c => c && { ...c, city: v })} />
+                    </div>
+                    <div style={{ flex: 2 }}>
+                      <F label="State" value={editCust.state}
+                         onChange={v => setEditCust(c => c && { ...c, state: v })} />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <F label="PIN" value={editCust.pincode}
+                         onChange={v => setEditCust(c => c && { ...c, pincode: v })} />
+                    </div>
+                  </div>
+                  {custErrors.pincode && <div style={{ fontSize: 11.5, color: DANGER, marginTop: -8, marginBottom: 10 }}>{custErrors.pincode}</div>}
+
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button type="button"
                       onClick={async () => {
@@ -1003,8 +1074,15 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
                         setCustErrors({}); setBanner(null); setCustNote(null)
                         try {
                           const r = await api.updateCustomer(picked.name, {
+                            name: picked.customer_name || picked.name,
                             gstin: editCust.gstin.trim(),
                             entityType: editCust.entityType,
+                            address: {
+                              line1: editCust.line1.trim(),
+                              city: editCust.city.trim(),
+                              state: editCust.state.trim(),
+                              pincode: editCust.pincode.trim(),
+                            },
                           })
                           setPicked(p => p && { ...p, gstin: editCust.gstin.trim() || null })
                           setEditCust(null)
@@ -1061,18 +1139,26 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
               <F label="GSTIN" value={newCust.gstin} placeholder="27AAECC3132G1Z1"
                  onChange={v => setNewCust(c => ({ ...c, gstin: v.toUpperCase() }))} />
               {custErrors.gstin && <div style={{ fontSize: 11.5, color: DANGER, marginTop: -8, marginBottom: 10 }}>{custErrors.gstin}</div>}
+
+              <F label="Address" value={newCust.line1} placeholder="Plot / building, street, area"
+                 onChange={v => setNewCust(c => ({ ...c, line1: v }))} />
               <div style={{ display: 'flex', gap: 10 }}>
-                <div style={{ flex: 1 }}>
+                <div style={{ flex: 2 }}>
                   <F label="City" value={newCust.city} onChange={v => setNewCust(c => ({ ...c, city: v }))} />
                 </div>
-                <div style={{ flex: 1 }}>
+                <div style={{ flex: 2 }}>
                   <F label="State" value={newCust.state} onChange={v => setNewCust(c => ({ ...c, state: v }))} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <F label="PIN" value={newCust.pincode} onChange={v => setNewCust(c => ({ ...c, pincode: v }))} />
                 </div>
               </div>
               {custErrors.state && <div style={{ fontSize: 11.5, color: DANGER, marginTop: -8, marginBottom: 10 }}>{custErrors.state}</div>}
+              {custErrors.pincode && <div style={{ fontSize: 11.5, color: DANGER, marginTop: -8, marginBottom: 10 }}>{custErrors.pincode}</div>}
               <div style={{ fontSize: 11, color: FAINT, marginBottom: 10 }}>
-                Without a GSTIN, ERPNext cannot work out where they are — set the
-                GST below by hand, or the quotation goes out with no tax.
+                The address is saved to ERPNext as the customer's billing address
+                and printed on the quotation — leave it blank and the address
+                block comes out empty. Without a GSTIN, set the GST below by hand.
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button type="button" onClick={addCustomer} style={{

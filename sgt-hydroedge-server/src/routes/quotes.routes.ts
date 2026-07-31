@@ -33,7 +33,9 @@ import { termsToText, textToTerms } from '../domain/quoteTerms.js'
 import {
   createQuotation, itemPrice, fetchQuotation, listTermsTemplates, fetchTerms,
   searchCustomers, ensureQuotationCustomer, updateQuotationCustomer,
-  fetchQuotationPdf, fetchQuotationSummaries, type CustomerPatch,
+  findCustomerAddress, upsertCustomerAddress, hasAddress,
+  fetchQuotationPdf, fetchQuotationSummaries,
+  type CustomerPatch, type AddressInput,
   listQuotationAttachments, uploadQuotationAttachment, deleteQuotationAttachment,
   uploadPublicImage,
   type CreateQuotationInput, type CreateQuotationLine,
@@ -418,6 +420,7 @@ export async function performQuotation(
         amcYears: first.amcYears,
         taxTemplate: created.taxTemplate,
         taxMode: created.taxMode,
+        addressWarning: created.addressWarning,
         termsTemplate: created.termsTemplate,
         termsWarning: created.termsWarning,
         totalTax: created.totalTax,
@@ -440,10 +443,27 @@ export async function performQuotation(
  * GST. That is exactly how the first quotations went out at zero tax, so
  * one of the two is required here rather than discovered later.
  */
-export async function createCustomerChecked(b: Record<string, string>) {
+/** The address fields, off whatever shape the client sent. */
+function readAddress(b: Record<string, any>): AddressInput {
+  const src = (b.address ?? b) as Record<string, any>
+  const s = (k: string) => String(src[k] ?? '').trim() || null
+  return {
+    line1: s('line1') ?? s('address_line1'),
+    line2: s('line2') ?? s('address_line2'),
+    city: s('city'),
+    state: s('state'),
+    pincode: s('pincode') ?? s('pin'),
+    country: s('country') ?? 'India',
+  }
+}
+
+const PIN_SHAPE = /^\d{6}$/
+
+export async function createCustomerChecked(b: Record<string, any>) {
   const name = String(b.name ?? '').trim()
   const gstin = String(b.gstin ?? '').trim().toUpperCase()
   const state = String(b.state ?? '').trim()
+  const address = readAddress(b)
   // A person buying in their own name. ERPNext's Customer carries this
   // distinction natively, and defaulting everyone to Company was putting
   // proprietors into the master data as firms that do not exist.
@@ -461,6 +481,9 @@ export async function createCustomerChecked(b: Record<string, string>) {
     const g = inspectGstin(gstin)
     if (!g.valid) fields.gstin = g.message ?? 'GSTIN is not valid'
   }
+  if (address.pincode && !PIN_SHAPE.test(address.pincode)) {
+    fields.pincode = 'PIN code must be 6 digits'
+  }
   if (Object.keys(fields).length) {
     return {
       ok: false as const, code: 422,
@@ -469,10 +492,30 @@ export async function createCustomerChecked(b: Record<string, string>) {
   }
 
   const created = await ensureQuotationCustomer({
-    name, gstin: gstin || null, state: state || null, city: b.city ?? null,
-    entityType,
+    name, gstin: gstin || null, state: state || null, city: address.city ?? null,
+    entityType, address,
   })
-  return { ok: true as const, payload: { data: created } }
+
+  // Did the address actually land? A customer with none produces a
+  // quotation with a blank address block, which is what happened before
+  // any of this existed — so it is reported rather than assumed.
+  let addressWritten = false
+  try {
+    addressWritten = !!(await findCustomerAddress(created.erpName))
+  } catch { /* the check must not fail the creation */ }
+
+  return {
+    ok: true as const,
+    payload: {
+      data: {
+        ...created,
+        addressWritten,
+        ...(hasAddress(address) && !addressWritten
+          ? { note: 'The customer was created but the address could not be saved. Add it with "Fix details".' }
+          : {}),
+      },
+    },
+  }
 }
 
 /**
@@ -504,29 +547,63 @@ export async function updateCustomerChecked(
     patch.entityType = String(b.entityType ?? '') === 'Individual' ? 'Individual' : 'Company'
   }
 
+  const address = readAddress(b)
+  if (address.pincode && !PIN_SHAPE.test(address.pincode)) {
+    fields.pincode = 'PIN code must be 6 digits'
+  }
+
   if (Object.keys(fields).length) {
     return {
       ok: false as const, code: 422,
       payload: { error: { code: 'validation_failed', message: 'Some fields need attention' }, fields },
     }
   }
-  if (!Object.keys(patch).length) {
+  if (!Object.keys(patch).length && !hasAddress(address)) {
     return {
       ok: false as const, code: 400,
       payload: { error: { code: 'bad_request', message: 'Nothing to change' } },
     }
   }
 
-  const r = await updateQuotationCustomer(erpName, patch)
+  const changed: string[] = []
+  if (Object.keys(patch).length) {
+    const r = await updateQuotationCustomer(erpName, patch)
+    changed.push(...r.changed)
+  }
+
+  // This is the repair path for every customer created before addresses
+  // were written at all — which is why it CREATES one when missing
+  // rather than only updating an existing row.
+  if (hasAddress(address)) {
+    const name = String(b.name ?? '').trim() || erpName
+    await upsertCustomerAddress(erpName, name, address)
+    changed.push('address')
+  }
+
   return {
     ok: true as const,
     payload: {
       data: {
-        ...r,
+        erpName, changed,
         note: 'Quotations already raised keep the details they were created with. ' +
-              'Raise a new one for the corrected figures.',
+              'Raise a new one for the corrected address and figures.',
       },
     },
+  }
+}
+
+/** Everything the "fix details" panel needs to prefill itself. */
+export async function customerDetail(erpName: string) {
+  const [rows, address] = await Promise.all([
+    searchCustomers(erpName).catch(() => [] as any[]),
+    findCustomerAddress(erpName).catch(() => null),
+  ])
+  const hit = rows.find((c: any) => String(c.name) === erpName) ?? rows[0] ?? null
+  return {
+    erpName,
+    customerName: hit?.customer_name ?? erpName,
+    gstin: hit?.gstin ?? null,
+    address,
   }
 }
 
@@ -837,7 +914,12 @@ export default async function quotesRoutes(app: FastifyInstance) {
     return reply.code(201).send(result.payload)
   })
 
-  // Fix a customer's details — a mistyped GSTIN, usually.
+  app.get('/customers/:erpName', { preHandler: staff }, async (req, reply) => {
+    const { erpName } = req.params as { erpName: string }
+    return reply.send({ data: await customerDetail(erpName) })
+  })
+
+  // Fix a customer's details — a mistyped GSTIN or a missing address.
   app.patch('/customers/:erpName', { preHandler: staff }, async (req, reply) => {
     const { erpName } = req.params as { erpName: string }
     try {

@@ -313,11 +313,38 @@ export async function quotePrintFormat(): Promise<string | null> {
   return cachedFormat || null;
 }
 
+/**
+ * A customer's billing address.
+ *
+ * ERPNext does NOT store an address on the Customer. It stores an
+ * `Address` document linked back through a Dynamic Link child table, and
+ * the Quotation fetches whichever one is marked primary.
+ *
+ * Which is why quotations went out with no address: creating a Customer
+ * over REST created no Address, so there was nothing for the quotation
+ * to fetch and nothing to print. Nothing errored — the field was simply
+ * blank, on a document already with the customer.
+ */
+export interface AddressInput {
+  line1?: string | null;
+  line2?: string | null;
+  city?: string | null;
+  state?: string | null;
+  pincode?: string | null;
+  country?: string | null;
+}
+
+export function hasAddress(a?: AddressInput | null): boolean {
+  if (!a) return false;
+  return [a.line1, a.city, a.state, a.pincode].some(v => String(v ?? '').trim());
+}
+
 export interface CustomerInput {
   name: string;
   gstin?: string | null;
   state?: string | null;
   city?: string | null;
+  address?: AddressInput | null;
   /**
    * ERPNext's own distinction. A person buying in their own name is an
    * Individual; defaulting everyone to Company put proprietors into the
@@ -396,7 +423,119 @@ export async function ensureQuotationCustomer(input: CustomerInput): Promise<Cus
   };
   if (gstin) { doc.gstin = gstin; doc.tax_id = gstin; }
   const created = await post('Customer', doc);
+
+  // The address is a SEPARATE document. Creating the Customer alone is
+  // what produced quotations with a blank address block — there was
+  // nothing linked for the quotation to fetch.
+  //
+  // Best effort: a customer that exists without an address can be fixed
+  // in seconds from the same screen, whereas failing here would lose the
+  // customer record entirely and leave the user with nothing.
+  const addr: AddressInput = input.address ?? {
+    city: input.city ?? null,
+    state: input.state ?? null,
+  };
+  if (hasAddress(addr)) {
+    try {
+      await upsertCustomerAddress(created.name, name, addr);
+    } catch {
+      // Reported by the route as addressWritten: false.
+    }
+  }
+
   return { erpName: created.name, matchedOn: 'created' };
+}
+
+// ---------------------------------------------------------------------
+// Addresses.
+//
+// An Address is its own document, joined to a Customer by a Dynamic Link
+// row. Both halves have to be written, and the link has to name the
+// party — an Address with no link belongs to nobody and is invisible to
+// every document that would want it.
+// ---------------------------------------------------------------------
+
+export interface StoredAddress extends AddressInput {
+  /** The Address doctype name, which is what a Quotation points at. */
+  erpName: string;
+}
+
+/** The address a quotation should bill to: billing first, then primary. */
+export async function findCustomerAddress(
+  erpCustomer: string,
+): Promise<StoredAddress | null> {
+  let rows: any[] = [];
+  try {
+    rows = await get('Address', {
+      filters: [['Dynamic Link', 'link_name', '=', erpCustomer]],
+      fields: ['name', 'address_line1', 'address_line2', 'city', 'state',
+               'pincode', 'country', 'address_type', 'is_primary_address'],
+      limit_page_length: 10,
+    });
+  } catch {
+    return null;
+  }
+  if (!rows.length) return null;
+
+  const ranked = [...rows].sort((a, b) =>
+    ((b.address_type === 'Billing' ? 2 : 0) + (b.is_primary_address ? 1 : 0)) -
+    ((a.address_type === 'Billing' ? 2 : 0) + (a.is_primary_address ? 1 : 0)));
+  const a = ranked[0];
+  return {
+    erpName: String(a.name),
+    line1: a.address_line1 ?? null,
+    line2: a.address_line2 ?? null,
+    city: a.city ?? null,
+    state: a.state ?? null,
+    pincode: a.pincode ?? null,
+    country: a.country ?? null,
+  };
+}
+
+/**
+ * Create the customer's address, or correct the one they have.
+ *
+ * Marked primary AND shipping: ERPNext picks the billing address by
+ * `is_primary_address`, and a customer with exactly one address should
+ * not have to be told twice which it is.
+ */
+export async function upsertCustomerAddress(
+  erpCustomer: string, customerName: string, addr: AddressInput,
+): Promise<StoredAddress | null> {
+  if (!hasAddress(addr)) return null;
+
+  const body: Record<string, unknown> = {
+    address_line1: String(addr.line1 ?? '').trim() || String(addr.city ?? '').trim() || 'Not stated',
+    address_line2: String(addr.line2 ?? '').trim() || null,
+    city: String(addr.city ?? '').trim() || null,
+    state: String(addr.state ?? '').trim() || null,
+    pincode: String(addr.pincode ?? '').trim() || null,
+    country: String(addr.country ?? '').trim() || 'India',
+  };
+
+  const existing = await findCustomerAddress(erpCustomer);
+  if (existing) {
+    const res = await erpFetch(
+      `${BASE}/api/resource/Address/${encodeURIComponent(existing.erpName)}`,
+      { method: 'PUT', headers: authHeaders(), body: JSON.stringify(body) });
+    if (!res.ok) {
+      throw new Error(`ERPNext would not update the address (HTTP ${res.status})`);
+    }
+    return { ...addr, erpName: existing.erpName };
+  }
+
+  // address_title is what ERPNext names the document after, so it has to
+  // be the customer — "Billing" alone would collide across customers.
+  const created = await post('Address', {
+    doctype: 'Address',
+    address_title: customerName || erpCustomer,
+    address_type: 'Billing',
+    is_primary_address: 1,
+    is_shipping_address: 1,
+    ...body,
+    links: [{ link_doctype: 'Customer', link_name: erpCustomer }],
+  });
+  return { ...addr, erpName: String(created.name) };
 }
 
 /**
@@ -630,6 +769,8 @@ export interface CreateQuotationResult {
   totalTax: string | null;
   /** Set when the quotation carries no GST. Show it — do not swallow it. */
   taxWarning: string | null;
+  /** Set when the customer has no address on file. Same rule. */
+  addressWarning: string | null;
   commissionRate: number | null;
   totalCommission: string | null;
 }
@@ -727,10 +868,28 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
   const validDays = input.validDays ?? DEFAULT_VALID_DAYS;
   const validTill = new Date(Date.now() + validDays * 86400000).toISOString().slice(0, 10);
 
+  // Point the quotation at the customer's address EXPLICITLY.
+  //
+  // ERPNext's own controller will usually find it, but this codebase has
+  // now been bitten three times by the same thing — taxes, terms, and
+  // this — where the fetch that populates a field is client-side script
+  // that never runs over REST. Naming it costs one lookup and removes
+  // the whole class of doubt.
+  const custAddress = await findCustomerAddress(customer.erpName);
+  const addressWarning = custAddress ? null :
+    `${customer.erpName} has no address in ERPNext, so this quotation will ` +
+    `print without one. Add it with "Fix details" on the customer.`;
+
   const doc: Record<string, unknown> = {
     doctype: 'Quotation',
     quotation_to: 'Customer',
     party_name: customer.erpName,
+    ...(custAddress
+      ? {
+          customer_address: custAddress.erpName,
+          shipping_address_name: custAddress.erpName,
+        }
+      : {}),
     company: COMPANY,
     currency: 'INR',
     selling_price_list: SELLING_PRICE_LIST,
@@ -825,6 +984,7 @@ export async function createQuotation(input: CreateQuotationInput): Promise<Crea
     totalTax: created.total_taxes_and_charges != null
       ? String(created.total_taxes_and_charges) : null,
     taxWarning,
+    addressWarning,
     commissionRate: created.commission_rate ?? null,
     totalCommission: created.total_commission != null ? String(created.total_commission) : null,
   };
