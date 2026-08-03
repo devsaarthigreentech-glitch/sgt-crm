@@ -6,6 +6,7 @@ import { leadsRoutes } from './routes/leads'
 import partnerRegistrationRoutes from './routes/partnerRegistration.routes.js'
 import portalRoutes from './routes/portal.routes.js'
 import quotesRoutes from './routes/quotes.routes.js'
+import agreementRoutes from './routes/agreements.routes.js'
 import { registerRoutePolicy } from './auth/policy.js'
 import erpRoutes from './routes/erp';
 import jwt from '@fastify/jwt'
@@ -56,6 +57,12 @@ async function start() {
   await app.register(partnerRegistrationRoutes, { prefix: '/api/v1/partners' })
   await app.register(portalRoutes, { prefix: '/api/v1/portal' })
   await app.register(quotesRoutes, { prefix: '/api/v1/quotes' })
+  // One plugin, two surfaces. The portal mount sits UNDER /api/v1/portal
+  // on purpose: that prefix is the only one EXTERNAL_ROLE_ALLOW grants a
+  // distributor, so agreements become reachable to them without widening
+  // the policy in src/auth/policy.ts.
+  await app.register(agreementRoutes({ surface: 'staff' }), { prefix: '/api/v1/agreements' })
+  await app.register(agreementRoutes({ surface: 'portal' }), { prefix: '/api/v1/portal/agreements' })
   app.register(erpRoutes, { prefix: '/api/v1' });
   await app.register(authRoutes,   { prefix: '/api/v1' })
   await app.register(usersRoutes, { prefix: '/api/v1' })

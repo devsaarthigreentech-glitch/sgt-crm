@@ -10,14 +10,16 @@
 // distributor token would still reach nothing.
 
 import { useEffect, useState } from 'react'
-import { LogOut, Users, MapPin, RefreshCw, LayoutDashboard, Handshake, FileText } from 'lucide-react'
+import { LogOut, Users, MapPin, RefreshCw, LayoutDashboard, Handshake, FileText, FileSignature } from 'lucide-react'
 import { portalApi, type PortalMe, type PortalDealer } from './portalApi'
 import DealerRegistration from './DealerRegistration'
 import DealerEdit from './DealerEdit'
 import QuoteScreen from '../quotes/QuoteScreen'
 import { portalQuoteApi } from '../quotes/quotesApi'
+import AgreementScreen from '../agreements/AgreementScreen'
+import { portalAgreementApi } from '../agreements/agreementsApi'
 
-type PortalPage = 'overview' | 'dealers' | 'quotes'
+type PortalPage = 'overview' | 'dealers' | 'quotes' | 'agreements'
 
 // Nav for the partner shell. Kept flat and short on purpose: a distributor
 // has a handful of jobs, not a CRM. Quotations and Leads slot in here as
@@ -29,6 +31,11 @@ const PORTAL_NAV: { id: PortalPage; label: string; icon: typeof Users; distribut
   { id: 'overview', label: 'My view', icon: LayoutDashboard },
   { id: 'dealers', label: 'My dealers', icon: Handshake, distributorOnly: true },
   { id: 'quotes', label: 'Quotations', icon: FileText },
+  // Only a distributor appoints, so only a distributor raises the
+  // appointment. A dealer login reaching /portal/agreements would see its
+  // own agreement and nothing else anyway — visible_org_ids walks
+  // downwards — but offering the tab would imply it can appoint someone.
+  { id: 'agreements', label: 'Agreements', icon: FileSignature, distributorOnly: true },
 ]
 
 const PAPER = '#ECE8DA'
@@ -143,6 +150,11 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
       {editDealerId !== null ? (
         <DealerEdit dealerId={editDealerId} onBack={() => { setEditDealerId(null); load() }} />
       ) : page === 'quotes' ? <QuoteScreen api={portalQuoteApi} />
+      : page === 'agreements' ? (
+        <div style={{ display: 'flex', flexDirection: 'column', minHeight: '70vh' }}>
+          <AgreementScreen api={portalAgreementApi} />
+        </div>
+      )
       : page === 'dealers' ? <DealerRegistration /> : (
       <div style={{ padding: '20px 20px 60px', maxWidth: 760, margin: '0 auto' }}>
         <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 700, color: INK }}>My view</h1>

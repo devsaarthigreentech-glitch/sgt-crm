@@ -1,7 +1,7 @@
 import { useIsMobile } from '../hooks/useIsMobile'
-import { LayoutGrid, Inbox, Plus, BarChart3, LayoutDashboard, User, LogOut, Building2, Send, Handshake, FileText , KeyRound } from 'lucide-react'
+import { LayoutGrid, Inbox, Plus, BarChart3, LayoutDashboard, User, LogOut, Building2, Send, Handshake, FileText , KeyRound, FileSignature } from 'lucide-react'
 
-type Page = 'home' | 'my-dashboard' | 'pipeline' | 'triage' | 'capture' | 'customers' | 'outreach' | 'onboarding' | 'quotes' | 'users'
+type Page = 'home' | 'my-dashboard' | 'pipeline' | 'triage' | 'capture' | 'customers' | 'outreach' | 'onboarding' | 'quotes' | 'agreements' | 'users'
 
 interface Props {
   current: Page
@@ -30,6 +30,9 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'capture', label: 'Capture lead', short: 'Capture', icon: Plus, roles: ['director', 'sales'] },
   { id: 'outreach', label: 'Outreach', short: 'Outreach', icon: Send, roles: ['director', 'sales'] },
   { id: 'quotes', label: 'Quotations', short: 'Quotes', icon: FileText, roles: ['director', 'sales'] },
+  // Same audience as quotations: the server guards this with
+  // requireRole('director','sales'), so the two must agree.
+  { id: 'agreements', label: 'Agreements', short: 'Agreements', icon: FileSignature, roles: ['director', 'sales'] },
   // Director-only until the partner_ops role and its route whitelist land.
   { id: 'onboarding', label: 'Partner onboarding', short: 'Partners', icon: Handshake, roles: ['director'] },
   // Creating a login is the same class of act as allotting a partner code,
