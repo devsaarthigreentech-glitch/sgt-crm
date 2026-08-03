@@ -25,11 +25,12 @@
 import { useEffect, useState } from 'react'
 import {
   FileText, Send, Upload, Download, AlertTriangle, Check, ChevronLeft,
-  RefreshCw, Search, Clock,
+  RefreshCw, Search, Clock, Trash2, Ban,
 } from 'lucide-react'
 import type {
   AgreementApi, Agreement, DealerOption, Resolved, AgreementFields, Draft,
 } from './agreementsApi'
+import { canDelete } from './agreementsApi'
 
 const PAPER = '#F4F0E5'
 const CARD = '#FFFFFF'
@@ -200,6 +201,37 @@ export default function AgreementScreen({ api }: { api: AgreementApi }) {
       })
       setNotice(`Sent to ${r.to.join(', ')} via ${r.provider}.` + (r.note ? ` ${r.note}` : ''))
       setSending(null)
+      load()
+    } catch (e: any) { setError(e.message) }
+    finally { setBusy(false) }
+  }
+
+  // Delete removes it entirely; cancel keeps the record because the dealer
+  // already has a copy. Which one is offered is decided by canDelete().
+  const remove = async (row: Agreement) => {
+    if (!window.confirm(
+      `Delete ${row.erp_name} for ${row.dealer_name}?\n\n` +
+      'It was never sent, so this removes it from ERPNext and the CRM completely. ' +
+      'This cannot be undone.')) return
+    setBusy(true); setError(null)
+    try {
+      await api.remove(row.id)
+      setNotice(`${row.erp_name} deleted.`)
+      load()
+    } catch (e: any) { setError(e.message) }
+    finally { setBusy(false) }
+  }
+
+  const cancel = async (row: Agreement) => {
+    const reason = window.prompt(
+      `Cancel ${row.erp_name}?\n\n` +
+      'The dealer already has a copy, so the record and its history are kept and ' +
+      'marked cancelled.\n\nReason (optional):', '')
+    if (reason === null) return
+    setBusy(true); setError(null)
+    try {
+      await api.cancel(row.id, reason)
+      setNotice(`${row.erp_name} cancelled.`)
       load()
     } catch (e: any) { setError(e.message) }
     finally { setBusy(false) }
@@ -512,6 +544,22 @@ export default function AgreementScreen({ api }: { api: AgreementApi }) {
                           <Download size={14} /> Signed copy
                         </button>
                       )}
+
+                      <div style={{ flex: 1 }} />
+
+                      {canDelete(a) ? (
+                        <button onClick={() => remove(a)} disabled={busy}
+                          title="Never sent — removes it from ERPNext and the CRM"
+                          style={btn('danger')}>
+                          <Trash2 size={14} /> Delete
+                        </button>
+                      ) : a.status !== 'cancelled' ? (
+                        <button onClick={() => cancel(a)} disabled={busy}
+                          title="Already sent — the record is kept and marked cancelled"
+                          style={btn('danger')}>
+                          <Ban size={14} /> Cancel
+                        </button>
+                      ) : null}
                     </div>
                   </div>
                 ))}

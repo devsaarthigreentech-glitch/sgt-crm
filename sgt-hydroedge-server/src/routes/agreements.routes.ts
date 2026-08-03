@@ -26,7 +26,8 @@ import { requireAuth, requireRole } from '../auth/guard.js';
 import {
   resolveForDealer, createAgreement, listAgreements, getAgreement, isVisible,
   agreementPdf, agreementHistory, draftFor, sendAgreementTo, storeSignedCopy,
-  readSignedCopy, dealersWithoutAgreement, SIGNED_MAX_BYTES,
+  readSignedCopy, dealersWithoutAgreement, deleteAgreement, cancelAgreement,
+  canDelete, SIGNED_MAX_BYTES,
   type Actor, type AgreementRow,
 } from '../services/agreements.js';
 import { agreementMailProvider } from '../services/agreementMail.js';
@@ -285,6 +286,47 @@ export default function agreementRoutes(opts: AgreementRoutesOptions) {
       } catch (e) {
         req.log.error({ err: e, erpName: row.erp_name }, 'agreement send failed');
         return fail(reply, 502, 'send_failed', e);
+      }
+    });
+
+    // ---- Undo --------------------------------------------------------------
+    // DELETE for one that never left; cancel for one the dealer already
+    // holds. See the note in services/agreements.ts for why these are not
+    // the same operation with a flag.
+    app.delete('/:id', { preHandler: guard }, async (req, reply) => {
+      const me = await resolveCaller(req, reply, opts.surface);
+      if (!me) return;
+      const row = await loadScoped((req.params as { id: string }).id, me, reply);
+      if (!row) return;
+      if (!canDelete(row)) {
+        return reply.code(409).send({
+          error: {
+            code: 'not_deletable',
+            message: row.signed_at
+              ? 'This agreement has a signed copy against it. Cancel it instead.'
+              : 'This agreement has been sent to the dealer, who has a copy. Cancel it instead.',
+          },
+        });
+      }
+      try {
+        await deleteAgreement(row, me);
+        return reply.send({ data: { deleted: row.erp_name } });
+      } catch (e) {
+        req.log.error({ err: e, erpName: row.erp_name }, 'agreement delete failed');
+        return fail(reply, 409, 'delete_failed', e);
+      }
+    });
+
+    app.post('/:id/cancel', { preHandler: guard }, async (req, reply) => {
+      const me = await resolveCaller(req, reply, opts.surface);
+      if (!me) return;
+      const row = await loadScoped((req.params as { id: string }).id, me, reply);
+      if (!row) return;
+      const reason = String((req.body as { reason?: string })?.reason ?? '').slice(0, 500);
+      try {
+        return reply.send({ data: await cancelAgreement(row, me, reason) });
+      } catch (e) {
+        return fail(reply, 502, 'cancel_failed', e);
       }
     });
 

@@ -51,6 +51,7 @@
 
 import 'dotenv/config';
 import { DEFAULT_AGREEMENT_BODY_TEXT, fillBodyTokens, textToBody } from '../domain/agreementBody.js';
+import { shortFiscalYear } from '../domain/fiscalYear.js';
 
 const BASE = process.env.ERPNEXT_URL?.replace(/\/+$/, '');
 const KEY = process.env.ERPNEXT_API_KEY;
@@ -78,27 +79,32 @@ const FORMAT = process.env.ERP_AGREEMENT_PRINT_FORMAT ?? 'SGT Tripartite Dealer 
 //
 // Only applied when the doctype is created — Frappe keeps the existing
 // autoname on a doctype that is already there.
+// DOTTED, and driven by the naming_series field — NOT `format:`.
+//
+// `format:SGT-AG-{custom_short_fiscal_year}-{####}` looks equivalent and is
+// not. Frappe's _format_autoname hands each {…} to parse_naming_series
+// SEPARATELY, so when {####} is parsed the accumulated prefix is empty and
+// the counter is keyed on "" — a single site-wide sequence shared with every
+// other format-named doctype. Proved live: the second agreement ever raised
+// was numbered 0313.
+//
+// The dotted form is parsed in ONE pass, so the counter key is the resolved
+// prefix ("SGT-AG-202627-") and the number restarts at 1 each financial year,
+// per doctype. It is also exactly the form the Sales Order series already
+// uses on this site.
 const SERIES = process.env.ERP_AGREEMENT_SERIES ??
-  'SGT-AG-{custom_short_fiscal_year}-{####}';
+  'SGT-AG-.{custom_short_fiscal_year}.-.####';
 
-// Indian financial year: 1 April – 31 March. 2026-08-03 and 2027-02-10 are
-// both "202627". This is the server-side twin of the onload Client Script
-// below — whichever creates the document, the field is filled the same way,
-// because an empty field would name the agreement "SGT-AG--0001".
-const FY_START_MONTH = 4;
-
-function shortFiscalYear(on: string | Date = new Date()): string {
-  const d = typeof on === 'string' ? new Date(`${on}T00:00:00Z`) : on;
-  const startYear = d.getUTCMonth() + 1 >= FY_START_MONTH
-    ? d.getUTCFullYear()
-    : d.getUTCFullYear() - 1;
-  return `${startYear}${String((startYear + 1) % 100).padStart(2, '0')}`;
-}
+// Indian financial year: 1 April – 31 March. Now shared with
+// services/agreements.ts, which is the path that ACTUALLY creates every
+// agreement the CRM raises — and which had no copy of this at all, so it
+// left the field empty and produced "SGT-AG--0313". One rule, three
+// callers; see domain/fiscalYear.ts.
 
 // What the series looks like once resolved, for the dry-run report.
 const seriesExample = SERIES
-  .replace('{custom_short_fiscal_year}', shortFiscalYear())
-  .replace(/\{(#+)\}/g, (_m, h: string) => '1'.padStart(h.length, '0'));
+  .replace('.{custom_short_fiscal_year}.', shortFiscalYear())
+  .replace(/\.(#+)$/, (_m, h: string) => '1'.padStart(h.length, '0'));
 
 if (!BASE || !KEY || !SECRET) {
   console.error('✗ ERPNEXT_URL / ERPNEXT_API_KEY / ERPNEXT_API_SECRET must be set');
@@ -144,6 +150,13 @@ const FIELDS: Field[] = [
   {
     fieldname: 'effective_date', label: 'Effective Date', fieldtype: 'Date', reqd: 1,
     description: 'The date the appointment takes effect. Printed in the opening recital.',
+  },
+  {
+    fieldname: 'naming_series', label: 'Series', fieldtype: 'Select',
+    options: SERIES, default: SERIES, no_copy: 1,
+    description:
+      'Drives the document ID. The counter is keyed on the resolved prefix, so it ' +
+      'restarts at 0001 each financial year.',
   },
   {
     fieldname: 'custom_short_fiscal_year', label: 'Short Fiscal Year', fieldtype: 'Data',
@@ -563,6 +576,9 @@ async function main() {
   const have = new Set<string>(
     (existingDt?.fields ?? []).map((f: any) => String(f.fieldname)));
   const missing = FIELDS.filter(f => !have.has(f.fieldname));
+  // The doctype's live autoname. Read in the report, acted on in the write,
+  // so it is scoped across both.
+  let live = '';
 
   console.log('');
   if (existingDt) {
@@ -576,13 +592,19 @@ async function main() {
       : '    all fields present — no field changes');
     console.log('    Existing fields and any hand-edits to them are left alone.');
 
-    // The naming is set once, at creation. Say so plainly rather than let a
-    // changed SERIES here look like it took effect.
-    const live = String(existingDt.autoname ?? '');
-    if (live !== `format:${SERIES}`) {
-      console.log(`    ⚠ autoname is ${live || '(unset)'} — this run does NOT change it.`);
-      console.log(`      Wanted: format:${SERIES}`);
-      console.log('      Change it on the DocType in ERPNext; already-named documents keep their names.');
+    // Naming IS repaired on an existing doctype — it was previously left
+    // alone, and that is how a live doctype kept minting "SGT-AG--0313"
+    // long after the script knew better. Existing documents keep the names
+    // they were given; only the next one is affected.
+    live = String(existingDt.autoname ?? '');
+    if (live !== 'naming_series:') {
+      console.log(`    ⚠ autoname is "${live || '(unset)'}" and would be CHANGED to "naming_series:"`);
+      if (live.startsWith('format:')) {
+        console.log('      A format: series numbers from a single site-wide counter — that is');
+        console.log('      why the numbering jumped. The naming_series field counts per prefix.');
+      }
+      console.log(`      Series: ${SERIES}   next: ${seriesExample}`);
+      console.log('      Documents already named keep their names.');
     }
   } else {
     console.log(`  DocType "${DOCTYPE}" would be CREATED:`);
@@ -629,12 +651,20 @@ async function main() {
   // ---- DocType ---------------------------------------------------------
   console.log('\n  writing…');
   if (existingDt) {
-    if (missing.length) {
-      const r = await call('PUT', `/api/resource/DocType/${encodeURIComponent(DOCTYPE)}`, {
-        fields: [...(existingDt.fields ?? []), ...missing],
-      });
-      if (!r.ok) { console.error(`    ✗ could not add fields: ${why(r)}`); process.exitCode = 1; return; }
-      console.log(`    ✓ added ${missing.length} field(s)`);
+    // Fields and naming in ONE write. Two PUTs would leave the doctype
+    // briefly naming_series-ruled with no naming_series field on it, and
+    // anyone creating an agreement in that window gets an unnamed document.
+    const patch: Record<string, unknown> = {};
+    if (missing.length) patch.fields = [...(existingDt.fields ?? []), ...missing];
+    if (live !== 'naming_series:') {
+      patch.naming_rule = 'By "Naming Series" field';
+      patch.autoname = 'naming_series:';
+    }
+    if (Object.keys(patch).length) {
+      const r = await call('PUT', `/api/resource/DocType/${encodeURIComponent(DOCTYPE)}`, patch);
+      if (!r.ok) { console.error(`    ✗ could not update doctype: ${why(r)}`); process.exitCode = 1; return; }
+      if (missing.length) console.log(`    ✓ added ${missing.length} field(s)`);
+      if (patch.autoname) console.log(`    ✓ naming repaired — next: ${seriesExample}`);
     } else {
       console.log('    · doctype unchanged');
     }
@@ -651,8 +681,8 @@ async function main() {
       editable_grid: 0,
       track_changes: 1,
       allow_rename: 0,
-      naming_rule: 'Expression',
-      autoname: `format:${SERIES}`,
+      naming_rule: 'By "Naming Series" field',
+      autoname: 'naming_series:',
       title_field: 'dealer_name',
       search_fields: 'dealer_code,dealer_name,effective_date',
       sort_field: 'creation',

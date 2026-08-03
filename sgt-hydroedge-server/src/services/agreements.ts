@@ -24,7 +24,7 @@
 import { query, pool } from '../db/pool.js';
 import { localStorage, storage } from './storage.js';
 import {
-  createAgreementDoc, updateAgreementDoc, fetchAgreementPdf,
+  createAgreementDoc, updateAgreementDoc, fetchAgreementPdf, deleteAgreementDoc,
   type AgreementFields,
 } from './erpAgreement.js';
 import {
@@ -33,6 +33,7 @@ import {
 } from './agreementMail.js';
 import { textToHtml } from './quoteMail.js';
 import { defaultAgreementBody } from '../domain/agreementBody.js';
+import { shortFiscalYear } from '../domain/fiscalYear.js';
 
 /** Who is acting. Stamped onto the document and every audit row. */
 export interface Actor {
@@ -309,9 +310,16 @@ export async function createAgreement(
   dealerOrgId: number, actor: Actor, overrides: Partial<AgreementFields> = {},
 ): Promise<AgreementRow> {
   const resolved = await resolveForDealer(dealerOrgId);
+  const effective = String(overrides.effective_date ?? resolved.fields.effective_date ?? '');
   const fields: AgreementFields = {
     ...resolved.fields,
     ...overrides,
+    // Set LAST and never from `overrides`: this feeds the document name
+    // through the series, and a hand-supplied value would name the
+    // agreement into the wrong financial year. Derived from the effective
+    // date rather than today, so an agreement backdated to March lands in
+    // the year it takes effect.
+    custom_short_fiscal_year: shortFiscalYear(effective || new Date()),
     raised_by: actor.name,
     raised_by_org: actor.orgCode,
     raised_via: actor.via,
@@ -399,6 +407,89 @@ export async function agreementHistory(id: number) {
        from quote_service.agreement_event
       where agreement_id = $1 order by created_at desc`, [id]);
   return rows;
+}
+
+// ---------------------------------------------------------------------
+// Undo
+//
+// Two different acts, deliberately not one:
+//
+//   DELETE  the agreement never left the building. Nothing exists that
+//           references it, so removing it leaves no hole. Used for the
+//           ones raised by mistake, or to test.
+//
+//   CANCEL  it was emailed. The dealer HAS a copy — a PDF sitting in
+//           someone's inbox with a document number on it. Making our
+//           record vanish does not unsend that, it just means nobody
+//           here can explain the number when the dealer quotes it back.
+//           So the row and its history stay, marked cancelled.
+//
+// The cut is at `sent`, not at anyone's judgement about whether it
+// mattered.
+// ---------------------------------------------------------------------
+
+/** Statuses that never left. Anything else is cancel-only. */
+const DELETABLE = new Set(['draft', 'generated', 'cancelled']);
+
+export function canDelete(row: AgreementRow): boolean {
+  return DELETABLE.has(row.status) && !row.sent_at && !row.signed_at;
+}
+
+/**
+ * Remove the agreement entirely — ERPNext document and local row.
+ *
+ * ERPNext first. If it refuses (something links to the document) nothing
+ * local has changed yet and the caller gets a usable error. The reverse
+ * order would delete our row and leave an ERPNext document nobody can
+ * reach from the CRM.
+ */
+export async function deleteAgreement(row: AgreementRow, actor: Actor): Promise<void> {
+  if (!canDelete(row)) {
+    throw new Error(
+      row.signed_at
+        ? 'This agreement has a signed copy against it and cannot be deleted. Cancel it instead.'
+        : 'This agreement has already been sent to the dealer, who has a copy of it. ' +
+          'Cancel it instead, so the record of what they were sent survives.');
+  }
+
+  await deleteAgreementDoc(row.erp_name);
+
+  // The event rows go with it — `on delete cascade` on agreement_event.
+  // That is correct here and only here: nothing was ever sent, so there
+  // is no outside record for the audit trail to have to explain.
+  await query(`delete from quote_service.agreement_ref where id = $1`, [row.id]);
+}
+
+/**
+ * Withdraw an agreement that has already gone out.
+ *
+ * The document and the history stay. The dealer keeps their copy either
+ * way; what changes is that this side stops treating the appointment as
+ * live, and says when and why it stopped.
+ */
+export async function cancelAgreement(
+  row: AgreementRow, actor: Actor, reason: string,
+): Promise<AgreementRow> {
+  if (row.status === 'cancelled') return row;
+
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const { rows } = await client.query(
+      `update quote_service.agreement_ref
+          set status = 'cancelled', updated_at = now()
+        where id = $1 returning ${ROW_COLS}`, [row.id]);
+    await audit(client, row.id, 'cancelled', actor, row.status, 'cancelled',
+                { reason: reason || null, wasSentTo: row.sent_to });
+    await client.query('commit');
+    await updateAgreementDoc(row.erp_name, { agreement_status: 'Cancelled' }).catch(() => {});
+    return rows[0] as AgreementRow;
+  } catch (err) {
+    await client.query('rollback');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 // ---------------------------------------------------------------------

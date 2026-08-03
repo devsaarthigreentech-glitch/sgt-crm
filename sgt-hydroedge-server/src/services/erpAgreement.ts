@@ -34,6 +34,14 @@ export interface AgreementFields {
   effective_date?: string | null;
   agreement_status?: string;
 
+  /**
+   * Feeds the document name via the series, so it MUST be set on create.
+   * Left blank, the name resolves to "SGT-AG--0001" with a hole where the
+   * year should be — observed live before this was wired up. Not optional
+   * in practice, only in the type.
+   */
+  custom_short_fiscal_year?: string | null;
+
   distributor_name?: string | null;
   distributor_code?: string | null;
   distributor_associate?: string | null;
@@ -145,6 +153,32 @@ export async function updateAgreementDoc(
     throw new Error(
       `ERPNext could not update ${erpName}: ${frappeError(await res.text()).slice(0, 300)}`);
   }
+}
+
+/**
+ * Delete the ERPNext document.
+ *
+ * Returns true when it is gone, INCLUDING when it was already absent —
+ * the caller's goal is "this document does not exist", and a 404 means
+ * that goal is already met. Treating it as a failure would strand a
+ * local row pointing at nothing, which is the exact mess this is
+ * cleaning up.
+ */
+export async function deleteAgreementDoc(erpName: string): Promise<boolean> {
+  await assertDoctype();
+  const res = await erpFetch(path(AGREEMENT_DOCTYPE, erpName), {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (res.ok || res.status === 404) return true;
+  const why = frappeError(await res.text());
+  // Frappe refuses to delete a document other documents link to. Say which,
+  // because "LinkExistsError" on its own tells nobody what to do next.
+  throw new Error(
+    /link/i.test(why)
+      ? `ERPNext will not delete ${erpName} because something links to it — usually ` +
+        `the sent-email record. Cancel it instead. (${why.slice(0, 160)})`
+      : `ERPNext could not delete ${erpName}: ${why.slice(0, 250)}`);
 }
 
 /** The whole document, as ERPNext holds it. */

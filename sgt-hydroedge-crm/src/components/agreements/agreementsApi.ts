@@ -136,7 +136,20 @@ export interface AgreementApi {
   pdfUrl(id: number): Promise<string>
   uploadSigned(id: number, file: File): Promise<{ key: string; size: number }>
   signedUrl(id: number): Promise<string>
+  /** Only for agreements that were never sent. The server enforces it too. */
+  remove(id: number): Promise<{ deleted: string }>
+  cancel(id: number, reason: string): Promise<Agreement>
 }
+
+/**
+ * Can this be deleted outright, or only cancelled?
+ *
+ * The same rule the server applies, duplicated here so the UI does not
+ * offer a button that will 409. The server remains the authority — this
+ * is about not asking, not about permission.
+ */
+export const canDelete = (a: Agreement): boolean =>
+  !a.sent_at && !a.signed_at && a.status !== 'sent' && a.status !== 'signed'
 
 /** Fetched as a blob, not linked: these routes need the bearer token. */
 async function blobUrl(path: string): Promise<string> {
@@ -178,6 +191,15 @@ export function makeAgreementApi(prefix: string): AgreementApi {
     send: (id, body) =>
       request<{ data: any }>(`${prefix}/${id}/send`, {
         method: 'POST', body: JSON.stringify(body),
+      }).then(r => r.data),
+
+    remove: (id) =>
+      request<{ data: { deleted: string } }>(`${prefix}/${id}`, { method: 'DELETE' })
+        .then(r => r.data),
+
+    cancel: (id, reason) =>
+      request<{ data: Agreement }>(`${prefix}/${id}/cancel`, {
+        method: 'POST', body: JSON.stringify({ reason }),
       }).then(r => r.data),
 
     pdfUrl: (id) => blobUrl(`${prefix}/${id}/pdf`),
