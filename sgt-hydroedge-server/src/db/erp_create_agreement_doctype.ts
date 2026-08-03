@@ -65,10 +65,40 @@ const MODULE = process.env.ERP_AGREEMENT_MODULE ?? 'Selling';
 const DOCTYPE = process.env.ERP_AGREEMENT_DOCTYPE ?? 'SGT Dealer Agreement';
 const FORMAT = process.env.ERP_AGREEMENT_PRINT_FORMAT ?? 'SGT Tripartite Dealer Agreement';
 
-// Document name series, e.g. SGT-AG-2026-0001. Only applied when the doctype
-// is created — Frappe keeps the existing autoname on a doctype that is already
-// there, and the counter is per-format, so changing this starts a fresh series.
-const SERIES = process.env.ERP_AGREEMENT_SERIES ?? 'SGT-AG-{YYYY}-{####}';
+// Document name series, e.g. SGT-AG-202627-0001.
+//
+// {custom_short_fiscal_year} is a FIELD on the document, not a date token —
+// the same field and the same short form the Sales Order series already uses
+// (SAL-ORD-.{custom_short_fiscal_year}.-.###). A calendar year would put an
+// agreement signed in February 2027 in "2027" while every order raised beside
+// it says 202627; this keeps one financial year across all of them.
+//
+// Because Frappe counts per RESOLVED prefix, the counter restarts at 0001 on
+// 1 April each year, which is the behaviour of the rest of the series.
+//
+// Only applied when the doctype is created — Frappe keeps the existing
+// autoname on a doctype that is already there.
+const SERIES = process.env.ERP_AGREEMENT_SERIES ??
+  'SGT-AG-{custom_short_fiscal_year}-{####}';
+
+// Indian financial year: 1 April – 31 March. 2026-08-03 and 2027-02-10 are
+// both "202627". This is the server-side twin of the onload Client Script
+// below — whichever creates the document, the field is filled the same way,
+// because an empty field would name the agreement "SGT-AG--0001".
+const FY_START_MONTH = 4;
+
+function shortFiscalYear(on: string | Date = new Date()): string {
+  const d = typeof on === 'string' ? new Date(`${on}T00:00:00Z`) : on;
+  const startYear = d.getUTCMonth() + 1 >= FY_START_MONTH
+    ? d.getUTCFullYear()
+    : d.getUTCFullYear() - 1;
+  return `${startYear}${String((startYear + 1) % 100).padStart(2, '0')}`;
+}
+
+// What the series looks like once resolved, for the dry-run report.
+const seriesExample = SERIES
+  .replace('{custom_short_fiscal_year}', shortFiscalYear())
+  .replace(/\{(#+)\}/g, (_m, h: string) => '1'.padStart(h.length, '0'));
 
 if (!BASE || !KEY || !SECRET) {
   console.error('✗ ERPNEXT_URL / ERPNEXT_API_KEY / ERPNEXT_API_SECRET must be set');
@@ -97,6 +127,7 @@ interface Field {
   reqd?: 0 | 1;
   read_only?: 0 | 1;
   in_list_view?: 0 | 1;
+  no_copy?: 0 | 1;
   default?: string;
   description?: string;
 }
@@ -113,6 +144,13 @@ const FIELDS: Field[] = [
   {
     fieldname: 'effective_date', label: 'Effective Date', fieldtype: 'Date', reqd: 1,
     description: 'The date the appointment takes effect. Printed in the opening recital.',
+  },
+  {
+    fieldname: 'custom_short_fiscal_year', label: 'Short Fiscal Year', fieldtype: 'Data',
+    read_only: 1, no_copy: 1,
+    description:
+      'e.g. 202627. The same field the Sales Order series uses. Feeds the document name, so ' +
+      'it is fixed at creation — editing it afterwards does not rename anything.',
   },
   { fieldname: 'col_agreement', fieldtype: 'Column Break' },
   {
@@ -216,6 +254,44 @@ const PERMISSIONS = [
     report: 1, export: 1, print: 1, email: 1, share: 1,
   },
 ];
+
+// ---------------------------------------------------------------------
+// Client Script
+//
+// Fills custom_short_fiscal_year for anyone creating an agreement by hand
+// in the ERPNext desk — the same job the "Payment Entry Series" script does
+// there, asking ERPNext for the Fiscal Year rather than assuming April, so
+// it follows the Fiscal Year records if they ever move.
+//
+// The CRM does not rely on this. Documents raised over the REST API never
+// run client scripts, so that path sets the field itself (shortFiscalYear
+// above). This exists so a desk-created agreement is not named SGT-AG--0001.
+//
+// It reads effective_date when one is already filled in, so an agreement
+// back-dated to March lands in the financial year it belongs to, and stops
+// once the document is saved — by then the name is fixed.
+// ---------------------------------------------------------------------
+
+const SCRIPT_NAME = process.env.ERP_AGREEMENT_CLIENT_SCRIPT ?? `${DOCTYPE} Series`;
+
+const CLIENT_SCRIPT = `frappe.ui.form.on('${DOCTYPE}', {
+    onload: function(frm) { set_short_fiscal_year(frm); },
+    effective_date: function(frm) { set_short_fiscal_year(frm); }
+});
+
+function set_short_fiscal_year(frm) {
+    if (!frm.is_new()) { return; }
+    frappe.call({
+        method: 'erpnext.accounts.utils.get_fiscal_year',
+        args: { date: frm.doc.effective_date || frappe.datetime.get_today() },
+        callback: function(r) {
+            if (!r.message) { return; }
+            var fy = r.message[0];               // fiscal year name, e.g. "2026-2027"
+            frm.set_value('custom_short_fiscal_year',
+                fy && fy.includes('-') ? fy.split('-')[0] + fy.split('-')[1].slice(-2) : fy);
+        }
+    });
+}`;
 
 // ---------------------------------------------------------------------
 // Print format
@@ -392,6 +468,7 @@ const PRINT_HTML = `<style>
 const SAMPLE: Record<string, string> = {
   agreement_status: 'Draft',
   effective_date: new Date().toISOString().slice(0, 10),
+  custom_short_fiscal_year: shortFiscalYear(),
   raised_by: 'sample',
   raised_via: 'script',
 
@@ -481,6 +558,7 @@ async function main() {
   // ---- What exists already --------------------------------------------
   const existingDt = await getDoc('DocType', DOCTYPE);
   const existingFmt = await getDoc('Print Format', FORMAT);
+  const existingScript = await getDoc('Client Script', SCRIPT_NAME);
 
   const have = new Set<string>(
     (existingDt?.fields ?? []).map((f: any) => String(f.fieldname)));
@@ -497,9 +575,19 @@ async function main() {
       ? `    ${missing.length} field(s) would be ADDED: ${missing.map(f => f.fieldname).join(', ')}`
       : '    all fields present — no field changes');
     console.log('    Existing fields and any hand-edits to them are left alone.');
+
+    // The naming is set once, at creation. Say so plainly rather than let a
+    // changed SERIES here look like it took effect.
+    const live = String(existingDt.autoname ?? '');
+    if (live !== `format:${SERIES}`) {
+      console.log(`    ⚠ autoname is ${live || '(unset)'} — this run does NOT change it.`);
+      console.log(`      Wanted: format:${SERIES}`);
+      console.log('      Change it on the DocType in ERPNext; already-named documents keep their names.');
+    }
   } else {
     console.log(`  DocType "${DOCTYPE}" would be CREATED:`);
     console.log(`    module ${MODULE} · custom · autoname ${SERIES} · not submittable`);
+    console.log(`      → first document of this financial year: ${seriesExample}`);
     console.log(`    ${FIELDS.filter(f => !f.fieldtype.includes('Break')).length} data field(s), ` +
                 `${FIELDS.filter(f => f.fieldtype.includes('Break')).length} layout break(s)`);
   }
@@ -509,6 +597,12 @@ async function main() {
     ? `  Print Format "${FORMAT}" EXISTS — this run REPLACES its HTML.\n` +
       '    Hand-edits made to it in ERPNext will be lost. This file is the source.'
     : `  Print Format "${FORMAT}" would be CREATED (custom HTML/Jinja, ${PRINT_HTML.length} chars).`);
+
+  console.log(existingScript
+    ? `  Client Script "${SCRIPT_NAME}" EXISTS — this run REPLACES its code.`
+    : `  Client Script "${SCRIPT_NAME}" would be CREATED.`);
+  console.log('    Fills custom_short_fiscal_year on desk-created agreements, from the ERPNext');
+  console.log('    Fiscal Year. Agreements raised by the CRM set it over the API instead.');
 
   console.log('');
   console.log('  The format builds from the fields, not from free text:');
@@ -602,6 +696,23 @@ async function main() {
   console.log(dr.ok
     ? '    ✓ pinned as the doctype default print format'
     : `    ⚠ could not pin as default (${why(dr)}) — set ERP_AGREEMENT_PRINT_FORMAT instead`);
+
+  // ---- Client Script ---------------------------------------------------
+  const scriptBody = {
+    doctype: 'Client Script',
+    name: SCRIPT_NAME,
+    dt: DOCTYPE,
+    view: 'Form',
+    enabled: 1,
+    script: CLIENT_SCRIPT,
+  };
+  const cr = existingScript
+    ? await call('PUT', `/api/resource/${encodeURIComponent('Client Script')}/${encodeURIComponent(SCRIPT_NAME)}`, scriptBody)
+    : await call('POST', `/api/resource/${encodeURIComponent('Client Script')}`, { ...scriptBody, __newname: SCRIPT_NAME });
+  console.log(cr.ok
+    ? `    ✓ ${existingScript ? 'replaced' : 'created'} client script "${SCRIPT_NAME}"`
+    : `    ⚠ could not write client script (${why(cr)}) — desk-created agreements will need ` +
+      'custom_short_fiscal_year filled by hand');
 
   // ---- Sample ----------------------------------------------------------
   if (WANT_SAMPLE) {
