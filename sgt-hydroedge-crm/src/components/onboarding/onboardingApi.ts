@@ -202,7 +202,12 @@ export const onboardingApi = {
     }),
 
   approve: (id: number, attachOrgId?: number) =>
-    request<{ data: Registration; org?: any; code?: string; attached?: any }>(
+    request<{
+      data: Registration; org?: any; code?: string; attached?: any
+      /** The partner's login. `password` is returned once and never again. */
+      login?: { created: true; email: string; password: string }
+             | { created: false; reason: string }
+    }>(
       `/partners/registrations/${id}/approve`,
       attachOrgId
         ? { method: 'POST', body: JSON.stringify({ attach_org_id: attachOrgId }) }

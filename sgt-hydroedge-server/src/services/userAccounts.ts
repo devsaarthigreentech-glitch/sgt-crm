@@ -68,6 +68,36 @@ export function generatePassword(length = 16): string {
   return out;
 }
 
+/**
+ * A password that is RECOGNISABLE without being guessable.
+ *
+ *   Gen.Tech Engineers  ->  GenTech@K7m2Pq9x
+ *   AKS GEN SERVICES    ->  AKS@4rTn8Wd2
+ *
+ * The company prefix is there because these get read down a phone and
+ * copied between two people, and "which one was this again" is a real
+ * problem when you have handed out six.
+ *
+ * WHAT IT IS NOT is the pattern <Company>@123. That was asked for and is
+ * not safe to build: the shape is visible in the UI, so one example
+ * teaches an attacker the rest, and every dealer login on the system
+ * becomes guessable from the partner list alone. The prefix here adds
+ * familiarity; the eight random characters after it are what actually
+ * defend the account.
+ */
+export function brandedPassword(companyName: string): string {
+  const token = String(companyName ?? '')
+    .split(/\s+/)[0]
+    .replace(/[^A-Za-z0-9]/g, '')
+    .slice(0, 12);
+  const slug = token
+    ? token[0].toUpperCase() + token.slice(1)
+    : 'Partner';
+  let rand = '';
+  for (let i = 0; i < 8; i++) rand += ALPHABET[randomInt(ALPHABET.length)];
+  return `${slug}@${rand}`;
+}
+
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export async function listAccounts(): Promise<AccountRow[]> {

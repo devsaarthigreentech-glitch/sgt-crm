@@ -210,7 +210,112 @@ function StatusChip({ status }: { status: string }) {
 
 // ---------------------------------------------------------------------------
 
+
+/**
+ * The partner's login, shown once.
+ *
+ * Deliberately a blocking dialog with a copy button rather than a line in
+ * a banner: there is no endpoint anywhere that can return this password
+ * again, so dismissing it without copying means resetting it. Making that
+ * a conscious click is the whole design.
+ *
+ * If it IS lost, nothing is broken — Logins → Reset password issues a new
+ * one in two clicks.
+ */
+function CredentialsModal({ cred, copied, onCopied, onClose }: {
+  cred: { company: string; code?: string; email: string; password: string }
+  copied: boolean
+  onCopied: () => void
+  onClose: () => void
+}) {
+  const block = `${cred.company}${cred.code ? ` (${cred.code})` : ''}
+` +
+    `Portal: https://crm.sgthydroedge.com
+` +
+    `Email: ${cred.email}
+Password: ${cred.password}`
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 80, backgroundColor: 'rgba(22,22,20,0.55)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+    }}>
+      <div style={{
+        backgroundColor: '#fff', borderRadius: 12, padding: 22,
+        width: '100%', maxWidth: 520, maxHeight: '86vh', overflowY: 'auto',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+          <Check size={18} style={{ color: OK }} />
+          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: INK }}>
+            {cred.company} approved
+          </h3>
+        </div>
+        {cred.code && (
+          <div style={{ fontSize: 12, color: MUTED, marginBottom: 14 }}>
+            Partner code <strong style={{ fontFamily: 'ui-monospace, monospace' }}>{cred.code}</strong>
+          </div>
+        )}
+
+        <div style={{
+          padding: '12px 14px', borderRadius: 8, marginBottom: 12,
+          backgroundColor: '#FBF0DA', color: '#6F2F0E', fontSize: 12, lineHeight: 1.5,
+        }}>
+          <strong>Copy this now.</strong> The password is not stored anywhere
+          readable and cannot be shown again. If it is lost, reset it from
+          Logins — nothing breaks.
+        </div>
+
+        <div style={{
+          border: `1px solid ${LINE}`, borderRadius: 8, padding: '12px 14px',
+          marginBottom: 12, backgroundColor: '#FCFBF7',
+        }}>
+          <div style={{ fontSize: 11, color: FAINT, marginBottom: 3 }}>Email</div>
+          <div style={{ fontSize: 13.5, color: INK, marginBottom: 10, wordBreak: 'break-all' }}>
+            {cred.email}
+          </div>
+          <div style={{ fontSize: 11, color: FAINT, marginBottom: 3 }}>Password</div>
+          <code style={{
+            display: 'block', fontSize: 15, letterSpacing: '0.04em',
+            fontFamily: 'ui-monospace, monospace', color: INK, wordBreak: 'break-all',
+          }}>{cred.password}</code>
+        </div>
+
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            type="button"
+            onClick={() => { navigator.clipboard?.writeText(block); onCopied() }}
+            style={{
+              flex: 1, padding: '11px', fontSize: 13.5, fontWeight: 700, fontFamily: 'inherit',
+              border: 'none', borderRadius: 7, cursor: 'pointer',
+              backgroundColor: copied ? OK : INK, color: '#fff',
+            }}
+          >
+            {copied ? 'Copied to clipboard' : 'Copy email and password'}
+          </button>
+          <button
+            type="button" onClick={onClose}
+            style={{
+              padding: '11px 16px', fontSize: 13.5, fontFamily: 'inherit',
+              border: `1px solid ${LINE}`, borderRadius: 7, cursor: 'pointer',
+              background: '#fff', color: MUTED,
+            }}
+          >
+            {copied ? 'Done' : 'Close without copying'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function PartnerOnboarding() {
+  // The partner's login, shown ONCE after approval. Never fetched again —
+  // there is no endpoint that can return a password. Dismissing this
+  // without copying means resetting it from the Logins screen.
+  const [credentials, setCredentials] = useState<
+    { company: string; code?: string; email: string; password: string } | null>(null)
+  const [copied, setCopied] = useState(false)
+
   const [ref, setRef] = useState<Reference | null>(null)
   const [list, setList] = useState<Registration[]>([])
   const [orgs, setOrgs] = useState<PartnerOrg[]>([])
@@ -420,6 +525,13 @@ export default function PartnerOnboarding() {
   if (openId === null) {
     return (
       <div style={{ backgroundColor: PAPER, height: '100%', overflowY: 'auto', padding: '20px 18px 60px' }}>
+        {credentials && (
+          <CredentialsModal
+            cred={credentials} copied={copied}
+            onCopied={() => setCopied(true)}
+            onClose={() => { setCredentials(null); setCopied(false) }}
+          />
+        )}
         <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 700, color: INK }}>Partner onboarding</h1>
         <p style={{ margin: '0 0 18px', fontSize: 12.5, color: MUTED }}>
           Register a distributor or a dealer. Drafts save as you type.
@@ -614,8 +726,20 @@ export default function PartnerOnboarding() {
                                   const res = await onboardingApi.approve(r.id)
                                   setList(await onboardingApi.list())
                                   setOrgs(await onboardingApi.orgs())
-                                  setBanner(
-                                    `${r.legal_name} approved — code ${res.data.allotted_code ?? 'allotted'}.`)
+                                  if (res.login?.created) {
+                                    setCopied(false)
+                                    setCredentials({
+                                      company: r.legal_name,
+                                      code: res.data.allotted_code ?? res.code,
+                                      email: res.login.email,
+                                      password: res.login.password,
+                                    })
+                                    setBanner(null)
+                                  } else {
+                                    setBanner(
+                                      `${r.legal_name} approved — code ${res.data.allotted_code ?? 'allotted'}.` +
+                                      (res.login?.created === false ? ` No login created: ${res.login.reason}` : ''))
+                                  }
                                 } catch (e: any) { setBanner(e.message) }
                               }}
                               style={{
@@ -690,6 +814,13 @@ export default function PartnerOnboarding() {
   // ---- Form view ----------------------------------------------------------
   return (
     <div style={{ backgroundColor: PAPER, height: '100%', overflowY: 'auto' }}>
+      {credentials && (
+        <CredentialsModal
+          cred={credentials} copied={copied}
+          onCopied={() => setCopied(true)}
+          onClose={() => { setCredentials(null); setCopied(false) }}
+        />
+      )}
       <div style={{
         position: 'sticky', top: 0, zIndex: 2, backgroundColor: PAPER,
         padding: '14px 18px 10px', borderBottom: `1px solid ${LINE}`,
@@ -1067,6 +1198,17 @@ export default function PartnerOnboarding() {
                     setList(await onboardingApi.list())
                     setOrgs(await onboardingApi.orgs())
                     setBanner(null)
+                    if (r.login?.created) {
+                      setCopied(false)
+                      setCredentials({
+                        company: r.data.legal_name,
+                        code: r.data.allotted_code ?? r.code,
+                        email: r.login.email,
+                        password: r.login.password,
+                      })
+                    } else if (r.login?.created === false) {
+                      setBanner(`Approved, but no login was created: ${r.login.reason}`)
+                    }
                   } catch (e: any) { setBanner(e.message) }
                 }}
                 style={{

@@ -29,6 +29,7 @@ import { inspectGstin } from '../domain/gstin.js'
 import { allotCode } from '../domain/partnerCode.js'
 import { decodeLogo, LOGO_MAX_BYTES } from '../domain/partnerLogo.js'
 import { readLogo, saveLogo, clearLogo } from '../services/partnerLogoStore.js'
+import { createAccount, brandedPassword } from '../services/userAccounts.js'
 
 const director = requireRole('director')
 
@@ -74,6 +75,47 @@ const DOC_TYPES = [
 
 function actor(req: FastifyRequest) {
   return { id: req.user?.sub ?? null, name: req.user?.name ?? null }
+}
+
+/**
+ * The partner's login, minted the moment they are approved.
+ *
+ * Runs AFTER the approval transaction commits, never inside it. A
+ * duplicate email or a bcrypt failure must not roll back an approval
+ * that has already allotted a code — the code is in the ledger and
+ * cannot be handed back. A partner without a login is a two-click fix
+ * on the Logins screen; a rolled-back approval is not.
+ *
+ * The password is returned to the caller ONCE, here, and never stored in
+ * a readable form. If it is lost, it is reset — see the Logins screen.
+ * There is deliberately no endpoint that can read it back, which is why
+ * the approval dialog makes you copy it before dismissing.
+ */
+async function mintPartnerLogin(reg: Record<string, any>, orgCode: string) {
+  const email = String(reg.contact_email ?? '').trim().toLowerCase()
+  if (!email) {
+    return {
+      created: false as const,
+      reason: 'No contact email on the application, so no login was created. ' +
+              'Add one on the partner and create the login from the Logins screen.',
+    }
+  }
+
+  const password = brandedPassword(reg.trade_name || reg.legal_name || orgCode)
+  const r = await createAccount({
+    email,
+    name: reg.contact_name || reg.legal_name || email,
+    role: reg.partner_type === 'distributor' ? 'distributor' : 'dealer',
+    orgCode,
+    password,
+  })
+
+  if (!r.ok) {
+    // The common one by far: this person already has a login, because
+    // they were a contact on an earlier application.
+    return { created: false as const, reason: r.message }
+  }
+  return { created: true as const, email: r.account.email, password: r.password! }
 }
 
 export default async function partnerRegistrationRoutes(app: FastifyInstance) {
@@ -690,9 +732,12 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
           [id, reg.status, who.id, who.name,
            JSON.stringify({ attached_org: org.code, note: 'no new code minted' })])
         await client.query('commit')
+        // Outside the transaction — see mintPartnerLogin.
+        const login = await mintPartnerLogin(reg, org.code)
         return reply.send({
           data: updated,
           attached: { org_id: org.id, code: org.code, legal_name: org.legal_name },
+          login,
         })
       }
 
@@ -799,7 +844,9 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
          JSON.stringify({ code, series: seriesKey, serial, org_id: org.id })])
 
       await client.query('commit')
-      return reply.send({ data: updated, org, code })
+      // Outside the transaction — see mintPartnerLogin.
+      const login = await mintPartnerLogin(reg, code)
+      return reply.send({ data: updated, org, code, login })
     } catch (err) {
       await client.query('rollback')
       throw err
