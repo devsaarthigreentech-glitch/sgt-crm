@@ -65,6 +65,11 @@ const MODULE = process.env.ERP_AGREEMENT_MODULE ?? 'Selling';
 const DOCTYPE = process.env.ERP_AGREEMENT_DOCTYPE ?? 'SGT Dealer Agreement';
 const FORMAT = process.env.ERP_AGREEMENT_PRINT_FORMAT ?? 'SGT Tripartite Dealer Agreement';
 
+// Document name series, e.g. SGT-AG-2026-0001. Only applied when the doctype
+// is created — Frappe keeps the existing autoname on a doctype that is already
+// there, and the counter is per-format, so changing this starts a fresh series.
+const SERIES = process.env.ERP_AGREEMENT_SERIES ?? 'SGT-AG-{YYYY}-{####}';
+
 if (!BASE || !KEY || !SECRET) {
   console.error('✗ ERPNEXT_URL / ERPNEXT_API_KEY / ERPNEXT_API_SECRET must be set');
   process.exit(1);
@@ -494,7 +499,7 @@ async function main() {
     console.log('    Existing fields and any hand-edits to them are left alone.');
   } else {
     console.log(`  DocType "${DOCTYPE}" would be CREATED:`);
-    console.log(`    module ${MODULE} · custom · autoname AG-{YYYY}-{####} · not submittable`);
+    console.log(`    module ${MODULE} · custom · autoname ${SERIES} · not submittable`);
     console.log(`    ${FIELDS.filter(f => !f.fieldtype.includes('Break')).length} data field(s), ` +
                 `${FIELDS.filter(f => f.fieldtype.includes('Break')).length} layout break(s)`);
   }
@@ -553,7 +558,7 @@ async function main() {
       track_changes: 1,
       allow_rename: 0,
       naming_rule: 'Expression',
-      autoname: 'format:AG-{YYYY}-{####}',
+      autoname: `format:${SERIES}`,
       title_field: 'dealer_name',
       search_fields: 'dealer_code,dealer_name,effective_date',
       sort_field: 'creation',
