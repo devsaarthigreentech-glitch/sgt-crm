@@ -189,13 +189,17 @@ export async function createAccount(input: NewAccount): Promise<AccountResult> {
     };
   }
 
-  const password = String(input.password ?? '').trim() || generatePassword();
-  if (password.length < 10) {
+  const supplied = String(input.password ?? '').trim();
+  if (supplied && supplied.length < 10) {
     return {
       ok: false, code: 422, field: 'password',
       message: 'Use at least 10 characters, or leave it blank to have one generated.',
     };
   }
+  // Generated below, once the org is known — a partner login gets the
+  // company-prefixed form so it matches what approval hands out, and an
+  // SGT account gets a plain random one. Assigned inside the transaction.
+  let password = supplied;
 
   const client = await pool.connect();
   try {
@@ -204,7 +208,7 @@ export async function createAccount(input: NewAccount): Promise<AccountResult> {
     let orgId: number | null = null;
     if (orgCode) {
       const { rows: orgs } = await client.query(
-        `select id, code, legal_name, org_type, is_active
+        `select id, code, legal_name, trade_name, org_type, is_active
            from quote_service.org where code = $1`, [orgCode]);
       if (!orgs.length) {
         await client.query('rollback');
@@ -224,7 +228,9 @@ export async function createAccount(input: NewAccount): Promise<AccountResult> {
         };
       }
       orgId = org.id;
+      if (!password) password = brandedPassword(org.trade_name || org.legal_name || org.code);
     }
+    if (!password) password = generatePassword();
 
     const { rows: existing } = await client.query(
       `select id from lead_service.app_user where email = $1`, [email]);
