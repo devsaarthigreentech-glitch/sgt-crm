@@ -13,7 +13,7 @@
 // Inline styles only, per house convention.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Plus, Check, AlertCircle, Trash2 } from 'lucide-react'
+import { ArrowLeft, Plus, Check, AlertCircle, Trash2, X } from 'lucide-react'
 import OrgDetailScreen from './OrgDetailScreen'
 import {
   onboardingApi, ValidationError,
@@ -584,8 +584,75 @@ export default function PartnerOnboarding() {
                   {r.status !== 'approved' && (
                     <div style={{
                       borderTop: `1px solid ${LINE}`, padding: '7px 12px',
-                      display: 'flex', justifyContent: 'flex-end',
+                      display: 'flex', justifyContent: 'space-between',
+                      alignItems: 'center', gap: 8, flexWrap: 'wrap',
                     }}>
+                      {/* Decide without opening the application. Offered only
+                          for the two statuses the server will actually act on,
+                          so a button never exists that is guaranteed to 409. */}
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        {(r.status === 'submitted' || r.status === 'under_review') && (
+                          <>
+                            <button
+                              onClick={async () => {
+                                // A GSTIN clash has a right answer that is not
+                                // "approve": attach to the partner who already
+                                // holds the code. That flow lives in the detail
+                                // view, so send them there rather than mint a
+                                // duplicate on one click.
+                                if (dupe) {
+                                  setBanner(
+                                    `${r.legal_name} shares a GSTIN with ${dupe.legal_name} (${dupe.code}). ` +
+                                    `Open the application and attach it to them instead of allotting a second code.`)
+                                  openRecord(r.id)
+                                  return
+                                }
+                                if (!window.confirm(
+                                  `Approve "${r.legal_name}" and allot a partner code?\n\n` +
+                                  `This cannot be undone.`)) return
+                                try {
+                                  const res = await onboardingApi.approve(r.id)
+                                  setList(await onboardingApi.list())
+                                  setOrgs(await onboardingApi.orgs())
+                                  setBanner(
+                                    `${r.legal_name} approved — code ${res.data.allotted_code ?? 'allotted'}.`)
+                                } catch (e: any) { setBanner(e.message) }
+                              }}
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: 5,
+                                background: 'none', border: 'none', cursor: 'pointer',
+                                color: '#1F4E3D', fontSize: 11.5, fontWeight: 600,
+                                fontFamily: 'inherit', padding: '2px 4px',
+                              }}
+                            >
+                              <Check size={13} /> Approve
+                            </button>
+                            <button
+                              onClick={async () => {
+                                // The reason is mandatory server-side and the
+                                // partner reads it, so it is asked for here
+                                // rather than sent as a placeholder.
+                                const reason = window.prompt(
+                                  `Reject "${r.legal_name}"?\n\nWhy? The partner will see this.`)
+                                if (!reason?.trim()) return
+                                try {
+                                  await onboardingApi.reject(r.id, reason.trim())
+                                  setList(await onboardingApi.list())
+                                  setBanner(`${r.legal_name} rejected.`)
+                                } catch (e: any) { setBanner(e.message) }
+                              }}
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: 5,
+                                background: 'none', border: 'none', cursor: 'pointer',
+                                color: DANGER, fontSize: 11.5, fontWeight: 600,
+                                fontFamily: 'inherit', padding: '2px 4px',
+                              }}
+                            >
+                              <X size={13} /> Reject
+                            </button>
+                          </>
+                        )}
+                      </div>
                       <button
                         onClick={async () => {
                           const sent = r.status === 'submitted' || r.status === 'under_review'
