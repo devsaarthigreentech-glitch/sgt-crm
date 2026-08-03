@@ -342,7 +342,11 @@ const PRINT_HTML = `<style>
   .ag table.sign td { width: 33.33%; vertical-align: top; padding: 6pt 8pt; border: 0.5pt solid #cfd8d2; font-size: 9.5pt; }
   .ag table.sign .for { font-weight: bold; color: #14532d; margin-bottom: 4pt; }
   .ag .sigimg { max-height: 60pt; max-width: 100%; display: block; margin: 4pt 0; }
-  .ag .rule { display: inline-block; min-width: 130pt; border-bottom: 0.5pt solid #555; }
+  /* 1px, not 0.5pt. A half-point border rounds to zero in wkhtmltopdf and in
+     the browser print preview, so the line someone is meant to sign or date
+     on simply was not there. Width in px for the same reason. */
+  .ag .rule { display: inline-block; min-width: 120px; border-bottom: 1px solid #555;
+              line-height: 1.6; }
   .ag .sigrow { margin-bottom: 5pt; }
   .ag .endnote { text-align: center; font-size: 8pt; letter-spacing: 0.12em; text-transform: uppercase;
                  color: #8a867c; margin-top: 14pt; }
@@ -445,7 +449,11 @@ const PRINT_HTML = `<style>
         {% else %}<div class="sigrow">Signature: <span class="rule">&nbsp;</span></div>{% endif %}
         <div class="sigrow">Name: {% if doc.sgt_signatory %}{{ doc.sgt_signatory }}{% else %}<span class="rule">&nbsp;</span>{% endif %}</div>
         <div class="sigrow">Designation: {% if doc.sgt_signatory_designation %}{{ doc.sgt_signatory_designation }}{% else %}<span class="rule">&nbsp;</span>{% endif %}</div>
-        <div class="sigrow">Date: <span class="rule">&nbsp;</span></div>
+        {#- Dated only where the party has ALREADY signed: a signature image on
+            file means this copy goes out executed, and an executed signature
+            with no date is incomplete. A party who has yet to sign gets a rule
+            to date by hand, because we cannot know when they will. -#}
+        <div class="sigrow">Date: {% if doc.sgt_signature_url and eff %}{{ eff }}{% else %}<span class="rule">&nbsp;</span>{% endif %}</div>
       </td>
       <td>
         <div class="for">For {{ doc.distributor_name }}</div>
@@ -454,7 +462,7 @@ const PRINT_HTML = `<style>
         <div class="sigrow">Name: {% if doc.distributor_sign_name %}{{ doc.distributor_sign_name }}{% elif doc.distributor_signatory %}{{ doc.distributor_signatory }}{% else %}<span class="rule">&nbsp;</span>{% endif %}</div>
         <div class="sigrow">Designation: {% if doc.distributor_sign_designation %}{{ doc.distributor_sign_designation }}{% else %}Authorised Signatory{% endif %}
           (Distributor &middot; {{ doc.distributor_code }})</div>
-        <div class="sigrow">Date: <span class="rule">&nbsp;</span></div>
+        <div class="sigrow">Date: {% if doc.distributor_signature_url and eff %}{{ eff }}{% else %}<span class="rule">&nbsp;</span>{% endif %}</div>
       </td>
       <td>
         <div class="for">For {{ doc.dealer_name }}</div>
@@ -495,6 +503,11 @@ const SAMPLE: Record<string, string> = {
   distributor_signatory_designation: 'Authorised Signatories',
   distributor_sign_name: 'Mr. Mahadev (M. D.) Jethani',
   distributor_sign_designation: 'Authorised Signatory',
+  // The real signature files. Relative on purpose — the PDF renderer
+  // resolves them against the site, same as ERP_TERMS_STAMP_URLS. Present
+  // here so the sample exercises the signed-and-dated branch of the
+  // signature block rather than only the blank-rule one.
+  distributor_signature_url: '/files/cps-sign.png',
 
   dealer_name: 'GEN.TECH. ENGINEERS',
   dealer_code: 'EDINGX001-SS01',
@@ -505,6 +518,10 @@ const SAMPLE: Record<string, string> = {
   dealer_address: 'Plot No. 45F2, Vikas Nagar, Murlipura, Jaipur 302039, Rajasthan, India',
   dealer_signatory: 'Mr. Hemant Jangid',
   dealer_signatory_designation: 'Proprietor',
+
+  sgt_signatory: 'Alok Kumar',
+  sgt_signatory_designation: 'Managing Director',
+  sgt_signature_url: '/files/sign.jpg',
   dealer_email: 'engineersgentech@gmail.com',
   dealer_mobile: '+91-8619383752 / +91-9414775611',
 
