@@ -191,7 +191,7 @@ const FIELDS: Field[] = [
     fieldname: 'distributor_region', label: 'Exclusive Region', fieldtype: 'Data',
     description:
       'The BARE region name, e.g. "Rajasthan" — no "the State of". The recital adds that ' +
-      'wording itself; the Annexure C sticker needs it without. One field, two grammatical ' +
+      'wording itself; the Annexure B sticker needs it without. One field, two grammatical ' +
       'positions, which is why it must not be pre-worded.',
   },
   { fieldname: 'distributor_email', label: 'Distributor Email', fieldtype: 'Data' },
@@ -224,7 +224,7 @@ const FIELDS: Field[] = [
   {
     fieldname: 'dealer_type', label: 'Dealer Type', fieldtype: 'Select', options: 'SS\nSM',
     reqd: 1, in_list_view: 1,
-    description: 'SS = Sales & Service. SM = Sales & Marketing. Drives Clause 2.1, Annexure A and the Annexure C sticker.',
+    description: 'SS = Sales & Service. SM = Sales & Marketing. Drives Clause 2.1, Annexure A and the Annexure B sticker.',
   },
   {
     fieldname: 'dealer_constitution', label: 'Constitution', fieldtype: 'Data',
@@ -310,7 +310,7 @@ function set_short_fiscal_year(frm) {
 // Print format
 //
 // A rebuild of the Word template in HTML, not a conversion of it. The
-// recitals, Annexure A, the Annexure C sticker and the signature table
+// recitals, Annexure A, the Annexure B sticker and the signature table
 // are all BUILT from the fields above, so they cannot disagree with the
 // data the CRM holds — which was the failure mode of filling in a Word
 // file by hand.
@@ -426,7 +426,7 @@ const PRINT_HTML = `<style>
     <tr><td class="k">Operating area</td><td>{% if doc.dealer_operating_area %}{{ doc.dealer_operating_area }}{% else %}&mdash;{% endif %}</td></tr>
   </table>
 
-  <div class="annex">Annexure C &mdash; Dealer Branding / Sticker Specification</div>
+  <div class="annex">Annexure B &mdash; Dealer Branding / Sticker Specification</div>
   <p>Every unit deployed through the Dealer carries SGT branding plus the sticker below, applied
     before handover; each deployment registered in GreenVision under the Dealer Code.</p>
   <div class="sticker">
@@ -647,7 +647,7 @@ async function main() {
   console.log('  The format builds from the fields, not from free text:');
   console.log('    · recitals (2) and (3)     from the distributor / dealer blocks');
   console.log('    · Annexure A               9 rows, dealer type as a ☒/☐ pair');
-  console.log('    · Annexure C sticker       "Sold, installed and serviced by" for SS, "Sold by" for SM');
+  console.log('    · Annexure B sticker       "Sold, installed and serviced by" for SS, "Sold by" for SM');
   console.log('    · signature table          3 columns, signature images when a URL is set');
   console.log('    · sections 1–13            from agreement_body on each document');
 

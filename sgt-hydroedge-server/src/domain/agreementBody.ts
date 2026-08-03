@@ -7,7 +7,7 @@
 // The agreement splits cleanly in two, and the split is the whole design:
 //
 //   DATA   — the parties, their codes, addresses, signatories, the
-//            Annexure A table, the Annexure C sticker, the signature
+//            Annexure A table, the Annexure B sticker, the signature
 //            block. All of it is DERIVED from quote_service.org and
 //            rendered by the print format. Nobody retypes it, so nobody
 //            can mistype it.
@@ -55,9 +55,16 @@
  * is authoritative only until the first agreement is raised from it.
  *
  * Cross-references inside the text (Clause 2.2, Clause 8.2, Section 5,
- * Annexure C) are written out rather than auto-numbered. Renumber a
+ * Annexure B) are written out rather than auto-numbered. Renumber a
  * section and you must fix them by hand — auto-numbering a contract is
  * a way to silently change what a clause points at.
+ *
+ * Clause 9.1's "(Annexure B)" is a case in point: the sticker annexure was
+ * lettered C in the Word original, with no B in between. Renaming it to B
+ * meant changing the print format AND this line, because they live in
+ * different places — the heading in the print format, the reference here,
+ * copied onto each document at creation. Editing only the print format
+ * would leave every clause pointing at an annexure that no longer exists.
  */
 export const DEFAULT_AGREEMENT_BODY_TEXT = `1.  What this Agreement does
 
@@ -121,7 +128,7 @@ export const DEFAULT_AGREEMENT_BODY_TEXT = `1.  What this Agreement does
 
 9.  Branding and Deployment Tracking
 
-9.1  **Marking.**  Every unit carries SGT branding, the Dealer identification (Annexure C) and DG-specific signage (including kVA rating). The "Manufactured by SGT HydroEdge" marking and all patent / certification markings shall not be altered, obscured or removed. Each deployment is registered in GreenVision under the Dealer Code before handover.
+9.1  **Marking.**  Every unit carries SGT branding, the Dealer identification (Annexure B) and DG-specific signage (including kVA rating). The "Manufactured by SGT HydroEdge" marking and all patent / certification markings shall not be altered, obscured or removed. Each deployment is registered in GreenVision under the Dealer Code before handover.
 
 10.  Confidentiality, IP, Non-Compete and Non-Circumvention
 
