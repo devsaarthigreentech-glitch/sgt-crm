@@ -615,9 +615,18 @@ export default function AgreementScreen({ api }: { api: AgreementApi }) {
               }))}
               style={{
                 width: '100%', padding: '8px 10px', fontSize: 13, fontFamily: 'inherit',
-                border: `1px solid ${LINE}`, borderRadius: 7, margin: '4px 0 12px',
+                border: `1px solid ${LINE}`, borderRadius: 7, margin: '4px 0 2px',
               }}
             />
+            {/* Says WHY the address is there. An unexplained pre-filled CC on a
+                contract email is the kind of thing someone silently deletes. */}
+            <p style={{ fontSize: 11.5, color: FAINT, margin: '0 0 12px' }}>
+              {sending.draft.cc.length
+                ? `${sending.row.distributor_name ?? 'The distributor'} is copied by default — they are a Party to this agreement.`
+                : sending.row.distributor_name
+                  ? `No email on record for ${sending.row.distributor_name}, so they are not copied.`
+                  : 'This agreement has no distributor on it.'}
+            </p>
 
             <label style={{ fontSize: 12, fontWeight: 600, color: MUTED }}>Subject</label>
             <input

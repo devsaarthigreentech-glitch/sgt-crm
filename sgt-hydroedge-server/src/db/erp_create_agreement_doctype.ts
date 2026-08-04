@@ -342,6 +342,12 @@ const PRINT_HTML = `<style>
   .ag table.sign td { width: 33.33%; vertical-align: top; padding: 6pt 8pt; border: 0.5pt solid #cfd8d2; font-size: 9.5pt; }
   .ag table.sign .for { font-weight: bold; color: #14532d; margin-bottom: 4pt; }
   .ag .sigimg { max-height: 60pt; max-width: 100%; display: block; margin: 4pt 0; }
+  /* Somewhere to actually sign. A party who has not signed yet was getting an
+     inline rule on the same line as the label — nowhere to put a signature or
+     a stamp. Height matches .sigimg so a signed column and an unsigned one
+     stay the same depth and the three blocks line up. */
+  .ag .siglabel { margin: 4pt 0 2pt; }
+  .ag .sigspace { height: 60pt; border-bottom: 1px solid #555; margin-bottom: 6pt; }
   /* 1px, not 0.5pt. A half-point border rounds to zero in wkhtmltopdf and in
      the browser print preview, so the line someone is meant to sign or date
      on simply was not there. Width in px for the same reason. */
@@ -446,7 +452,7 @@ const PRINT_HTML = `<style>
       <td>
         <div class="for">For SGT HydroEdge Private Limited</div>
         {% if doc.sgt_signature_url %}<img class="sigimg" src="{{ doc.sgt_signature_url }}">
-        {% else %}<div class="sigrow">Signature: <span class="rule">&nbsp;</span></div>{% endif %}
+        {% else %}<div class="siglabel">Signature:</div><div class="sigspace"></div>{% endif %}
         <div class="sigrow">Name: {% if doc.sgt_signatory %}{{ doc.sgt_signatory }}{% else %}<span class="rule">&nbsp;</span>{% endif %}</div>
         <div class="sigrow">Designation: {% if doc.sgt_signatory_designation %}{{ doc.sgt_signatory_designation }}{% else %}<span class="rule">&nbsp;</span>{% endif %}</div>
         {#- Dated only where the party has ALREADY signed: a signature image on
@@ -458,7 +464,7 @@ const PRINT_HTML = `<style>
       <td>
         <div class="for">For {{ doc.distributor_name }}</div>
         {% if doc.distributor_signature_url %}<img class="sigimg" src="{{ doc.distributor_signature_url }}">
-        {% else %}<div class="sigrow">Signature: <span class="rule">&nbsp;</span></div>{% endif %}
+        {% else %}<div class="siglabel">Signature:</div><div class="sigspace"></div>{% endif %}
         <div class="sigrow">Name: {% if doc.distributor_sign_name %}{{ doc.distributor_sign_name }}{% elif doc.distributor_signatory %}{{ doc.distributor_signatory }}{% else %}<span class="rule">&nbsp;</span>{% endif %}</div>
         <div class="sigrow">Designation: {% if doc.distributor_sign_designation %}{{ doc.distributor_sign_designation }}{% else %}Authorised Signatory{% endif %}
           (Distributor &middot; {{ doc.distributor_code }})</div>
@@ -466,7 +472,9 @@ const PRINT_HTML = `<style>
       </td>
       <td>
         <div class="for">For {{ doc.dealer_name }}</div>
-        <div class="sigrow">Signature: <span class="rule">&nbsp;</span></div>
+        {#- The dealer never has a signature on file: this copy goes to them to
+            sign. Always the signing space, never an image. -#}
+        <div class="siglabel">Signature:</div><div class="sigspace"></div>
         <div class="sigrow">Name: {% if doc.dealer_signatory %}{{ doc.dealer_signatory }}{% else %}<span class="rule">&nbsp;</span>{% endif %}</div>
         <div class="sigrow">Designation: {% if doc.dealer_signatory_designation %}{{ doc.dealer_signatory_designation }} {% endif %}(Dealer &middot; {{ doc.dealer_code }})</div>
         <div class="sigrow">Date: <span class="rule">&nbsp;</span></div>

@@ -507,6 +507,10 @@ export interface SendInput {
 /** The covering note the send dialog should open with. */
 export async function draftFor(row: AgreementRow, senderName: string | null) {
   const dealer = await loadParty(row.dealer_org_id);
+  const distributor = row.distributor_org_id
+    ? await loadParty(row.distributor_org_id)
+    : null;
+
   const ctx = {
     erpName: row.erp_name,
     dealerName: row.dealer_name,
@@ -514,9 +518,30 @@ export async function draftFor(row: AgreementRow, senderName: string | null) {
     distributorName: row.distributor_name,
     senderName,
   };
+
+  const to = [dealer?.contact_email]
+    .filter((e): e is string => !!e && isEmail(e));
+
+  // The distributor is CC'd by default. This is a tripartite agreement —
+  // they are a Party to it, not a bystander — so the appointment of a
+  // dealer beneath them should never go out without them on the thread.
+  //
+  // Read live from the org record, like the To address, so correcting an
+  // email on the partner record fixes the next send. NOT taken from the
+  // agreement's snapshot: the snapshot is what the document SAYS, and this
+  // is about where the mail GOES.
+  //
+  // Deduped against To. When the distributor's contact email is also the
+  // dealer's — which happens while a partner is being set up and both
+  // records point at the same person — CC'ing them a copy of a mail they
+  // are already receiving looks like a bug to the person receiving it.
+  const cc = [distributor?.contact_email]
+    .filter((e): e is string => !!e && isEmail(e))
+    .filter(e => !to.some(t => t.toLowerCase() === e.toLowerCase()));
+
   return {
-    to: [dealer?.contact_email].filter((e): e is string => !!e && isEmail(e)),
-    cc: [] as string[],
+    to,
+    cc,
     subject: defaultAgreementSubject(ctx),
     messageText: defaultAgreementMessageText(ctx),
   };
@@ -527,7 +552,10 @@ export async function sendAgreementTo(
 ) {
   const draft = await draftFor(row, actor.name);
   const to = (input.to ?? draft.to).map(s => String(s).trim()).filter(isEmail);
-  const cc = (input.cc ?? []).map(s => String(s).trim()).filter(isEmail);
+  // `?? draft.cc`, not `?? []` — a caller that omits cc entirely gets the
+  // default distributor CC. An explicit empty array still means "no CC",
+  // because someone who cleared the field on the send form meant it.
+  const cc = (input.cc ?? draft.cc).map(s => String(s).trim()).filter(isEmail);
   if (!to.length) {
     throw new Error(
       'No valid recipient. Add an email on the dealer record, or type one on the send form.');
