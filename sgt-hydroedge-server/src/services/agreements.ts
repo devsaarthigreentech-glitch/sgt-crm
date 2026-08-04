@@ -35,6 +35,36 @@ import { textToHtml } from './quoteMail.js';
 import { defaultAgreementBody } from '../domain/agreementBody.js';
 import { shortFiscalYear } from '../domain/fiscalYear.js';
 
+/**
+ * People copied on EVERY agreement, on top of the distributor.
+ *
+ * Comma-separated, e.g.
+ *   AGREEMENT_CC=ajinkya@sgthydroedge.com,ritesh@sgthydroedge.com
+ *
+ * Env rather than a table, matching ERP_TERMS_STAMP_URLS: this is a short
+ * list of colleagues that changes when someone joins or leaves, not
+ * per-agreement data. Changing it is a config edit and a restart.
+ *
+ * These are VISIBLE to the dealer and the distributor — it is Cc, not Bcc,
+ * deliberately, because on a tripartite agreement the dealer should be able
+ * to see who at SGT is on the thread and reply to all of them.
+ */
+const STANDING_CC = String(process.env.AGREEMENT_CC ?? '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+// Said once, at import, rather than swallowed per send. A typo'd standing
+// recipient is otherwise invisible: it is dropped silently and nobody
+// notices until someone asks why they never get copied.
+{
+  const bad = STANDING_CC.filter(e => !isEmail(e));
+  if (bad.length) {
+    console.warn(
+      `⚠ AGREEMENT_CC contains ${bad.length} malformed address(es), ignored: ${bad.join(', ')}`);
+  }
+}
+
 /** Who is acting. Stamped onto the document and every audit row. */
 export interface Actor {
   userId: string;
@@ -531,13 +561,23 @@ export async function draftFor(row: AgreementRow, senderName: string | null) {
   // agreement's snapshot: the snapshot is what the document SAYS, and this
   // is about where the mail GOES.
   //
-  // Deduped against To. When the distributor's contact email is also the
-  // dealer's — which happens while a partner is being set up and both
-  // records point at the same person — CC'ing them a copy of a mail they
-  // are already receiving looks like a bug to the person receiving it.
-  const cc = [distributor?.contact_email]
-    .filter((e): e is string => !!e && isEmail(e))
-    .filter(e => !to.some(t => t.toLowerCase() === e.toLowerCase()));
+  // Distributor first, then the standing SGT list.
+  //
+  // Deduped against To AND against itself, case-insensitively. Two ways
+  // this bites in practice: the distributor's contact email is also the
+  // dealer's while a partner is being set up, and someone on AGREEMENT_CC
+  // is also the distributor's contact. Either way a duplicate address on a
+  // contract email reads as a bug to whoever receives it.
+  const seen = new Set(to.map(t => t.toLowerCase()));
+  const cc: string[] = [];
+  for (const raw of [distributor?.contact_email, ...STANDING_CC]) {
+    const e = String(raw ?? '').trim();
+    if (!e || !isEmail(e)) continue;
+    const k = e.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    cc.push(e);
+  }
 
   return {
     to,
