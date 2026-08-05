@@ -1,31 +1,35 @@
+// Read-only. Can the NULL actor_id rows on lead_activities be attributed
+// to exactly one app_user by name? Prints the answer; changes nothing.
 import 'dotenv/config';
 import { Pool } from 'pg';
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 async function main() {
-  const cols = await pool.query(
-    `select column_name from information_schema.columns
-      where table_schema='lead_service' and table_name='lead_activities'
-      order by ordinal_position`);
-  console.log('columns:', cols.rows.map(r => r.column_name).join(', '));
-
-  const counts = await pool.query(
-    `select count(*) as total,
-            count(*) filter (where actor_id is null) as no_actor,
-            count(*) filter (where actor_id is not null) as with_actor
-       from lead_service.lead_activities`);
-  console.log('counts:', counts.rows[0]);
-
-  const recent = await pool.query(
-    `select id, actor_id, actor_name, actor_type, type, occurred_at, created_at
-       from lead_service.lead_activities
-      order by created_at desc nulls last limit 15`);
-  console.table(recent.rows);
-
-  const users = await pool.query(`select id, name, email, role from lead_service.users order by id limit 20`)
-    .catch(async () => await pool.query(`select id, name, email, role from users order by id limit 20`));
+  const users = await pool.query(
+    `select id, name, email, role, active from lead_service.app_user order by id`);
   console.table(users.rows);
+
+  const match = await pool.query(/* sql */ `
+    select a.actor_name,
+           count(*)                                as activities,
+           count(distinct u.id)                    as matching_users,
+           coalesce(string_agg(distinct u.id::text, ', '), '—') as user_ids
+      from lead_service.lead_activities a
+      left join lead_service.app_user u
+             on lower(btrim(u.name)) = lower(btrim(a.actor_name))
+     where a.actor_id is null
+     group by a.actor_name
+     order by a.actor_name
+  `);
+  console.table(match.rows);
+
+  const ok = match.rows.filter(r => Number(r.matching_users) === 1);
+  const bad = match.rows.filter(r => Number(r.matching_users) !== 1);
+  const n = (rs: any[]) => rs.reduce((s, r) => s + Number(r.activities), 0);
+  console.log(`\nUnambiguous : ${n(ok)} activities across ${ok.length} name(s)`);
+  console.log(`Unattributable: ${n(bad)} activities across ${bad.length} name(s)`);
+  if (bad.length) console.log('  ->', bad.map(r => `${r.actor_name} (${r.matching_users} matches)`).join('; '));
 
   await pool.end();
 }
