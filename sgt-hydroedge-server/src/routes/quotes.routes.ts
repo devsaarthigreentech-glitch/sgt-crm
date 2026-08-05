@@ -287,7 +287,7 @@ export async function performQuotation(
   //
   // Either form is accepted. The cap is a PERCENTAGE either way: an amount
   // is measured against the machine line so "₹2,00,000 off" cannot walk
-  // past a 7% limit just because it was typed in rupees.
+  // past a 12% limit just because it was typed in rupees.
   //
   // And it is checked PER LINE, against that line's own machine value.
   // Checking it against the document total would let a deep discount on

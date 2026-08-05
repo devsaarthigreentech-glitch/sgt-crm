@@ -2,7 +2,7 @@
 // /portal/quotes — same shape, so QuoteScreen serves both.
 
 import type {
-  QuoteApi, Resolution, SpecField, QuoteAttachment, RecipientPlan,
+  QuoteApi, Resolution, SpecField, QuoteAttachment, RecipientPlan, PoRow,
 } from './QuoteScreen'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3004/api/v1'
@@ -38,8 +38,16 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json()
 }
 
-/** Builds an adapter for a given prefix — /quotes for staff, /portal/quotes for partners. */
-export function makeQuoteApi(prefix: string, withPartners: boolean): QuoteApi {
+/**
+ * Builds an adapter for a given prefix — /quotes for staff, /portal/quotes
+ * for partners.
+ *
+ * `poPrefix` is separate because dealer POs are a different route plugin
+ * (/pos and /portal/pos), not a sub-path of quotes. They live on the same
+ * adapter anyway: the PO is raised from the quotation list, so one screen
+ * needs both and passing two api objects around would buy nothing.
+ */
+export function makeQuoteApi(prefix: string, withPartners: boolean, poPrefix: string): QuoteApi {
   return {
     resolve: (kva: string) =>
       request<{ data: Resolution }>(`${prefix}/resolve`, {
@@ -156,6 +164,30 @@ export function makeQuoteApi(prefix: string, withPartners: boolean): QuoteApi {
         `${prefix}/terms/${encodeURIComponent(name)}`)
         .then(r => r.data.text ?? r.data.terms),
 
+    // ---- Dealer POs ----------------------------------------------------
+    // A PO is always raised FROM a quotation, so the server takes the
+    // quotation's ERPNext name and derives the rest. Nothing is typed.
+
+    listPos: () => request<{ data: PoRow[] }>(`${poPrefix}`).then(r => r.data),
+
+    raisePo: (quotationErpName: string) =>
+      request<{ data: PoRow & { warnings?: string[] } }>(`${poPrefix}`, {
+        method: 'POST', body: JSON.stringify({ quotationErpName }),
+      }).then(r => r.data),
+
+    /** Fetched as a blob because the PDF route needs the bearer token. */
+    poPdfUrl: async (id: number) => {
+      const token = getToken()
+      const res = await fetch(`${BASE_URL}${poPrefix}/${id}/pdf`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({} as any))
+        throw new Error(body?.error?.message ?? `HTTP ${res.status}`)
+      }
+      return URL.createObjectURL(await res.blob())
+    },
+
     ...(withPartners
       ? {
           partners: () =>
@@ -166,5 +198,5 @@ export function makeQuoteApi(prefix: string, withPartners: boolean): QuoteApi {
   }
 }
 
-export const staffQuoteApi = makeQuoteApi('/quotes', true)
-export const portalQuoteApi = makeQuoteApi('/portal/quotes', false)
+export const staffQuoteApi = makeQuoteApi('/quotes', true, '/pos')
+export const portalQuoteApi = makeQuoteApi('/portal/quotes', false, '/portal/pos')

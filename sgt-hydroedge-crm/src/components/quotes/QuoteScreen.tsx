@@ -19,6 +19,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   Check, AlertCircle, Zap, FileText, Send, Plus, X, Paperclip, Trash2, Pencil,
+  FilePlus,
 } from 'lucide-react'
 
 const INK = '#161614'
@@ -85,6 +86,26 @@ export interface RecipientPlan {
   suggestedMessage?: string
 }
 
+/**
+ * A dealer PO, as the mirror holds it.
+ *
+ * Keyed to its quotation by `quotation_erp_name`, which is how the list
+ * below decides whether a row offers "Raise PO" or shows the one that
+ * already exists.
+ */
+export interface PoRow {
+  id: number
+  erp_name: string
+  quotation_erp_name: string
+  status: string
+  customer_name: string | null
+  grand_total: string | null
+  po_date: string | null
+  created_at: string
+  /** Only present on the row returned by raisePo(). */
+  warnings?: string[]
+}
+
 /** What the screen sends for one machine. */
 export interface QuoteLinePayload {
   kva: string
@@ -140,6 +161,12 @@ export interface QuoteApi {
   attachments(erpName: string): Promise<QuoteAttachment[]>
   attach(erpName: string, file: File): Promise<QuoteAttachment>
   detach(erpName: string, fileName: string): Promise<{ removed: string }>
+  /** Every PO this caller may see, newest first. */
+  listPos(): Promise<PoRow[]>
+  /** Raise one against a quotation. The server derives everything else. */
+  raisePo(quotationErpName: string): Promise<PoRow>
+  /** By mirror id, not by ERPNext name — POs are scoped on our side. */
+  poPdfUrl(id: number): Promise<string>
   /** Partner pickers only make sense for SGT staff. */
   partners?: () => Promise<{ id: number; code: string; legal_name: string }[]>
 }
@@ -479,6 +506,14 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
   const [orgId, setOrgId] = useState<number | null>(null)
   const [partners, setPartners] = useState<{ id: number; code: string; legal_name: string }[]>([])
   const [list, setList] = useState<any[]>([])
+  /**
+   * Every PO this caller can see, indexed by the quotation it came from.
+   * Loaded once alongside the quotation list rather than per row: a
+   * request per quotation would be twenty requests to render one screen.
+   */
+  const [posByQuote, setPosByQuote] = useState<Record<string, PoRow[]>>({})
+  /** The quotation whose PO is being raised right now. */
+  const [poBusy, setPoBusy] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [banner, setBanner] = useState<string | null>(null)
   const [made, setMade] = useState<any>(null)
@@ -492,7 +527,20 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
 
   const fileInput = useRef<HTMLInputElement | null>(null)
 
-  const refresh = () => api.list().then(setList).catch(() => {})
+  /** Group the flat PO list by the quotation each was raised against. */
+  const indexPos = (rows: PoRow[]) => {
+    const by: Record<string, PoRow[]> = {}
+    for (const p of rows) (by[p.quotation_erp_name] ??= []).push(p)
+    setPosByQuote(by)
+  }
+
+  // Both lists, together. The PO fetch is swallowed on failure like the
+  // quotation one: a site that has not run migrate_po_01.ts yet should
+  // still show its quotations rather than a blank screen.
+  const refresh = () => {
+    api.list().then(setList).catch(() => {})
+    api.listPos().then(indexPos).catch(() => {})
+  }
   useEffect(() => {
     refresh()
     if (showPartnerPicker && api.partners) api.partners().then(setPartners).catch(() => {})
@@ -649,6 +697,42 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
       clearForm()
       refresh()
     } catch (e: any) { setBanner(e.message) } finally { setBusy(false) }
+  }
+
+  /**
+   * Raise a PO against a quotation, then open it.
+   *
+   * The PDF opens straight away on purpose: the whole point of the button
+   * is to produce the document, so making someone hunt for a second link
+   * to see what they just created would be a worse version of doing
+   * nothing. The list is refreshed behind the preview.
+   *
+   * Warnings from the server (no GST on the source quotation, missing
+   * terms template) are shown in the banner rather than swallowed — the
+   * PO exists either way and the person who raised it should know.
+   */
+  const raisePo = async (quotationErpName: string) => {
+    setBanner(null)
+    setPoBusy(quotationErpName)
+    try {
+      const po = await api.raisePo(quotationErpName)
+      setPosByQuote(prev => ({
+        ...prev,
+        [quotationErpName]: [po, ...(prev[quotationErpName] ?? [])],
+      }))
+      if (po.warnings?.length) setBanner(po.warnings.join(' '))
+      try { setPdfFor({ name: po.erp_name, url: await api.poPdfUrl(po.id) }) }
+      catch (e: any) {
+        // The document was created; only the render failed. Say which,
+        // because "PO failed" would be false and would invite a retry
+        // that raises a second one.
+        setBanner(`${po.erp_name} was raised, but its PDF could not be rendered: ${e.message}`)
+      }
+    } catch (e: any) {
+      setBanner(e.message)
+    } finally {
+      setPoBusy(null)
+    }
   }
 
   const openSend = async (erpName: string) => {
@@ -1488,7 +1572,55 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
                       <Pencil size={13} /> Edit
                     </button>
                   )}
+                  {/* Raise the PO. Always offered, even once one exists —
+                      a revised quotation legitimately needs a fresh PO,
+                      and the ones already raised are listed below so
+                      nobody does it by accident. */}
+                  <button type="button"
+                    disabled={poBusy === q.erp_name}
+                    onClick={() => raisePo(q.erp_name)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 5,
+                      background: 'none', border: 'none', padding: 0,
+                      cursor: poBusy === q.erp_name ? 'wait' : 'pointer',
+                      color: poBusy === q.erp_name ? FAINT : MUTED,
+                      fontSize: 12, fontFamily: 'inherit',
+                    }}>
+                    <FilePlus size={13} />
+                    {poBusy === q.erp_name ? 'Raising PO…' : 'Raise PO'}
+                  </button>
                 </div>
+
+                {/* The POs already raised against this quotation. Shown
+                    rather than collapsed into a count: the number is what
+                    the dealer quotes back, so it has to be readable. */}
+                {(posByQuote[q.erp_name] ?? []).length > 0 && (
+                  <div style={{
+                    display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center',
+                    marginTop: 7, paddingTop: 7, borderTop: `1px dashed ${LINE}`,
+                  }}>
+                    <span style={{ fontSize: 11, color: FAINT }}>
+                      PO{(posByQuote[q.erp_name] ?? []).length > 1 ? 's' : ''}
+                    </span>
+                    {(posByQuote[q.erp_name] ?? []).map(po => (
+                      <button key={po.id} type="button"
+                        onClick={async () => {
+                          setBanner(null)
+                          try { setPdfFor({ name: po.erp_name, url: await api.poPdfUrl(po.id) }) }
+                          catch (e: any) { setBanner(e.message) }
+                        }}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 5,
+                          background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                          fontSize: 12, fontFamily: 'inherit',
+                          color: po.status === 'cancelled' ? FAINT : MUTED,
+                          textDecoration: po.status === 'cancelled' ? 'line-through' : 'none',
+                        }}>
+                        <FileText size={13} /> {po.erp_name}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
           </div>

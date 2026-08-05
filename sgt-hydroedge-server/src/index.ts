@@ -7,6 +7,7 @@ import partnerRegistrationRoutes from './routes/partnerRegistration.routes.js'
 import portalRoutes from './routes/portal.routes.js'
 import quotesRoutes from './routes/quotes.routes.js'
 import agreementRoutes from './routes/agreements.routes.js'
+import dealerPoRoutes from './routes/dealerPo.routes.js'
 import { registerRoutePolicy } from './auth/policy.js'
 import erpRoutes from './routes/erp';
 import jwt from '@fastify/jwt'
@@ -63,6 +64,10 @@ async function start() {
   // the policy in src/auth/policy.ts.
   await app.register(agreementRoutes({ surface: 'staff' }), { prefix: '/api/v1/agreements' })
   await app.register(agreementRoutes({ surface: 'portal' }), { prefix: '/api/v1/portal/agreements' })
+  // Dealer POs, the same two-surface shape and for the same reason: the
+  // PO a dealer raises must be the document SGT would have raised.
+  await app.register(dealerPoRoutes({ surface: 'staff' }), { prefix: '/api/v1/pos' })
+  await app.register(dealerPoRoutes({ surface: 'portal' }), { prefix: '/api/v1/portal/pos' })
   app.register(erpRoutes, { prefix: '/api/v1' });
   await app.register(authRoutes,   { prefix: '/api/v1' })
   await app.register(usersRoutes, { prefix: '/api/v1' })
