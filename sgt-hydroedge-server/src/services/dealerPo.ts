@@ -288,7 +288,12 @@ export async function resolveFromQuotation(quotationErpName: string): Promise<Re
     taxes,
 
     currency: doc.currency ?? 'INR',
+    // `total` feeds the printed Sub Total; net_total is kept because it is
+    // what the mirror row and the CRM list have always shown. On a
+    // quotation with no document-level discount they are the same number.
+    total: num(doc.total) ?? num(doc.net_total),
     net_total: num(doc.net_total),
+    discount_amount: num(doc.discount_amount),
     total_taxes_and_charges: num(doc.total_taxes_and_charges),
     grand_total: num(doc.grand_total),
     rounded_total: num(doc.rounded_total),

@@ -271,7 +271,22 @@ const FIELDS: Field[] = [
   // ---- The money ------------------------------------------------------
   { fieldname: 'sec_totals', fieldtype: 'Section Break', label: 'Totals' },
   { fieldname: 'currency', label: 'Currency', fieldtype: 'Data', default: 'INR', print_hide: 1 },
+  // `total` AND `net_total`, because ERPNext means different things by
+  // them: total is the sum of the item amounts, net_total is after a
+  // document-level discount has been apportioned across the lines. They
+  // are equal on most quotations and silently differ on discounted ones.
+  // The quotation's totals block prints `total` as the Sub Total, so the
+  // PO must carry it or the sub total would quietly change meaning.
+  { fieldname: 'total', label: 'Total', fieldtype: 'Currency', precision: '2', print_hide: 1 },
   { fieldname: 'net_total', label: 'Net Total', fieldtype: 'Currency', precision: '2', print_hide: 1 },
+  {
+    fieldname: 'discount_amount', label: 'Document Discount', fieldtype: 'Currency',
+    precision: '2', print_hide: 1,
+    description:
+      'A discount on the WHOLE document, distinct from the per-line discounts on the item ' +
+      'rows. The CRM does not raise these — line discounts are what the quote screen writes — ' +
+      'but one applied by hand in ERPNext must still print.',
+  },
   { fieldname: 'taxes', label: 'Taxes', fieldtype: 'Table', options: TAX_DOCTYPE, print_hide: 1 },
   { fieldname: 'col_totals', fieldtype: 'Column Break' },
   {
@@ -441,25 +456,23 @@ const PRINT_HTML = `<style>
                    border-bottom: 1px solid #d9d9d9; padding-bottom: 5px; margin-bottom: 9px; }
   .po .spec .item { margin-bottom: 9px; }
   .po .spec .item .n { font-weight: bold; margin-bottom: 2px; }
-  .po table.tot { width: 100%; border-collapse: collapse; margin-top: 18px; }
-  .po table.tot td { padding: 4px 0; border: none; }
-  .po table.tot td.lbl { text-align: right; font-weight: bold; padding-right: 14px; }
-  .po table.tot td.val { text-align: right; white-space: nowrap; }
-  .po table.tot tr.rule td { border-top: 1px solid #d9d9d9; padding-top: 8px; }
-  .po table.tot tr.big td { font-size: 1.08em; font-weight: bold; }
-  .po .words { margin-top: 10px; text-align: right; }
-  .po .words .h { font-weight: bold; }
+  /* No rules for the totals block: it is pasted from the quotation format
+     and carries its own inline styles. Styling it from here would be the
+     first step in the two drifting apart. */
   .po .terms { margin-top: 20px; }
   .po .terms ol { padding-left: 18px; margin: 0; }
   .po .terms li { margin-bottom: 7px; text-align: left; }
   .po .terms .ql-ui { display: none; }
 </style>
 
-{#- Money is formatted with get_formatted() rather than
-    frappe.utils.fmt_money(): it is a method on the document itself, so it
-    works on parent and child rows alike, it reads the currency off the
-    docfield instead of being told, and it needs nothing from the Jinja
-    sandbox that a future Frappe release might withdraw. -#}
+{#- Money is formatted with frappe.utils.fmt_money(x, currency=doc.currency),
+    the same call the quotation format uses. An earlier version of this file
+    used doc.get_formatted() instead, on the assumption that frappe.utils
+    might not be reachable from the print sandbox — the live quotation format
+    proves it is. fmt_money is also the more correct of the two here: these
+    Currency fields carry no options naming a currency field, so
+    get_formatted() falls back to the system default rather than to the
+    currency actually on the document. -#}
 
 <div class="po">
 
@@ -539,9 +552,9 @@ const PRINT_HTML = `<style>
             <td class="q">{{ it.qty | int }}</td>
           </tr></table>
         </td>
-        <td class="num">{{ it.get_formatted("price_list_rate") }}</td>
-        <td class="num">{% if it.discount_amount %}{{ it.get_formatted("discount_amount") }}{% endif %}</td>
-        <td class="num">{{ it.get_formatted("amount") }}</td>
+        <td class="num">{{ frappe.utils.fmt_money(it.price_list_rate, currency=doc.currency) }}</td>
+        <td class="num">{% if it.discount_amount %}{{ frappe.utils.fmt_money(it.discount_amount, currency=doc.currency) }}{% endif %}</td>
+        <td class="num">{{ frappe.utils.fmt_money(it.amount, currency=doc.currency) }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -574,47 +587,92 @@ const PRINT_HTML = `<style>
         {% endif %}
       </td>
       <td class="r">
-        <table class="tot">
-          <tr>
-            <td class="lbl">Sub Total:</td>
-            <td class="val">{{ doc.get_formatted("net_total") }}</td>
-          </tr>
-          {% for t in doc.taxes %}
-          <tr>
-            <td class="lbl">{{ t.description or "Tax" }}</td>
-            <td class="val">{{ t.get_formatted("tax_amount") }}</td>
-          </tr>
-          {% endfor %}
-          {#- Last resort. If the tax ROWS are missing but the tax TOTAL is
-              not, print the total on one line: a document showing a sub
-              total and a larger grand total with nothing in between does
-              not add up on the page, and the customer is the one who has
-              to reconcile it. The rows are what should be here — the CRM
-              warns loudly when they fail to attach — but the printed
-              figures must be self-consistent regardless. -#}
-          {% if not doc.taxes and doc.total_taxes_and_charges %}
-          <tr>
-            <td class="lbl">GST</td>
-            <td class="val">{{ doc.get_formatted("total_taxes_and_charges") }}</td>
-          </tr>
-          {% endif %}
-          <tr class="rule big">
-            <td class="lbl">Grand Total:</td>
-            <td class="val">{{ doc.get_formatted("grand_total") }}</td>
-          </tr>
-          {% if doc.rounded_total %}
-          <tr class="big">
-            <td class="lbl">Rounded Total:</td>
-            <td class="val">{{ doc.get_formatted("rounded_total") }}</td>
-          </tr>
-          {% endif %}
-        </table>
-        {% if doc.in_words %}
-        <div class="words">
-          <div class="h">Amount in words</div>
-          <div>{{ doc.in_words }}</div>
+{#- ==================================================================
+            THE QUOTATION'S OWN TOTALS BLOCK.
+
+            Lifted from the live Quotation print format rather than
+            rebuilt, on the owner's instruction (2026-08-05). Keep it that
+            way: when the quotation's totals change, paste the new version
+            here rather than editing this one to match, so the two cannot
+            drift apart a line at a time.
+
+            Its inline styles are deliberately left alone for the same
+            reason — restyling it with this format's CSS classes is
+            exactly the drift that is being avoided. It reads doc.total,
+            doc.taxes, doc.discount_amount, doc.rounded_total and
+            doc.in_words, and the PO doctype carries all five under
+            ERPNext's own names, which is why it needed no edits.
+            ================================================================== -#}
+        <div style="width:100%; line-height:1.2;">
+          <table style="width:100%; border-collapse:collapse;">
+            {# Sub Total — doc.total = sum of item amounts before tax #}
+            <tr>
+              <td style="text-align:right; padding:4px 16px 4px 0; font-weight:bold; font-size:12px; color:black">Sub Total:</td>
+              <td style="text-align:right; padding:4px 0; white-space:nowrap; font-size:12px;">
+                {{ frappe.utils.fmt_money(doc.total, currency=doc.currency) }}
+              </td>
+            </tr>
+            {# Every tax row. On a Quotation doc.taxes IS the Sales Taxes and Charges table. #}
+            {%- for tax in doc.taxes -%}
+              {%- if tax.tax_amount %}
+              <tr>
+                <td style="text-align:right; padding:4px 16px 4px 0; font-weight:bold; font-size:12px; color:black">{{ tax.description }}</td>
+                <td style="text-align:right; padding:4px 0; white-space:nowrap; font-size:12px;">
+                  {{ frappe.utils.fmt_money(tax.tax_amount, currency=doc.currency) }}
+                </td>
+              </tr>
+              {%- endif -%}
+            {%- endfor -%}
+            {#- ADDED, and the only addition: a floor under the tax rows.
+                If they are missing but the tax TOTAL is not, print the
+                total on one line — a document showing a sub total and a
+                larger grand total with nothing in between does not add up
+                on the page, and the customer is the one left reconciling
+                it. Never fires once the rows attach properly; delete it
+                if you would rather the gap be visible. -#}
+            {%- if not doc.taxes and doc.total_taxes_and_charges %}
+              <tr>
+                <td style="text-align:right; padding:4px 16px 4px 0; font-weight:bold; font-size:12px; color:black">GST</td>
+                <td style="text-align:right; padding:4px 0; white-space:nowrap; font-size:12px;">
+                  {{ frappe.utils.fmt_money(doc.total_taxes_and_charges, currency=doc.currency) }}
+                </td>
+              </tr>
+            {%- endif -%}
+            {# Document-level discount, only if one exists #}
+            {%- if doc.discount_amount %}
+              <tr>
+                <td style="text-align:right; padding:4px 16px 4px 0; font-weight:bold; font-size:12px; color:black">Discount:</td>
+                <td style="text-align:right; padding:4px 0; white-space:nowrap; font-size:12px;">
+                  - {{ frappe.utils.fmt_money(doc.discount_amount, currency=doc.currency) }}
+                </td>
+              </tr>
+            {%- endif -%}
+            {# Grand Total #}
+            <tr>
+              <td style="text-align:right; padding:7px 16px 4px 0; border-top:1px solid #d1d8dd; font-weight:bold; font-size:12px; color:black">Grand Total:</td>
+              <td style="text-align:right; padding:7px 0 4px 0; border-top:1px solid #d1d8dd; white-space:nowrap; font-weight:bold; font-size:12px;">
+                {{ frappe.utils.fmt_money(doc.grand_total, currency=doc.currency) }}
+              </td>
+            </tr>
+            {# Rounded Total #}
+            {%- set rounded_total = doc.rounded_total or doc.grand_total -%}
+            {%- if rounded_total %}
+              <tr>
+                <td style="text-align:right; padding:4px 16px 4px 0; font-weight:bold; font-size:12px; color:black">Rounded Total:</td>
+                <td style="text-align:right; padding:4px 0; white-space:nowrap; font-weight:bold; font-size:12px;">
+                  {{ frappe.utils.fmt_money(rounded_total, currency=doc.currency) }}
+                </td>
+              </tr>
+            {%- endif -%}
+            {# Amount in words — right-aligned so it shares the right edge with the figures #}
+            <tr>
+              <td colspan="2" style="text-align:right; padding-top:9px; border-top:1px solid #d1d8dd; font-size:11px; line-height:1.45; color:black;">
+                <strong>Amount in words</strong><br>
+                {{ doc.in_words or frappe.utils.money_in_words(rounded_total, doc.currency) }}
+              </td>
+            </tr>
+          </table>
         </div>
-        {% endif %}
       </td>
     </tr>
   </table>

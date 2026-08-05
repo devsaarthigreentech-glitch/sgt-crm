@@ -106,7 +106,16 @@ export interface PoFields {
   taxes?: PoTax[];
 
   currency?: string | null;
+  /**
+   * Sum of the item amounts. What the quotation's totals block prints as
+   * the Sub Total — NOT net_total, which is after a document-level
+   * discount has been apportioned. Equal on most documents, and silently
+   * different on discounted ones, which is why both are carried.
+   */
+  total?: number | null;
   net_total?: number | null;
+  /** A discount on the whole document, distinct from the per-line ones. */
+  discount_amount?: number | null;
   total_taxes_and_charges?: number | null;
   grand_total?: number | null;
   rounded_total?: number | null;
