@@ -39,6 +39,7 @@ import { withTermsFooter } from '../domain/quoteTerms.js';
 import { fetchQuotation, fetchTerms } from './erpQuotation.js';
 import {
   createPoDoc, updatePoDoc, deletePoDoc, fetchPoPdf,
+  PO_ITEM_DOCTYPE, PO_TAX_DOCTYPE,
   type PoFields, type PoItem, type PoTax,
 } from './erpDealerPo.js';
 
@@ -87,6 +88,32 @@ const num = (v: unknown): number | null => {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 };
+
+/** First of these with any text in it. */
+const firstText = (...vals: unknown[]): string | null => {
+  for (const v of vals) {
+    const s = String(v ?? '').trim();
+    if (s) return s;
+  }
+  return null;
+};
+
+/**
+ * "Output Tax IGST - SGT" -> "IGST".
+ *
+ * The account head carries the company abbreviation as a suffix and an
+ * "Output Tax"/"Input Tax" prefix, neither of which belongs on a customer
+ * document. Anything unrecognised is returned trimmed rather than
+ * mangled — a wrong-looking label beats a blank one.
+ */
+function accountLabel(head: unknown): string | null {
+  const s = String(head ?? '').trim();
+  if (!s) return null;
+  return s
+    .replace(/\s*-\s*[A-Za-z0-9]+$/, '')
+    .replace(/^(output|input)\s+tax\s+/i, '')
+    .trim() || null;
+}
 
 /**
  * ERPNext's address_display is HTML with <br> between the lines. The PO
@@ -167,6 +194,7 @@ export async function resolveFromQuotation(quotationErpName: string): Promise<Re
   }
 
   const items: PoItem[] = (Array.isArray(doc.items) ? doc.items : []).map((it: any) => ({
+    doctype: PO_ITEM_DOCTYPE,
     item_code: String(it.item_code),
     item_name: it.item_name ?? null,
     gst_hsn_code: it.gst_hsn_code ?? null,
@@ -187,7 +215,14 @@ export async function resolveFromQuotation(quotationErpName: string): Promise<Re
   }
 
   const taxes: PoTax[] = (Array.isArray(doc.taxes) ? doc.taxes : []).map((t: any) => ({
-    description: t.description ?? null,
+    doctype: PO_TAX_DOCTYPE,
+    // ERPNext's own tax row leaves `description` blank surprisingly often —
+    // it is only set when the tax template names one. account_head always
+    // has a value ("Output Tax IGST - SGT"), so it is the fallback, trimmed
+    // of the company abbreviation. A tax line with no label prints as a
+    // bare amount next to nothing, which is how a total stops being
+    // explicable to the customer.
+    description: firstText(t.description, accountLabel(t.account_head), t.gst_tax_type),
     rate: num(t.rate),
     tax_amount: num(t.tax_amount),
   }));
@@ -345,7 +380,20 @@ export async function createFromQuotation(
     custom_raised_via: actor.via === 'portal' ? 'Partner portal' : 'SGT CRM',
   };
 
-  const erpName = await createPoDoc(fields);
+  const created = await createPoDoc(fields);
+  const erpName = created.name;
+
+  // A child table that did not land is the difference between a PO with a
+  // tax breakup on it and one without, and Frappe reports neither. Say so
+  // loudly — the document exists either way, so swallowing this is how it
+  // reaches a customer.
+  const warnings = [...resolved.warnings];
+  if (created.shortTables.length) {
+    warnings.push(
+      `${erpName} was created but ERPNext did not store all of it — ` +
+      `${created.shortTables.join('; ')}. The printed PO will be missing those rows. ` +
+      `Diagnose with: npx tsx src/db/erp_po_probe.ts ${erpName}`);
+  }
 
   try {
     const { rows } = await pool.query(
@@ -361,7 +409,7 @@ export async function createFromQuotation(
        resolved.summary.netTotal, resolved.summary.grandTotal,
        fields.transaction_date ?? null, resolved.summary.termsTemplate,
        actor.userId, actor.name, actor.via]);
-    return { row: rows[0] as PoRow, warnings: resolved.warnings };
+    return { row: rows[0] as PoRow, warnings };
   } catch (err) {
     // The ERPNext document exists but is unmirrored. Say so — swallowing
     // it leaves an orphan nobody knows to look for.

@@ -22,8 +22,24 @@ const SECRET = process.env.ERPNEXT_API_SECRET ?? '';
 export const PO_DOCTYPE = process.env.ERP_PO_DOCTYPE ?? 'SGT Dealer PO';
 export const PO_FORMAT = process.env.ERP_PO_PRINT_FORMAT ?? 'SGT Dealer PO';
 
+/**
+ * The child tables, derived from the parent exactly as
+ * db/erp_create_dealer_po_doctype.ts derives them.
+ *
+ * Exported because every child row is sent carrying its own `doctype`.
+ * Frappe will normally infer that from the parent field's options —
+ * _init_child() does it — but only when the parent's meta resolves the
+ * Table field cleanly, and a row whose doctype cannot be resolved is
+ * DROPPED rather than rejected: HTTP 200, document created, table empty.
+ * Naming it costs nothing and removes the whole failure mode.
+ */
+export const PO_ITEM_DOCTYPE = `${PO_DOCTYPE} Item`;
+export const PO_TAX_DOCTYPE = `${PO_DOCTYPE} Tax`;
+
 /** One line on the printed order. Named as ERPNext names a Quotation Item. */
 export interface PoItem {
+  /** Always sent. See PO_ITEM_DOCTYPE above for why it is not left implicit. */
+  doctype?: string;
   item_code: string;
   item_name?: string | null;
   /** The quotation prints HSN/SAC as a column, so the PO must carry it. */
@@ -42,6 +58,8 @@ export interface PoItem {
 
 /** One tax row, copied off the quotation rather than recomputed. */
 export interface PoTax {
+  /** Always sent. See PO_TAX_DOCTYPE above for why it is not left implicit. */
+  doctype?: string;
   description?: string | null;
   rate?: number | null;
   tax_amount?: number | null;
@@ -145,8 +163,32 @@ async function assertDoctype(): Promise<void> {
   doctypeChecked = true;
 }
 
-/** Create the ERPNext document. Returns its name, e.g. SGT-PO-202627-0001. */
-export async function createPoDoc(fields: PoFields): Promise<string> {
+export interface CreatedPo {
+  name: string;
+  /** What ERPNext actually stored, not what we sent. */
+  doc: Record<string, any>;
+  /**
+   * Child tables that came back shorter than they went in, after a repair
+   * attempt. Empty is the expected case; anything here must reach the user.
+   */
+  shortTables: string[];
+}
+
+/**
+ * Create the ERPNext document, then CHECK WHAT IT STORED.
+ *
+ * The read-back is not defensive padding. A Frappe POST that drops a child
+ * table still returns 200 with a document name, so a create that half
+ * worked is indistinguishable from one that worked — which is how a PO
+ * went out with an empty tax table and no error anywhere. The same lesson
+ * is already written down twice in erpQuotation.ts: send the rows
+ * explicitly, then verify against what ERPNext actually stored.
+ *
+ * One repair attempt, by PUTting the child tables on their own. If that
+ * also fails the caller is TOLD, rather than the document quietly going
+ * out wrong.
+ */
+export async function createPoDoc(fields: PoFields): Promise<CreatedPo> {
   await assertDoctype();
   const res = await erpFetch(path(PO_DOCTYPE), {
     method: 'POST',
@@ -157,9 +199,45 @@ export async function createPoDoc(fields: PoFields): Promise<string> {
   if (!res.ok) {
     throw new Error(`ERPNext could not create the PO: ${frappeError(text).slice(0, 300)}`);
   }
-  const name = JSON.parse(text)?.data?.name;
+  let doc = JSON.parse(text)?.data;
+  const name = doc?.name;
   if (!name) throw new Error('ERPNext created the PO but returned no name');
-  return String(name);
+
+  const expected: Array<['items' | 'taxes', number]> = [
+    ['items', fields.items?.length ?? 0],
+    ['taxes', fields.taxes?.length ?? 0],
+  ];
+  const short = expected.filter(([k, n]) => n > 0 && (doc?.[k]?.length ?? 0) < n);
+
+  if (short.length) {
+    // Re-send only the tables that came up short. Sent alone rather than
+    // as part of the whole body: if Frappe is rejecting a row, the error
+    // that comes back is then about that table and nothing else.
+    const patch: Record<string, unknown> = {};
+    for (const [k] of short) patch[k] = fields[k];
+    try {
+      const put = await erpFetch(path(PO_DOCTYPE, String(name)), {
+        method: 'PUT', headers: authHeaders(), body: JSON.stringify(patch),
+      });
+      const putText = await put.text();
+      if (put.ok) doc = JSON.parse(putText)?.data ?? doc;
+      else {
+        throw new Error(frappeError(putText));
+      }
+    } catch (e) {
+      return {
+        name: String(name), doc: doc ?? {},
+        shortTables: short.map(([k]) =>
+          `${k} (${String((e as Error).message ?? e).replace(/\s+/g, ' ').slice(0, 180)})`),
+      };
+    }
+  }
+
+  const stillShort = expected
+    .filter(([k, n]) => n > 0 && (doc?.[k]?.length ?? 0) < n)
+    .map(([k, n]) => `${k}: sent ${n}, stored ${doc?.[k]?.length ?? 0}`);
+
+  return { name: String(name), doc: doc ?? {}, shortTables: stillShort };
 }
 
 /** Patch an existing document. Partial — only what is passed is written. */

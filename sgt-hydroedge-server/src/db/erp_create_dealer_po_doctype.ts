@@ -581,10 +581,23 @@ const PRINT_HTML = `<style>
           </tr>
           {% for t in doc.taxes %}
           <tr>
-            <td class="lbl">{{ t.description }}</td>
+            <td class="lbl">{{ t.description or "Tax" }}</td>
             <td class="val">{{ t.get_formatted("tax_amount") }}</td>
           </tr>
           {% endfor %}
+          {#- Last resort. If the tax ROWS are missing but the tax TOTAL is
+              not, print the total on one line: a document showing a sub
+              total and a larger grand total with nothing in between does
+              not add up on the page, and the customer is the one who has
+              to reconcile it. The rows are what should be here — the CRM
+              warns loudly when they fail to attach — but the printed
+              figures must be self-consistent regardless. -#}
+          {% if not doc.taxes and doc.total_taxes_and_charges %}
+          <tr>
+            <td class="lbl">GST</td>
+            <td class="val">{{ doc.get_formatted("total_taxes_and_charges") }}</td>
+          </tr>
+          {% endif %}
           <tr class="rule big">
             <td class="lbl">Grand Total:</td>
             <td class="val">{{ doc.get_formatted("grand_total") }}</td>
@@ -990,6 +1003,8 @@ async function main() {
   console.log(`    ERP_PO_PRINT_FORMAT="${FORMAT}"`);
   console.log('\n  Next:  npx tsx src/db/migrate_po_01.ts');
   console.log('         CONFIRM_CREATE=1 npx tsx src/db/erp_create_dealer_po_terms.ts');
+  console.log('\n  If a raised PO comes out with an empty items or taxes table:');
+  console.log('         npx tsx src/db/erp_po_probe.ts [PO name]');
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
