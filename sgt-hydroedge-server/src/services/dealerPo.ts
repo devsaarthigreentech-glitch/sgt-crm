@@ -38,7 +38,7 @@ import { shortFiscalYear } from '../domain/fiscalYear.js';
 import { withTermsFooter } from '../domain/quoteTerms.js';
 import { fetchQuotation, fetchTerms } from './erpQuotation.js';
 import {
-  createPoDoc, updatePoDoc, deletePoDoc, fetchPoPdf,
+  createPoDoc, updatePoDoc, deletePoDoc, fetchPoPdf, fetchPoSummaries,
   PO_ITEM_DOCTYPE, PO_TAX_DOCTYPE,
   type PoFields, type PoItem, type PoTax,
 } from './erpDealerPo.js';
@@ -429,6 +429,71 @@ export async function createFromQuotation(
 // ---------------------------------------------------------------------
 
 /**
+ * Bring a page of mirror rows in line with ERPNext, which is the system
+ * of record for the document. Rows whose PO no longer exists there are
+ * removed; rows whose PO changed under them are refreshed.
+ *
+ * The same job reconcileQuotations() does in quotes.routes.ts, and it
+ * exists for the same reason: a PO deleted in the ERPNext desk was
+ * leaving its row behind, so the CRM went on offering a document nobody
+ * could print. Deleting the mirror row is the right response because
+ * ERPNext holds the artefact — if the document is gone, there is nothing
+ * left for the row to point at.
+ *
+ * If ERPNext is UNREACHABLE the mirror is returned untouched. A network
+ * blip must never look like every PO was deleted, and this is the one
+ * place where getting that wrong destroys data rather than just showing
+ * something stale.
+ */
+export async function reconcilePos(rows: PoRow[]): Promise<PoRow[]> {
+  if (!rows.length) return rows;
+  const names = rows.map(r => String(r.erp_name));
+
+  let live: Map<string, { customer_name: string; grand_total: string; po_status: string }>;
+  try {
+    live = await fetchPoSummaries(names);
+  } catch {
+    return rows;
+  }
+
+  const gone = names.filter(n => !live.has(n));
+  if (gone.length) {
+    await query(
+      `delete from quote_service.dealer_po_ref where erp_name = any($1)`, [gone]);
+  }
+
+  const fresh = rows.filter(r => live.has(String(r.erp_name)));
+  for (const r of fresh) {
+    const l = live.get(String(r.erp_name))!;
+
+    // Cancellation NEVER travels backwards. cancelPo() writes our row
+    // first and pushes po_status to ERPNext best-effort, so a failed push
+    // leaves ERPNext saying "Generated" — adopting that would silently
+    // un-cancel a PO, and cancelled_at / cancel_reason live only here.
+    // ERPNext can therefore cancel a PO, but it cannot reinstate one.
+    const status = String(l.po_status).toLowerCase() === 'cancelled' || r.status === 'cancelled'
+      ? 'cancelled'
+      : 'generated';
+
+    if (String(r.grand_total ?? '') !== l.grand_total ||
+        String(r.customer_name ?? '') !== String(l.customer_name ?? '') ||
+        r.status !== status) {
+      // Write the corrected snapshot back, so the next read is right even
+      // if ERPNext is briefly unreachable then.
+      await query(
+        `update quote_service.dealer_po_ref
+            set customer_name = $2, grand_total = $3, status = $4, updated_at = now()
+          where erp_name = $1`,
+        [r.erp_name, l.customer_name, l.grand_total, status]);
+      r.customer_name = l.customer_name;
+      r.grand_total = l.grand_total;
+      r.status = status;
+    }
+  }
+  return fresh;
+}
+
+/**
  * List POs. `orgIds` bounds it; pass null for "everything", which ONLY a
  * staff route may do.
  *
@@ -444,7 +509,7 @@ export async function listPos(orgIds: number[] | null): Promise<PoRow[]> {
     : await query(
         `select ${ROW_COLS} from quote_service.dealer_po_ref
           order by created_at desc limit 500`);
-  return rows as PoRow[];
+  return reconcilePos(rows as PoRow[]);
 }
 
 /** Every PO raised against one quotation. Drives the button's state. */
@@ -452,7 +517,7 @@ export async function posForQuotation(quotationErpName: string): Promise<PoRow[]
   const { rows } = await query(
     `select ${ROW_COLS} from quote_service.dealer_po_ref
       where quotation_erp_name = $1 order by created_at desc`, [quotationErpName]);
-  return rows as PoRow[];
+  return reconcilePos(rows as PoRow[]);
 }
 
 export async function getPo(id: number): Promise<PoRow | null> {

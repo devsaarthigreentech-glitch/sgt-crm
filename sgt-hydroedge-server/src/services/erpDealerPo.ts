@@ -288,6 +288,58 @@ export async function deletePoDoc(erpName: string): Promise<boolean> {
       : `ERPNext could not delete ${erpName}: ${why.slice(0, 250)}`);
 }
 
+/**
+ * Current state of many POs in ONE call.
+ *
+ * The local mirror goes stale in two ways, both already seen with
+ * quotations (see fetchQuotationSummaries in erpQuotation.ts, which this
+ * deliberately copies):
+ *
+ *  · a PO deleted in the ERPNext desk leaves our row behind, and
+ *  · Frappe REVERTS the naming series when the newest document in a
+ *    series is deleted, so the next PO REUSES that number. Our row then
+ *    describes a different document entirely — same name, wrong
+ *    customer, wrong total.
+ *
+ * The second is why this refreshes the snapshot rather than only checking
+ * existence. One batched request, not one per row.
+ *
+ * THROWS when ERPNext cannot be reached. That is deliberate and the
+ * caller must treat it as such: a network blip that returned "nothing
+ * exists" would delete every mirror row on the next list.
+ */
+export async function fetchPoSummaries(
+  names: string[],
+): Promise<Map<string, { customer_name: string; grand_total: string; po_status: string }>> {
+  const out = new Map<string, { customer_name: string; grand_total: string; po_status: string }>();
+  if (!names.length) return out;
+  await assertDoctype();
+
+  // Chunked: a long `in` list makes for an unwieldy query string.
+  for (let i = 0; i < names.length; i += 50) {
+    const url = new URL(`${BASE}/api/resource/${encodeURIComponent(PO_DOCTYPE)}`);
+    url.searchParams.set('filters', JSON.stringify([['name', 'in', names.slice(i, i + 50)]]));
+    url.searchParams.set('fields',
+      JSON.stringify(['name', 'customer_name', 'grand_total', 'po_status']));
+    url.searchParams.set('limit_page_length', '100');
+
+    const res = await erpFetch(url.toString(), { headers: authHeaders() });
+    if (!res.ok) {
+      throw new Error(
+        `ERPNext could not list ${PO_DOCTYPE} (HTTP ${res.status}): ` +
+        frappeError(await res.text()).slice(0, 200));
+    }
+    for (const r of (JSON.parse(await res.text()).data ?? [])) {
+      out.set(String(r.name), {
+        customer_name: r.customer_name ?? '',
+        grand_total: r.grand_total != null ? String(r.grand_total) : '0',
+        po_status: r.po_status ?? 'Generated',
+      });
+    }
+  }
+  return out;
+}
+
 /** The whole document, as ERPNext holds it. */
 export async function getPoDoc(erpName: string): Promise<Record<string, any> | null> {
   await assertDoctype();
