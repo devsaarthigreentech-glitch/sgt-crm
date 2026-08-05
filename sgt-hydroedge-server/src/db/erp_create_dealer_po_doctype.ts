@@ -122,6 +122,10 @@ const ITEM_FIELDS: Field[] = [
   { fieldname: 'item_code', label: 'Item Code', fieldtype: 'Data', in_list_view: 1, reqd: 1 },
   { fieldname: 'item_name', label: 'Item Name', fieldtype: 'Data', in_list_view: 1 },
   {
+    fieldname: 'gst_hsn_code', label: 'HSN/SAC', fieldtype: 'Data',
+    description: 'Copied off the quotation line. The quotation prints it as a column, so this must too.',
+  },
+  {
     fieldname: 'description', label: 'Description', fieldtype: 'Text Editor',
     description: 'The specification block, as it was printed on the quotation.',
   },
@@ -213,6 +217,19 @@ const FIELDS: Field[] = [
     read_only: 1, print_hide: 1,
     description: 'The partner code. Named as ERPNext names it on a Quotation.',
   },
+  // THE reason the printed PO matches the quotation. See the note above
+  // PRINT_HTML: the three-column masthead is a Letter Head, not part of any
+  // print format, and Frappe renders a Letter Head's content through Jinja
+  // with `doc` in scope — which is how the partner logo gets into it and
+  // repeats on every page. Copied from the source quotation at raise time,
+  // so the PO inherits whatever masthead that quotation printed with.
+  {
+    fieldname: 'letter_head', label: 'Letter Head', fieldtype: 'Link', options: 'Letter Head',
+    print_hide: 1,
+    description:
+      'Supplies the masthead and the footer. Inherited from the quotation this PO was raised ' +
+      'from; pin a different one with ERP_PO_LETTER_HEAD.',
+  },
 
   // ---- The buyer ------------------------------------------------------
   { fieldname: 'sec_customer', fieldtype: 'Section Break', label: 'Customer' },
@@ -264,6 +281,18 @@ const FIELDS: Field[] = [
   {
     fieldname: 'grand_total', label: 'Grand Total', fieldtype: 'Currency',
     precision: '2', in_list_view: 1, print_hide: 1,
+  },
+  {
+    fieldname: 'rounded_total', label: 'Rounded Total', fieldtype: 'Currency',
+    precision: '2', print_hide: 1,
+    description: 'Copied off the quotation. Printed beneath the grand total, as the quotation prints it.',
+  },
+  {
+    fieldname: 'in_words', label: 'Amount in Words', fieldtype: 'Small Text', print_hide: 1,
+    description:
+      'Copied off the quotation rather than recomputed. Frappe builds this with money_in_words() ' +
+      'against the company currency, and a second implementation here would eventually disagree ' +
+      'with the quotation it was raised from.',
   },
 
   // ---- Terms ----------------------------------------------------------
@@ -323,194 +352,268 @@ function set_short_fiscal_year(frm) {
 // ---------------------------------------------------------------------
 // The print format.
 //
-// A replica of the quotation: the same masthead, the same partner block,
-// the same item table with the specification under each line, the same
-// totals and tax breakup, the same terms. What differs is the word
-// PURCHASE ORDER at the top and the line back to the quotation it came
-// from — because a customer holding both should be able to see at a
-// glance that they are the same deal.
+// Modelled line for line on the quotation format (SAL-QTN-2026-00055 was
+// the reference), because the owner's requirement is that a dealer
+// holding both documents sees one house style, not two.
 //
-// Rendered with no_letterhead=1: the masthead here is the only one.
+// ── WHERE THE MASTHEAD COMES FROM, and why this file does not draw one ──
+// The three-column header on the quotation — SGT's mark, "OFFERED
+// THROUGH" with the PARTNER's logo, and the registered office — is not
+// part of the quotation's print format at all. It is a **Letter Head**.
+//
+// That matters, and it is not obvious. A Letter Head is normally static
+// HTML, but frappe.www.printview.get_letter_head() renders its content
+// through Jinja with `doc` in scope, so it can read doc.custom_partner_logo
+// and doc.custom_partner_name — which is how a per-document partner logo
+// gets into a masthead. And because Frappe hands the letter head to
+// wkhtmltopdf as --header-html, it REPEATS on every page. Page 2 of the
+// reference quotation proves both.
+//
+// So this format draws the BODY ONLY, the PO document carries the same
+// `letter_head` its quotation carried, and fetchPoPdf() renders with
+// no_letterhead=0. Drawing a masthead here as well would print two.
+//
+// The consequence to know about: a PO whose quotation had no letter head
+// prints with no masthead. That is the same document the quotation would
+// have been, which is the right failure — the setup script reports which
+// letter head your quotations actually use so this is visible up front.
+//
+// Frappe supplies the "This is a Computer Generated Document" and
+// "Page X of Y" lines itself, and the letter head supplies the contact /
+// CIN footer above them. None of the three belong here.
+//
+// ── What is hardcoded, and why ────────────────────────────────────────
+// SGT's own company name, factory address and GSTIN are literals below,
+// exactly as the quotation format has them. They are not on the doctype
+// because they are not per-document facts, and putting them in a field
+// would mean every PO carried a copy that could drift from the letter
+// head printed above it. Override with ERP_PO_COMPANY_* if the entity
+// details change.
 // ---------------------------------------------------------------------
 
+const CO_NAME = process.env.ERP_PO_COMPANY_NAME ?? 'SGT Hydroedge Private Limited';
+const CO_FACTORY = process.env.ERP_PO_COMPANY_FACTORY ??
+  'P No-14, G No-357/86, 1, P No-14, G No-357/86, Kharabwadi, Dehu, Pune, Maharashtra, India - 410501';
+const CO_GSTIN = process.env.ERP_PO_COMPANY_GSTIN ?? '27ABLCS6583R1Z4';
+
+const PRINT_TITLE = process.env.ERP_PO_PRINT_TITLE ?? 'Purchase Order';
+
 const PRINT_HTML = `<style>
-  .po { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; font-size: 9.5pt;
-        line-height: 1.45; color: #1c1c1c; }
-  .po .head { display: table; width: 100%; border-bottom: 2pt solid #14532d;
-              padding-bottom: 7pt; margin-bottom: 12pt; }
-  .po .head .l, .po .head .r { display: table-cell; vertical-align: middle; }
-  .po .head .r { text-align: right; width: 30%; }
-  .po .head .co { font-size: 13pt; font-weight: bold; letter-spacing: 0.05em; color: #14532d; }
-  .po .head .addr { font-size: 7.8pt; color: #555; margin-top: 3pt; line-height: 1.4; }
-  .po .head img { max-height: 46pt; max-width: 100%; }
-  .po .title { text-align: center; font-size: 15pt; font-weight: bold; letter-spacing: 0.09em;
-               color: #14532d; margin-bottom: 2pt; }
-  .po .subtitle { text-align: center; font-size: 8.6pt; color: #666; margin-bottom: 11pt; }
-  .po table.meta { width: 100%; border-collapse: collapse; font-size: 8.8pt; margin-bottom: 12pt;
-                   border-top: 0.5pt solid #cfd8d2; border-bottom: 0.5pt solid #cfd8d2; }
-  .po table.meta td { padding: 4pt 6pt; }
-  .po table.meta td.k { color: #777; width: 13%; }
-  .po table.meta td.v { font-weight: bold; width: 20%; }
-  .po .parties { display: table; width: 100%; margin-bottom: 12pt; }
-  .po .parties .p { display: table-cell; width: 50%; vertical-align: top; padding-right: 14pt; }
-  .po .parties .p:last-child { padding-right: 0; padding-left: 14pt; }
-  .po .cap { font-size: 7.6pt; font-weight: bold; letter-spacing: 0.1em; text-transform: uppercase;
-             color: #14532d; margin-bottom: 4pt; }
-  .po .who { font-weight: bold; font-size: 10pt; }
-  .po .lines { font-size: 8.8pt; color: #444; white-space: pre-line; }
-  .po table.items { width: 100%; border-collapse: collapse; font-size: 8.8pt; margin-bottom: 10pt; }
-  .po table.items th { background: #F3F0E7; color: #14532d; font-size: 7.8pt; letter-spacing: 0.06em;
-                       text-transform: uppercase; text-align: left; padding: 5pt 6pt;
-                       border-bottom: 0.75pt solid #cfd8d2; }
-  .po table.items td { padding: 6pt; border-bottom: 0.5pt solid #e2e8e5; vertical-align: top; }
-  .po table.items .num { text-align: right; white-space: nowrap; }
-  .po table.items .spec { font-size: 8pt; color: #555; margin-top: 3pt; }
-  .po table.items .spec table { border-collapse: collapse; }
-  .po table.items .spec td { padding: 1pt 8pt 1pt 0; border: none; }
-  .po .was { color: #999; text-decoration: line-through; font-size: 8pt; }
-  .po table.tot { width: 46%; border-collapse: collapse; font-size: 9pt; margin-left: auto;
-                  page-break-inside: avoid; }
-  .po table.tot td { padding: 4pt 6pt; }
-  .po table.tot td.n { text-align: right; white-space: nowrap; }
-  .po table.tot tr.grand td { border-top: 0.75pt solid #14532d; font-size: 11pt; font-weight: bold;
-                              color: #14532d; padding-top: 6pt; }
-  .po .terms { margin-top: 16pt; page-break-inside: auto; }
-  .po .terms .cap { border-bottom: 0.5pt solid #cfd8d2; padding-bottom: 3pt; margin-bottom: 6pt; }
-  .po .terms ol { padding-left: 16pt; margin: 0; }
-  .po .terms li { margin-bottom: 5pt; text-align: justify; }
+  /* No font-family and no base font-size, deliberately. Frappe's print
+     stylesheet sets both, and the quotation inherits them — naming a
+     typeface here is how a PO ends up in Helvetica beside a quotation in
+     the house font. Everything below sizes in em, off whatever that is. */
+  .po { line-height: 1.45; color: #1c1c1c; }
+  .po .title { text-align: center; font-size: 1.45em; font-weight: bold; margin: 0 0 16px; }
+  .po table.grid { width: 100%; border-collapse: collapse; }
+  .po table.grid > tbody > tr > td { vertical-align: top; padding: 0; }
+  .po table.grid > tbody > tr > td.l { padding-right: 14px; width: 50%; }
+  .po table.grid > tbody > tr > td.r { padding-left: 14px; width: 50%; }
+  .po .k { font-weight: bold; }
+  .po .docno { text-align: right; margin-bottom: 2px; }
+  .po .blk { margin-bottom: 2px; }
+  /* The address arrives with newlines in it — ERPNext's address_display is
+     <br>-separated and services/dealerPo.ts turns those into \\n. Without
+     pre-line the PIN code runs onto the end of the street, which is not
+     how the quotation prints it. */
+  .po .addr { white-space: pre-line; }
+  .po .pay { border: 1px solid #d9d9d9; border-radius: 3px; padding: 9px 11px; margin-top: 12px;
+             white-space: pre-line; }
+  .po .pay .h { font-weight: bold; margin-bottom: 4px; }
+  .po .gen { margin-top: 12px; }
+  .po .gen .h { font-weight: bold; margin-bottom: 4px; }
+  .po .gen .lines { white-space: pre-line; }
+  .po table.items { width: 100%; border-collapse: collapse; margin: 18px 0 0; }
+  .po table.items th { background: #f5f5f5; font-weight: bold; text-align: left;
+                       padding: 8px 9px; border: 1px solid #d9d9d9; }
+  .po table.items td { padding: 8px 9px; border: 1px solid #d9d9d9; vertical-align: middle; }
+  .po table.items th.num, .po table.items td.num { text-align: right; white-space: nowrap; }
+  /* The quantity cell carries the UOM on the left and the figure on the
+     right, as the quotation does. A nested table rather than flexbox:
+     wkhtmltopdf's flex support is unreliable and silently collapses. */
+  .po table.qty { width: 100%; border-collapse: collapse; }
+  .po table.qty td { border: none; padding: 0; }
+  .po table.qty td.u { font-size: 0.8em; color: #666; text-align: left; }
+  .po table.qty td.q { text-align: right; }
+  .po .spec { margin-top: 18px; }
+  .po .spec .cap { font-size: 0.9em; font-weight: bold; letter-spacing: 0.04em;
+                   text-transform: uppercase; color: #8a867c;
+                   border-bottom: 1px solid #d9d9d9; padding-bottom: 5px; margin-bottom: 9px; }
+  .po .spec .item { margin-bottom: 9px; }
+  .po .spec .item .n { font-weight: bold; margin-bottom: 2px; }
+  .po table.tot { width: 100%; border-collapse: collapse; margin-top: 18px; }
+  .po table.tot td { padding: 4px 0; border: none; }
+  .po table.tot td.lbl { text-align: right; font-weight: bold; padding-right: 14px; }
+  .po table.tot td.val { text-align: right; white-space: nowrap; }
+  .po table.tot tr.rule td { border-top: 1px solid #d9d9d9; padding-top: 8px; }
+  .po table.tot tr.big td { font-size: 1.08em; font-weight: bold; }
+  .po .words { margin-top: 10px; text-align: right; }
+  .po .words .h { font-weight: bold; }
+  .po .terms { margin-top: 20px; }
+  .po .terms ol { padding-left: 18px; margin: 0; }
+  .po .terms li { margin-bottom: 7px; text-align: left; }
   .po .terms .ql-ui { display: none; }
-  .po .endnote { text-align: center; font-size: 7.6pt; letter-spacing: 0.12em;
-                 text-transform: uppercase; color: #8a867c; margin-top: 14pt; }
 </style>
 
-{%- set cur = doc.currency or "INR" -%}
+{#- Money is formatted with get_formatted() rather than
+    frappe.utils.fmt_money(): it is a method on the document itself, so it
+    works on parent and child rows alike, it reads the currency off the
+    docfield instead of being told, and it needs nothing from the Jinja
+    sandbox that a future Frappe release might withdraw. -#}
 
 <div class="po">
 
-  <div class="head">
-    <div class="l">
-      <div class="co">SGT HYDROEDGE PRIVATE LIMITED</div>
-      <div class="addr">A3-202, Lunkad Sky Vie, Viman Nagar, Pune 411014, Maharashtra, India<br>
-        contact@sgthydroedge.com &nbsp;|&nbsp; CIN: U28110PN2023PTC223880</div>
-    </div>
-    {#- The partner's own mark, snapshotted at creation. Absent for an
-        SGT-direct PO, and the header simply closes up. -#}
-    {% if doc.custom_partner_logo %}
-    <div class="r"><img src="{{ doc.custom_partner_logo }}" alt=""></div>
-    {% endif %}
-  </div>
+  <div class="title">${PRINT_TITLE}</div>
 
-  <div class="title">PURCHASE ORDER</div>
-  <div class="subtitle">GreenX&trade; CHFA Hydrogen Fuel-Assist Systems for Diesel Generator Sets</div>
-
-  <table class="meta">
+  <table class="grid">
     <tr>
-      <td class="k">PO No.</td>
-      <td class="v">{{ doc.name }}</td>
-      <td class="k">Date</td>
-      <td class="v">{{ doc.get_formatted("transaction_date") if doc.transaction_date else "&mdash;" }}</td>
-      <td class="k">Valid Till</td>
-      <td class="v">{{ doc.get_formatted("valid_till") if doc.valid_till else "&mdash;" }}</td>
+      <td class="l">
+        <div class="blk"><span class="k">Date:</span> {{ doc.get_formatted("transaction_date") if doc.transaction_date else "" }}</div>
+        <div class="blk"><span class="k">Customer Name:</span> {{ doc.customer_name or "" }}</div>
+        {% if doc.customer_address_display %}
+        <div class="blk addr"><span class="k">Billing Address:</span> {{ doc.customer_address_display }}</div>
+        {% endif %}
+        {% if doc.customer_gstin %}
+        <div class="blk"><span class="k">Customer GSTIN:</span> {{ doc.customer_gstin }}</div>
+        {% endif %}
+        {#- The line back to the quotation. The quotation format has no
+            equivalent, but a PO that cannot be tied to the offer it
+            accepts is a PO somebody has to go and look up. -#}
+        {% if doc.quotation_ref %}
+        <div class="blk"><span class="k">Against Quotation:</span> {{ doc.quotation_ref }}</div>
+        {% endif %}
+      </td>
+      <td class="r">
+        <div class="docno">{{ doc.name }}</div>
+        <div class="blk"><span class="k">Company Name:</span> ${CO_NAME}</div>
+        <div class="blk"><span class="k">Factory Address:</span> ${CO_FACTORY}</div>
+        <div class="blk"><span class="k">GSTIN:</span> ${CO_GSTIN}</div>
+      </td>
     </tr>
-    {% if doc.quotation_ref %}
     <tr>
-      <td class="k">Against Quotation</td>
-      <td class="v" colspan="5">{{ doc.quotation_ref }}</td>
+      <td class="l">
+        {#- Where the customer pays. Omitted entirely when the partner has
+            no account on file: a payment box naming a bank and no account
+            is worse than no box at all. -#}
+        {% if doc.custom_partner_bank %}
+        <div class="pay"><div class="h">Payment To</div>{{ doc.custom_partner_bank }}</div>
+        {% endif %}
+      </td>
+      <td class="r">
+        {#- The quotation's "Quote Generated by" block, relabelled. Absent
+            on an SGT-direct PO, where there is no partner. -#}
+        {% if doc.custom_partner_name %}
+        <div class="gen">
+          <div class="h">PO Raised By</div>
+          <div class="lines">{{ doc.custom_partner_name }}</div>
+          {% if doc.custom_partner_address %}<div class="lines">{{ doc.custom_partner_address }}</div>{% endif %}
+          {% if doc.custom_partner_contact %}<div class="lines">{{ doc.custom_partner_contact }}</div>{% endif %}
+          {% if doc.custom_partner_gstin %}<div class="lines">GSTIN: {{ doc.custom_partner_gstin }}</div>{% endif %}
+        </div>
+        {% endif %}
+      </td>
     </tr>
-    {% endif %}
   </table>
-
-  <div class="parties">
-    <div class="p">
-      <div class="cap">Buyer</div>
-      <div class="who">{{ doc.customer_name }}</div>
-      {% if doc.customer_address_display %}<div class="lines">{{ doc.customer_address_display }}</div>{% endif %}
-      {% if doc.customer_gstin %}<div class="lines">GSTIN: {{ doc.customer_gstin }}</div>{% endif %}
-      {% if doc.contact_email %}<div class="lines">{{ doc.contact_email }}</div>{% endif %}
-    </div>
-    {#- The same block the quotation prints, relabelled. On an SGT-direct
-        PO there is no partner, so the column is left out rather than
-        printed empty. -#}
-    {% if doc.custom_partner_name %}
-    <div class="p">
-      <div class="cap">PO Raised By</div>
-      <div class="who">{{ doc.custom_partner_name }}</div>
-      {% if doc.custom_partner_address %}<div class="lines">{{ doc.custom_partner_address }}</div>{% endif %}
-      {% if doc.custom_partner_gstin %}<div class="lines">GSTIN: {{ doc.custom_partner_gstin }}</div>{% endif %}
-      {% if doc.custom_partner_contact %}<div class="lines">{{ doc.custom_partner_contact }}</div>{% endif %}
-      {% if doc.custom_partner_bank %}
-        <div class="cap" style="margin-top:7pt;">Payment To</div>
-        <div class="lines">{{ doc.custom_partner_bank }}</div>
-      {% endif %}
-    </div>
-    {% endif %}
-  </div>
 
   <table class="items">
     <thead>
       <tr>
-        <th style="width:4%;">#</th>
-        <th>Item</th>
-        <th class="num" style="width:8%;">Qty</th>
-        <th class="num" style="width:17%;">Rate</th>
-        <th class="num" style="width:19%;">Amount</th>
+        <th style="width:5%;">Sr</th>
+        <th style="width:20%;">Item Name</th>
+        <th style="width:13%;">HSN/SAC</th>
+        <th style="width:11%;">Quantity</th>
+        <th class="num" style="width:17%;">Price List Rate</th>
+        <th class="num" style="width:17%;">Discount<br>Amount Per Unit</th>
+        <th class="num" style="width:17%;">Net Amount</th>
       </tr>
     </thead>
     <tbody>
       {% for it in doc.items %}
       <tr>
         <td>{{ loop.index }}</td>
+        <td>{{ it.item_name or it.item_code }}</td>
+        <td>{{ it.gst_hsn_code or "" }}</td>
         <td>
-          <strong>{{ it.item_name or it.item_code }}</strong>
-          {% if it.description %}<div class="spec">{{ it.description }}</div>{% endif %}
+          <table class="qty"><tr>
+            <td class="u">{{ it.uom or "" }}</td>
+            <td class="q">{{ it.qty | int }}</td>
+          </tr></table>
         </td>
-        <td class="num">{{ it.qty | int }}{% if it.uom %} {{ it.uom }}{% endif %}</td>
-        <td class="num">
-          {#- The list rate is shown struck through only when the line was
-              actually discounted, so a full-price line does not print the
-              same number twice. -#}
-          {% if (it.discount_percentage and it.discount_percentage > 0) or (it.discount_amount and it.discount_amount > 0) %}
-            <div class="was">{{ frappe.utils.fmt_money(it.price_list_rate, currency=cur) }}</div>
-          {% endif %}
-          {{ frappe.utils.fmt_money(it.rate, currency=cur) }}
-          {% if it.discount_percentage and it.discount_percentage > 0 %}
-            <div style="font-size:7.8pt;color:#777;">less {{ it.discount_percentage }}%</div>
-          {% endif %}
-        </td>
-        <td class="num">{{ frappe.utils.fmt_money(it.amount, currency=cur) }}</td>
+        <td class="num">{{ it.get_formatted("price_list_rate") }}</td>
+        <td class="num">{% if it.discount_amount %}{{ it.get_formatted("discount_amount") }}{% endif %}</td>
+        <td class="num">{{ it.get_formatted("amount") }}</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
 
-  <table class="tot">
+  <table class="grid">
     <tr>
-      <td>Net Total</td>
-      <td class="n">{{ frappe.utils.fmt_money(doc.net_total, currency=cur) }}</td>
-    </tr>
-    {% for t in doc.taxes %}
-    <tr>
-      <td>{{ t.description }}</td>
-      <td class="n">{{ frappe.utils.fmt_money(t.tax_amount, currency=cur) }}</td>
-    </tr>
-    {% endfor %}
-    <tr class="grand">
-      <td>Grand Total</td>
-      <td class="n">{{ frappe.utils.fmt_money(doc.grand_total, currency=cur) }}</td>
+      <td class="l">
+        {#- The specification, lifted from each line's description exactly
+            as the quotation prints it. Lines with no specification — an
+            AMC, say — are skipped rather than printed as empty headings. -#}
+        {#- Built with a namespace loop rather than a selectattr filter:
+            selectattr goes through Jinja's attribute getter, which is
+            sandboxed here, and a plain loop cannot be withdrawn from under
+            us. (No backticks in this string — it is a JS template literal.) -#}
+        {% set ns = namespace(specced=[]) %}
+        {% for it in doc.items %}
+          {% if it.description %}{% set ns.specced = ns.specced + [it] %}{% endif %}
+        {% endfor %}
+        {% if ns.specced %}
+        <div class="spec">
+          <div class="cap">Equipment Specification</div>
+          {% for it in ns.specced %}
+          <div class="item">
+            <div class="n">{{ loop.index }}. {{ it.item_name or it.item_code }}{% if it.qty and it.qty > 1 %} &times; {{ it.qty | int }}{% endif %}</div>
+            <div>{{ it.description }}</div>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </td>
+      <td class="r">
+        <table class="tot">
+          <tr>
+            <td class="lbl">Sub Total:</td>
+            <td class="val">{{ doc.get_formatted("net_total") }}</td>
+          </tr>
+          {% for t in doc.taxes %}
+          <tr>
+            <td class="lbl">{{ t.description }}</td>
+            <td class="val">{{ t.get_formatted("tax_amount") }}</td>
+          </tr>
+          {% endfor %}
+          <tr class="rule big">
+            <td class="lbl">Grand Total:</td>
+            <td class="val">{{ doc.get_formatted("grand_total") }}</td>
+          </tr>
+          {% if doc.rounded_total %}
+          <tr class="big">
+            <td class="lbl">Rounded Total:</td>
+            <td class="val">{{ doc.get_formatted("rounded_total") }}</td>
+          </tr>
+          {% endif %}
+        </table>
+        {% if doc.in_words %}
+        <div class="words">
+          <div class="h">Amount in words</div>
+          <div>{{ doc.in_words }}</div>
+        </div>
+        {% endif %}
+      </td>
     </tr>
   </table>
 
   {% if doc.terms %}
-  <div class="terms">
-    <div class="cap">Terms and Conditions</div>
-    {#- Already carries its closing rule and the company stamps: they are
-        appended by withTermsFooter() in domain/quoteTerms.ts when the PO
-        is raised, exactly as they are on a quotation. -#}
-    {{ doc.terms }}
-  </div>
+  {#- Already carries "— End of Terms —" and the company stamps: both are
+      appended by withTermsFooter() in domain/quoteTerms.ts when the PO is
+      raised, exactly as they are on a quotation. Adding either here would
+      print it twice. -#}
+  <div class="terms">{{ doc.terms }}</div>
   {% endif %}
 
-  <div class="endnote">&mdash; End of Purchase Order &mdash;</div>
 </div>`;
 
 // ---------------------------------------------------------------------
@@ -571,6 +674,44 @@ async function quotationFormatHtml(): Promise<{ html: string | null; from: strin
     };
   }
   return { html: String(fmt.html), from: name, why: '' };
+}
+
+/**
+ * Which Letter Head the quotations actually print with.
+ *
+ * Reported rather than assumed, because it is the single thing that
+ * decides whether the PO carries the same masthead — the SGT mark, the
+ * "OFFERED THROUGH" partner block and the registered office all live
+ * there, not in any print format. See the note above PRINT_HTML.
+ *
+ * Read off the most recently modified Quotation rather than off a
+ * setting: what a document PRINTED with is a fact, and what a default
+ * says it should print with is a hope.
+ */
+async function quotationLetterHead(): Promise<{ name: string | null; note: string }> {
+  const pinned = process.env.ERP_PO_LETTER_HEAD?.trim();
+  if (pinned) return { name: pinned, note: 'pinned by ERP_PO_LETTER_HEAD' };
+
+  const r = await call('GET',
+    `/api/resource/Quotation` +
+    `?fields=${encodeURIComponent('["name","letter_head"]')}` +
+    `&limit_page_length=5&order_by=modified desc`);
+  const rows: any[] = r.json?.data ?? [];
+  const hit = rows.find(q => String(q.letter_head ?? '').trim());
+  if (hit) {
+    return {
+      name: String(hit.letter_head),
+      note: `what quotation ${hit.name} printed with — each PO inherits its own quotation's`,
+    };
+  }
+
+  const def = await call('GET',
+    `/api/resource/${encodeURIComponent('Letter Head')}` +
+    `?filters=${encodeURIComponent('[["is_default","=",1]]')}` +
+    `&fields=${encodeURIComponent('["name"]')}&limit_page_length=1`);
+  const d = def.json?.data?.[0]?.name;
+  if (d) return { name: String(d), note: 'the site default — no quotation carries one of its own' };
+  return { name: null, note: 'none found: POs would print with no masthead, as quotations do' };
 }
 
 /** Create or patch one child doctype. Returns false on failure. */
@@ -694,14 +835,36 @@ async function main() {
     }
   } else {
     console.log(`  Print Format "${FORMAT}" layout: ${source} (${PRINT_HTML.length} chars).`);
-    console.log('    A rebuild of the quotation layout — same masthead, partner block,');
-    console.log('    item table with specifications, totals, tax breakup and terms —');
-    console.log('    headed PURCHASE ORDER and carrying the quotation it came from.');
-    console.log('    Use CLONE_FROM_QUOTATION=1 to copy the live quotation HTML instead.');
+    console.log('    Modelled on the quotation body: two-column date / customer / company');
+    console.log('    header, the boxed "Payment To", "PO Raised By", the seven-column item');
+    console.log('    table with HSN and per-unit discount, the equipment specification');
+    console.log(`    beside the totals, amount in words, and the terms. Titled "${PRINT_TITLE}".`);
+    console.log('    Use CLONE_FROM_QUOTATION=1 to copy the live quotation HTML verbatim');
+    console.log('    instead — it will then say "Quotation" wherever the original does.');
   }
   console.log(existingFmt
     ? `  It EXISTS — this run REPLACES its HTML. Hand-edits in ERPNext will be lost.`
     : '  It would be CREATED.');
+
+  // ---- The masthead ----------------------------------------------------
+  // Worth its own paragraph: this, not the print format, is what makes a
+  // PO look like a quotation, and it is the one part the script cannot
+  // guarantee on its own.
+  const lh = await quotationLetterHead();
+  console.log('');
+  console.log('  Masthead / footer come from a LETTER HEAD, not from the print format —');
+  console.log('  which is why the partner logo repeats on page 2 of a quotation. Frappe');
+  console.log('  renders a letter head through Jinja with `doc` in scope, so it can read');
+  console.log('  doc.custom_partner_logo, and this doctype carries that field.');
+  console.log(lh.name
+    ? `    → "${lh.name}"  (${lh.note})`
+    : `    ⚠ ${lh.note}`);
+  console.log('    Each PO copies its own quotation\'s letter_head at raise time, so it');
+  console.log('    prints under the same masthead that quotation printed under.');
+  if (lh.name) {
+    console.log(`    Confirm that letter head reads doc.custom_partner_name / _logo — if it`);
+    console.log('    hardcodes the partner instead, the PO will show the wrong one.');
+  }
 
   console.log(existingScript
     ? `  Client Script "${SCRIPT_NAME}" EXISTS — this run REPLACES its code.`

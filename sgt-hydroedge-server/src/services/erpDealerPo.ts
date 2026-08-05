@@ -26,6 +26,8 @@ export const PO_FORMAT = process.env.ERP_PO_PRINT_FORMAT ?? 'SGT Dealer PO';
 export interface PoItem {
   item_code: string;
   item_name?: string | null;
+  /** The quotation prints HSN/SAC as a column, so the PO must carry it. */
+  gst_hsn_code?: string | null;
   /** The specification block. Already HTML — it is copied, not rebuilt. */
   description?: string | null;
   qty: number;
@@ -89,6 +91,16 @@ export interface PoFields {
   net_total?: number | null;
   total_taxes_and_charges?: number | null;
   grand_total?: number | null;
+  rounded_total?: number | null;
+  /** Copied, never recomputed — see the field's description on the doctype. */
+  in_words?: string | null;
+
+  /**
+   * Supplies the masthead and footer, and therefore the entire family
+   * resemblance to the quotation. Inherited from the source quotation.
+   * See the note above PRINT_HTML in erp_create_dealer_po_doctype.ts.
+   */
+  letter_head?: string | null;
 
   tc_name?: string | null;
   terms?: string | null;
@@ -205,8 +217,16 @@ export async function getPoDoc(erpName: string): Promise<Record<string, any> | n
  * having checked that this PO is theirs to see — this function does no
  * authorisation and cannot, since it knows nothing about orgs.
  *
- * no_letterhead=1 because the print format draws its own masthead. With a
- * letterhead on top the page carries two.
+ * no_letterhead=0, unlike the agreement — and that is the whole reason a
+ * printed PO looks like a printed quotation. The three-column masthead
+ * (SGT's mark, "OFFERED THROUGH" with the partner's logo, the registered
+ * office) and the contact / CIN footer are a LETTER HEAD, not part of any
+ * print format, and Frappe hands it to wkhtmltopdf as --header-html so it
+ * repeats on every page. Suppressing it would print the body alone.
+ *
+ * The agreement does the opposite because its format draws its own
+ * masthead; this one deliberately does not. See the note above PRINT_HTML
+ * in db/erp_create_dealer_po_doctype.ts.
  */
 export async function fetchPoPdf(erpName: string): Promise<ArrayBuffer> {
   await assertDoctype();
@@ -215,7 +235,7 @@ export async function fetchPoPdf(erpName: string): Promise<ArrayBuffer> {
     `?doctype=${encodeURIComponent(PO_DOCTYPE)}` +
     `&name=${encodeURIComponent(erpName)}` +
     `&format=${encodeURIComponent(PO_FORMAT)}` +
-    `&no_letterhead=1`;
+    `&no_letterhead=0`;
   const res = await erpFetch(url, {
     headers: { Authorization: `token ${KEY}:${SECRET}`, Accept: 'application/pdf' },
   });

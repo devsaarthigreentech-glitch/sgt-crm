@@ -59,6 +59,18 @@ const PO_TERMS_TEMPLATE = process.env.ERP_DEALER_PO_TERMS ?? 'GreenX Dealer PO T
 const PO_VALID_DAYS = Number(
   process.env.ERP_PO_VALID_DAYS ?? process.env.ERP_QUOTE_VALID_DAYS ?? '30');
 
+/**
+ * Force every PO onto one Letter Head, instead of inheriting the source
+ * quotation's.
+ *
+ * Unset by default, and that default is the right one: inheriting means a
+ * PO prints under exactly the masthead its quotation printed under,
+ * including the partner logo block, with no configuration to keep in step.
+ * Set it only if POs are meant to look different from quotations — which
+ * is the opposite of what was asked for here.
+ */
+const LETTER_HEAD = process.env.ERP_PO_LETTER_HEAD?.trim() || null;
+
 /** Who is acting. Stamped onto the document and the mirror row. */
 export interface Actor {
   userId: string;
@@ -157,6 +169,7 @@ export async function resolveFromQuotation(quotationErpName: string): Promise<Re
   const items: PoItem[] = (Array.isArray(doc.items) ? doc.items : []).map((it: any) => ({
     item_code: String(it.item_code),
     item_name: it.item_name ?? null,
+    gst_hsn_code: it.gst_hsn_code ?? null,
     // Already HTML on the quotation — renderSpecHtml built it. Copied,
     // never rebuilt: rebuilding would need the spec inputs, which live in
     // our mirror and are not guaranteed to still match the document.
@@ -243,6 +256,17 @@ export async function resolveFromQuotation(quotationErpName: string): Promise<Re
     net_total: num(doc.net_total),
     total_taxes_and_charges: num(doc.total_taxes_and_charges),
     grand_total: num(doc.grand_total),
+    rounded_total: num(doc.rounded_total),
+    // Copied, not recomputed. Frappe builds this with money_in_words()
+    // against the company currency; a second implementation here would
+    // eventually disagree with the quotation on the customer's desk.
+    in_words: doc.in_words ?? null,
+
+    // The masthead. This one line is why a printed PO looks like a
+    // printed quotation — see fetchPoPdf() in erpDealerPo.ts. An explicit
+    // pin wins so a site can give POs their own letter head without
+    // touching quotations.
+    letter_head: LETTER_HEAD ?? (doc.letter_head ?? null),
 
     tc_name: termsTemplate,
     terms,
