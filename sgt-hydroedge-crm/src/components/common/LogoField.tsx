@@ -25,10 +25,12 @@ export interface LogoApi {
   remove(): Promise<void>
 }
 
-export default function LogoField({ api, disabled, hint }: {
+export default function LogoField({ api, disabled, hint, noun = 'logo' }: {
   api: LogoApi
   disabled?: boolean
   hint?: string
+  /** What the control calls the image. 'logo' or 'signature'. */
+  noun?: string
 }) {
   const [url, setUrl] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -62,7 +64,7 @@ export default function LogoField({ api, disabled, hint }: {
       await api.upload(file)
       show(await api.fetch())
     } catch (e: any) {
-      setError(e?.message ?? 'The logo could not be saved.')
+      setError(e?.message ?? `The ${noun} could not be saved.`)
     } finally { setBusy(false) }
   }
 
@@ -72,7 +74,7 @@ export default function LogoField({ api, disabled, hint }: {
       await api.remove()
       show(null)
     } catch (e: any) {
-      setError(e?.message ?? 'The logo could not be removed.')
+      setError(e?.message ?? `The ${noun} could not be removed.`)
     } finally { setBusy(false) }
   }
 
@@ -86,7 +88,7 @@ export default function LogoField({ api, disabled, hint }: {
           alignItems: 'center', justifyContent: 'center', overflow: 'hidden',
         }}>
           {url
-            ? <img src={url} alt="Partner logo"
+            ? <img src={url} alt={`Partner ${noun}`}
                 style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
             : <ImageIcon size={22} style={{ color: FAINT }} />}
         </div>
@@ -110,7 +112,7 @@ export default function LogoField({ api, disabled, hint }: {
                 cursor: busy || disabled ? 'not-allowed' : 'pointer',
                 background: '#fff', color: MUTED,
               }}>
-              <Upload size={14} /> {busy ? 'Saving…' : url ? 'Replace' : 'Upload logo'}
+              <Upload size={14} /> {busy ? 'Saving…' : url ? 'Replace' : `Upload ${noun}`}
             </button>
             {url && !disabled && (
               <button type="button" disabled={busy} onClick={drop}
@@ -128,7 +130,7 @@ export default function LogoField({ api, disabled, hint }: {
           <div style={{ fontSize: 11, color: FAINT, marginTop: 6, lineHeight: 1.5 }}>
             {hint ?? 'Printed beside SGT’s mark on every quotation they raise.'}
             {' '}PNG, JPEG or WebP, up to 512 KB. A PNG with a transparent
-            background sits best on the letterhead.
+            background sits best on the page.
           </div>
 
           {error && (
@@ -153,6 +155,8 @@ export function logoApiFor(
   baseUrl: string,
   path: string,
   token: () => string | null,
+  /** Which image on that partner — the route segment. */
+  kind: 'logo' | 'sign' = 'logo',
 ): LogoApi {
   const headers = (): Record<string, string> => {
     const t = token()
@@ -161,7 +165,7 @@ export function logoApiFor(
 
   return {
     async fetch() {
-      const res = await window.fetch(`${baseUrl}${path}/logo`, { headers: headers() })
+      const res = await window.fetch(`${baseUrl}${path}/${kind}`, { headers: headers() })
       if (res.status === 404) return null
       if (!res.ok) return null
       return res.blob()
@@ -176,7 +180,7 @@ export function logoApiFor(
         }
         reader.readAsDataURL(file)
       })
-      const res = await window.fetch(`${baseUrl}${path}/logo`, {
+      const res = await window.fetch(`${baseUrl}${path}/${kind}`, {
         method: 'PUT',
         headers: { ...headers(), 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -191,7 +195,7 @@ export function logoApiFor(
       }
     },
     async remove() {
-      const res = await window.fetch(`${baseUrl}${path}/logo`, {
+      const res = await window.fetch(`${baseUrl}${path}/${kind}`, {
         method: 'DELETE', headers: headers(),
       })
       if (!res.ok) {

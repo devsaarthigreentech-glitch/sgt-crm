@@ -20,7 +20,7 @@ const KEY = process.env.ERPNEXT_API_KEY ?? '';
 const SECRET = process.env.ERPNEXT_API_SECRET ?? '';
 
 export const PO_DOCTYPE = process.env.ERP_PO_DOCTYPE ?? 'SGT Dealer PO';
-export const PO_FORMAT = process.env.ERP_PO_PRINT_FORMAT ?? 'SGT Dealer PO';
+export const PO_FORMAT = process.env.ERP_PO_PRINT_FORMAT ?? 'SGT-Dealer PO';
 
 /**
  * The child tables, derived from the parent exactly as
@@ -97,6 +97,13 @@ export interface PoFields {
   custom_partner_gstin?: string | null;
   custom_partner_bank?: string | null;
   custom_partner_logo?: string | null;
+  /**
+   * The partner's signature. Snapshotted from the quotation, not looked
+   * up — the PO is signed by whoever signed the offer it accepts. Stored
+   * on the document as well as baked into `terms`, so a future print
+   * format can draw it somewhere else without a migration.
+   */
+  custom_partner_sign?: string | null;
 
   custom_raised_by?: string | null;
   custom_raised_by_org?: string | null;

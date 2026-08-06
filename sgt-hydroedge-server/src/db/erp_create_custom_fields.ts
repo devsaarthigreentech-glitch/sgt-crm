@@ -131,6 +131,21 @@ const FIELDS: FieldDef[] = [
     insert_after: 'custom_partner_bank',
     description: 'Absolute URL of the partner logo shown in the printed header. Stamped by the CRM.',
   },
+  // The partner's signature, printed under the terms beside SGT's.
+  //
+  // Snapshotted like everything else in this block. It is ALSO baked into
+  // the `terms` HTML by withTermsFooter() at creation, which is what
+  // actually prints today; this field exists so the value is on the
+  // document as data — visible in the desk, and available to any future
+  // print format that wants to draw it somewhere other than under the
+  // terms, without needing a migration to find it.
+  {
+    fieldname: 'custom_partner_sign',
+    label: 'Partner Signature URL',
+    fieldtype: 'Data',
+    insert_after: 'custom_partner_logo',
+    description: 'Absolute URL of the partner signature printed under the terms. Stamped by the CRM.',
+  },
 ];
 
 const DOCTYPE = 'Quotation';

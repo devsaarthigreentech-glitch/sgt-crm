@@ -25,9 +25,12 @@ import { query } from '../db/pool.js';
 import { requireAuth, requireRole } from '../auth/guard.js';
 import {
   resolveFromQuotation, createFromQuotation, listPos, posForQuotation,
-  getPo, isVisible, poPdf, deletePo, cancelPo,
-  type Actor, type PoRow,
+  getPo, isVisible, poPdf, deletePo, cancelPo, PoLineError,
+  type Actor, type PoRow, type PoLineBody,
 } from '../services/dealerPo.js';
+import {
+  PO_DISCOUNT_CAPS, AMC_TERMS, RATE_CARD_MARGIN_PCT, actorFor,
+} from '../domain/quoteDiscount.js';
 import { PO_DOCTYPE } from '../services/erpDealerPo.js';
 
 export interface PoRoutesOptions {
@@ -38,6 +41,8 @@ export interface PoRoutesOptions {
 interface Caller extends Actor {
   /** null = unbounded (staff). A list = exactly what this caller may touch. */
   orgIds: number[] | null;
+  /** For the indicative cap on /meta. Null for staff. */
+  orgType: string | null;
 }
 
 const staffGuard = requireRole('director', 'sales');
@@ -77,7 +82,7 @@ async function resolveCaller(
     // Staff act AS SGT. Their org code is not stamped on the document —
     // "raised by org" means "which partner raised this", and SGT is not a
     // partner. Blank is what makes an SGT-raised PO distinguishable.
-    return { userId: String(row.id), name, orgCode: null, via: 'crm', orgIds: null };
+    return { userId: String(row.id), name, orgCode: null, via: 'crm', orgIds: null, orgType: null };
   }
 
   if (!row.org_id || !row.org_active) {
@@ -92,6 +97,7 @@ async function resolveCaller(
   return {
     userId: String(row.id), name, orgCode: row.code, via: 'portal',
     orgIds: vis.map((v: { org_id: number }) => v.org_id),
+    orgType: row.org_type ?? null,
   };
 }
 
@@ -153,6 +159,20 @@ export default function dealerPoRoutes(opts: PoRoutesOptions) {
           doctype: PO_DOCTYPE,
           termsTemplate: process.env.ERP_DEALER_PO_TERMS ?? 'GreenX Dealer PO Terms',
           surface: opts.surface,
+          // INDICATIVE only — the cap that is actually enforced follows
+          // the org the QUOTATION belongs to, and /resolve returns that
+          // one. This is for labelling a field before a quotation has
+          // been picked.
+          //
+          // The PO caps are deliberately looser than the quote caps: the
+          // price is negotiated after the quotation goes out. A partner
+          // is told only their own, because what a distributor may give
+          // is none of a dealer's business.
+          discountCaps: me.orgIds === null
+            ? PO_DISCOUNT_CAPS
+            : { [actorFor(me.orgType)]: PO_DISCOUNT_CAPS[actorFor(me.orgType)] },
+          rateCardMarginPct: RATE_CARD_MARGIN_PCT,
+          amcTerms: AMC_TERMS,
         },
       });
     });
@@ -174,6 +194,13 @@ export default function dealerPoRoutes(opts: PoRoutesOptions) {
             quotationErpName: r.quotationErpName,
             summary: r.summary,
             warnings: r.warnings,
+            // Everything the negotiation dialog opens with: the quoted
+            // lines to edit, the cap that applies, and whether the tax on
+            // this quotation can be recomputed at all.
+            lines: r.editorLines,
+            discount: r.discount,
+            taxRules: r.taxRules,
+            taxBlocker: r.taxBlocker,
             existing: await posForQuotation(quotationErpName),
           },
         });
@@ -186,7 +213,7 @@ export default function dealerPoRoutes(opts: PoRoutesOptions) {
     app.post('/', { preHandler: guard }, async (req, reply) => {
       const me = await resolveCaller(req, reply, opts.surface);
       if (!me) return;
-      const body = (req.body ?? {}) as { quotationErpName?: string };
+      const body = (req.body ?? {}) as { quotationErpName?: string; lines?: PoLineBody[] };
       const quotationErpName = String(body.quotationErpName ?? '').trim();
       if (!quotationErpName) {
         return reply.code(400).send({
@@ -196,10 +223,23 @@ export default function dealerPoRoutes(opts: PoRoutesOptions) {
       if (!await quotationInScope(quotationErpName, me)) {
         return reply.code(404).send({ error: { code: 'not_found', message: 'No such quotation' } });
       }
+      // Absent `lines` means "raise it exactly as quoted". An empty array
+      // is NOT the same thing and is refused below — it would mean a PO
+      // with no machines on it.
+      const lines = Array.isArray(body.lines) ? body.lines : undefined;
       try {
-        const { row, warnings } = await createFromQuotation(quotationErpName, me);
+        const { row, warnings } = await createFromQuotation(quotationErpName, me, lines);
         return reply.code(201).send({ data: { ...row, warnings } });
       } catch (e) {
+        // Anything the person can fix on the form — a discount over the
+        // cap, a kVA above the catalogue, an AMC with no price — is a 422
+        // with the message on it, not a 502. They did nothing wrong.
+        if (e instanceof PoLineError) {
+          return reply.code(422).send({
+            error: { code: 'line_rejected', message: e.message },
+            lineIndex: e.lineIndex,
+          });
+        }
         req.log.error({ err: e, quotationErpName }, 'dealer PO creation failed');
         return fail(reply, 502, 'create_failed', e);
       }

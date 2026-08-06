@@ -67,7 +67,13 @@ const MODULE = process.env.ERP_PO_MODULE ?? 'Selling';
 const DOCTYPE = process.env.ERP_PO_DOCTYPE ?? 'SGT Dealer PO';
 const ITEM_DOCTYPE = `${DOCTYPE} Item`;
 const TAX_DOCTYPE = `${DOCTYPE} Tax`;
-const FORMAT = process.env.ERP_PO_PRINT_FORMAT ?? 'SGT Dealer PO';
+// MUST match PO_FORMAT in services/erpDealerPo.ts. They are separate
+// literals because this script imports nothing from the running server,
+// so the two are kept in step by hand — and a mismatch is silent: the
+// script would create or update a format under one name while
+// fetchPoPdf() renders under another, leaving POs printing from a stale
+// layout or failing outright.
+const FORMAT = process.env.ERP_PO_PRINT_FORMAT ?? 'SGT-Dealer PO';
 
 // Document name series, e.g. SGT-PO-202627-0001.
 //
@@ -259,6 +265,13 @@ const FIELDS: Field[] = [
   {
     fieldname: 'custom_partner_logo', label: 'Partner Logo URL', fieldtype: 'Data', print_hide: 1,
     description: 'Absolute URL of the partner logo shown in the printed header.',
+  },
+  {
+    fieldname: 'custom_partner_sign', label: 'Partner Signature URL', fieldtype: 'Data',
+    print_hide: 1,
+    description:
+      'Absolute URL of the partner signature printed under the terms, beside SGT\'s. ' +
+      'Snapshotted from the quotation — the PO is signed by whoever signed the offer it accepts.',
   },
 
   // ---- The lines ------------------------------------------------------

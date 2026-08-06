@@ -25,26 +25,41 @@
 // =====================================================================
 
 /**
- * The images printed under the terms — signatures, stamps, or both.
+ * The images printed under the terms.
  *
- * A COMMA-SEPARATED LIST, rendered side by side in the order given:
+ * HISTORY, because the shape of this changed and the old form still
+ * works: this used to be one env list rendered side by side —
  *
  *   ERP_TERMS_STAMP_URLS=/files/sign.jpg,/files/cps-sign.png
  *
- * A list rather than a single value so adding or removing one is a
- * config change and a restart, not an edit to this file. The older
- * single-value ERP_COMPANY_STAMP_URL still works and is read as a list
- * of one.
+ * — which meant every quotation ever raised carried the same two files.
+ * SGT's own stamp was right. The second was one particular distributor's
+ * signature, printed on documents raised by dealers with no connection
+ * to them.
+ *
+ * A document has TWO signatories and they are not both constants: SGT,
+ * and whichever partner raised it. So the partner's now comes from their
+ * own record (quote_service.org.sign_bytes, published to ERPNext) and is
+ * passed in per document. Only SGT's is configuration.
+ *
+ * ERP_SGT_SIGN_URL is the new name for it. The first entry of the old
+ * list is used when that is unset, so an existing deployment keeps
+ * printing SGT's stamp with no config change — it simply stops printing
+ * the second file at everybody.
  */
-const STAMP_URLS = String(
-  process.env.ERP_TERMS_STAMP_URLS ?? process.env.ERP_COMPANY_STAMP_URL ?? '',
-)
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
+const SGT_SIGN_URL = String(
+  process.env.ERP_SGT_SIGN_URL ??
+  process.env.ERP_TERMS_STAMP_URLS?.split(',')[0] ??
+  process.env.ERP_COMPANY_STAMP_URL ??
+  '',
+).trim();
 
-/** Gap between them, in px. */
-const STAMP_GAP = Number(process.env.ERP_TERMS_STAMP_GAP ?? '30');
+/** How SGT is named under its own signature. */
+const SGT_SIGN_NAME =
+  process.env.ERP_SGT_SIGN_NAME?.trim() || 'SGT HydroEdge Private Limited';
+
+/** Height of a signing space when a party has no image on file, in px. */
+const SIGN_SPACE_PX = Number(process.env.ERP_TERMS_SIGN_SPACE_PX ?? '64');
 
 const END_LABEL = process.env.ERP_TERMS_END_LABEL?.trim() || 'End of Terms';
 
@@ -138,7 +153,41 @@ export function textToTerms(text: string | null | undefined): string {
  * editable it would come back through toText() and be appended a second
  * time on the next edit.
  */
-export function withTermsFooter(html: string): string {
+/**
+ * Who signs this document. SGT always; the partner when one raised it.
+ *
+ * A direct SGT quotation has no partner, and then only SGT's block is
+ * drawn — centred, rather than left hanging beside an empty column.
+ */
+export interface Signatories {
+  /** Absolute or site-relative URL. Falls back to ERP_SGT_SIGN_URL. */
+  sgtSignUrl?: string | null;
+  /** The partner's own signature, published to ERPNext. */
+  partnerSignUrl?: string | null;
+  /** Printed under the partner's signature. Their legal name and code. */
+  partnerName?: string | null;
+}
+
+/**
+ * One signature block: the image if there is one, a ruled space if not.
+ *
+ * A partner who has not uploaded a signature gets somewhere to sign by
+ * hand rather than nothing — and, crucially, never somebody else's
+ * signature, which is what the old shared env list produced.
+ */
+function signBlock(url: string | null | undefined, caption: string): string {
+  const image = String(url ?? '').trim();
+  const mark = image
+    ? `<img src="${esc(image)}" alt="" style="max-height:96px;max-width:210px;` +
+      `width:auto;vertical-align:bottom;">`
+    : `<div style="height:${SIGN_SPACE_PX}px;border-bottom:1px solid #555;"></div>`;
+  return (
+    `<div style="min-height:${SIGN_SPACE_PX + 6}px;">${mark}</div>` +
+    `<div style="font-size:8.5pt;color:#555;margin-top:5px;">For ${esc(caption)}</div>`
+  );
+}
+
+export function withTermsFooter(html: string, who: Signatories = {}): string {
   if (!html || !html.trim()) return html;
 
   const rule =
@@ -146,19 +195,24 @@ export function withTermsFooter(html: string): string {
     `letter-spacing:0.12em;text-transform:uppercase;color:#8a867c;">` +
     `— ${esc(END_LABEL)} —</div>`;
 
-  // Side by side, bottom-aligned, on one line. `white-space:nowrap` and
-  // `vertical-align:bottom` are what keep two images of different
-  // heights sitting on the same baseline instead of one dropping below
-  // the other — and stop them wrapping when the page is tight.
-  const stamps = STAMP_URLS.length
-    ? `<div style="margin-top:10px;text-align:center;white-space:nowrap;">` +
-      STAMP_URLS.map((url, i) =>
-        `<img src="${esc(url)}" alt="" style="max-height:110px;max-width:210px;` +
-        `width:auto;vertical-align:bottom;` +
-        `${i < STAMP_URLS.length - 1 ? `margin-right:${STAMP_GAP}px;` : ''}">`,
-      ).join('') +
-      `</div>`
-    : '';
+  const sgt = signBlock(who.sgtSignUrl ?? SGT_SIGN_URL, SGT_SIGN_NAME);
+  const partnerName = String(who.partnerName ?? '').trim();
 
-  return `${html}<div class="sgt-terms-end">${rule}${stamps}</div>`;
+  // A TABLE, not two floated or inline-block divs. wkhtmltopdf lays
+  // tables out reliably and everything else at print DPI eventually
+  // does something surprising — the agreement's signature block learned
+  // the same lesson. vertical-align:bottom is what keeps two images of
+  // different heights sitting on one baseline.
+  const cells = partnerName
+    ? `<td style="width:50%;text-align:center;vertical-align:bottom;padding:0 10px;">${sgt}</td>` +
+      `<td style="width:50%;text-align:center;vertical-align:bottom;padding:0 10px;">` +
+      `${signBlock(who.partnerSignUrl, partnerName)}</td>`
+    : `<td style="text-align:center;vertical-align:bottom;">${sgt}</td>`;
+
+  const signs =
+    `<div style="margin-top:12px;page-break-inside:avoid;">` +
+    `<table style="width:100%;border-collapse:collapse;"><tr>${cells}</tr></table>` +
+    `</div>`;
+
+  return `${html}<div class="sgt-terms-end">${rule}${signs}</div>`;
 }

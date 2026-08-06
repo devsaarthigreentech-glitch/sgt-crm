@@ -28,6 +28,30 @@
 // These are defaults, not laws — override per deployment with
 // QUOTE_MAX_DISCOUNT_DEALER / _DISTRIBUTOR / _STAFF.
 //
+// ── Two stages, two sets of caps ────────────────────────────────────
+// A quotation is an OFFER and a PO is an AGREEMENT, and the owner wants
+// more room at the second (2026-08-05): the price is negotiated after the
+// quotation goes out, and a cap that made sense for an opening offer
+// would block the deal it was meant to protect.
+//
+//   quote  dealer 12 · distributor 12 · staff 20
+//   po     dealer 35 · distributor 35 · staff 40
+//
+// 35% is the owner's figure for a dealer raising a PO. Worth knowing what
+// it costs: the rate card sets dealer net at MRP / 1.68, so the partner
+// buys at 59.52% of MRP. A 35% discount sells at 65% of MRP and leaves
+// about 5.5 points of margin. At 40.48% the partner is selling AT cost,
+// and past that they are paying the customer to take the machine — which
+// is why the staff cap stops at 40 and why no cap here should ever be set
+// above 40.48 without someone deciding that deliberately.
+//
+// The discount is always measured against the LIST price, never against
+// the already-discounted rate the quotation carried. "35% off" has to
+// mean 35% off MRP or the cap compounds: 12% at quote plus 35% at PO
+// would be 43% off, past cost, while every check still passed.
+//
+// Override with PO_MAX_DISCOUNT_DEALER / _DISTRIBUTOR / _STAFF.
+//
 // ── Who actually pays for a discount ────────────────────────────────
 // Worth being explicit, because it is easy to get wrong by accident.
 // ERPNext computes commission on the NET total, so a 12% discount reduces
@@ -48,11 +72,47 @@ const num = (v: string | undefined, fallback: number) => {
   return Number.isFinite(n) && n >= 0 && n <= 100 ? n : fallback;
 };
 
+/**
+ * Which document is being priced. Defaults to 'quote' everywhere, so
+ * every existing call site keeps the behaviour it had.
+ */
+export type DiscountStage = 'quote' | 'po';
+
 export const DISCOUNT_CAPS: Record<DiscountActor, number> = {
   dealer: num(process.env.QUOTE_MAX_DISCOUNT_DEALER, 12),
   distributor: num(process.env.QUOTE_MAX_DISCOUNT_DISTRIBUTOR, 12),
   staff: num(process.env.QUOTE_MAX_DISCOUNT_STAFF, 20),
 };
+
+/**
+ * Caps for a negotiated PO. Dealer 35 is the owner's figure.
+ *
+ * Distributor is set to the same 35 and staff to 40 — ASSUMED, not
+ * instructed. The reasoning: the quote caps already put distributor level
+ * with dealer, and leaving staff at 20 would have made SGT's own people
+ * the most restricted party on the document, which cannot be intended.
+ * Both are one line to change.
+ */
+export const PO_DISCOUNT_CAPS: Record<DiscountActor, number> = {
+  dealer: num(process.env.PO_MAX_DISCOUNT_DEALER, 35),
+  distributor: num(process.env.PO_MAX_DISCOUNT_DISTRIBUTOR, 35),
+  staff: num(process.env.PO_MAX_DISCOUNT_STAFF, 40),
+};
+
+/** The cap that applies to one actor at one stage. */
+export function capFor(actor: DiscountActor, stage: DiscountStage = 'quote'): number {
+  return (stage === 'po' ? PO_DISCOUNT_CAPS : DISCOUNT_CAPS)[actor];
+}
+
+/**
+ * The margin the rate card leaves, as a percentage of MRP.
+ *
+ * dealer net = MRP / 1.68, so the partner buys at 59.52% of MRP and holds
+ * 40.48 points. A discount equal to this sells at cost. Exported so the
+ * screens can say how close a negotiation is to the floor instead of only
+ * saying whether it passed.
+ */
+export const RATE_CARD_MARGIN_PCT = 40.48;
 
 /** Which cap applies, from the org type raising the quote. */
 export function actorFor(orgType?: string | null): DiscountActor {
@@ -68,8 +128,10 @@ export interface DiscountCheck {
   message?: string;
 }
 
-export function checkDiscount(raw: unknown, actor: DiscountActor): DiscountCheck {
-  const max = DISCOUNT_CAPS[actor];
+export function checkDiscount(
+  raw: unknown, actor: DiscountActor, stage: DiscountStage = 'quote',
+): DiscountCheck {
+  const max = capFor(actor, stage);
   if (raw === null || raw === undefined || raw === '') return { ok: true, pct: 0, max };
 
   const pct = Number(raw);
@@ -82,7 +144,8 @@ export function checkDiscount(raw: unknown, actor: DiscountActor): DiscountCheck
   if (pct > max) {
     return {
       ok: false, pct, max,
-      message: `Maximum discount for a ${actor === 'staff' ? 'SGT user' : actor} is ${max}%. ` +
+      message: `Maximum discount for a ${actor === 'staff' ? 'SGT user' : actor} ` +
+               `${stage === 'po' ? 'raising a PO' : 'quoting'} is ${max}%. ` +
                `Ask SGT to approve anything deeper.`,
     };
   }
@@ -103,9 +166,9 @@ export interface AmountCheck extends DiscountCheck {
 }
 
 export function checkDiscountAmount(
-  raw: unknown, lineTotal: number, actor: DiscountActor,
+  raw: unknown, lineTotal: number, actor: DiscountActor, stage: DiscountStage = 'quote',
 ): AmountCheck {
-  const max = DISCOUNT_CAPS[actor];
+  const max = capFor(actor, stage);
   if (raw === null || raw === undefined || raw === '') {
     return { ok: true, pct: 0, max, amount: 0 };
   }

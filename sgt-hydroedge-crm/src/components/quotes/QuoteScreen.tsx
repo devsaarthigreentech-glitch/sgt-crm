@@ -18,19 +18,20 @@
 
 import { useEffect, useRef, useState } from 'react'
 import {
-  Check, AlertCircle, Zap, FileText, Send, Plus, X, Paperclip, Trash2, Pencil,
+  Check, AlertCircle, FileText, Send, Plus, Paperclip, Trash2, Pencil,
   FilePlus,
 } from 'lucide-react'
 
-const INK = '#161614'
-const MUTED = '#6A675F'
-const LINE = '#DDD7C6'
-const FAINT = '#A39F94'
-const DANGER = '#A6301C'
-const OK = '#2F6B4F'
-const PAPER = '#ECE8DA'
-const WARN_BG = '#FBF0DA'
-const WARN_FG = '#6F2F0E'
+import {
+  INK, MUTED, LINE, FAINT, DANGER, OK, PAPER, WARN_BG, WARN_FG,
+  rupees, inputStyle, labelStyle,
+} from './theme'
+import {
+  MachineLine, blankLine, lineMaths, type LineState,
+} from './lineEditor'
+import { F } from './Field'
+import { PoDialog } from './PoDialog'
+
 
 export interface Resolution {
   resolved: boolean
@@ -106,11 +107,51 @@ export interface PoRow {
   warnings?: string[]
 }
 
+/** One quoted line, as the PO negotiation dialog opens with it. */
+export interface PoEditorLine {
+  kva: number | string | null
+  qty: number
+  /** MRP the quotation carried. The PO prices off this, not today's. */
+  listRate: string | number | null
+  /** What the quotation charged per unit, for the was/now comparison. */
+  quotedRate: string | number | null
+  discountPct: number | null
+  /** Whole-line rupees, as it was typed — not per unit. */
+  discountAmount: number | null
+  amcYears: number | null
+  spec: Record<string, string> | null
+  modelCode: string | null
+}
+
+/** Everything the PO dialog needs before it can show anything. */
+export interface PoResolve {
+  quotationErpName: string
+  summary: {
+    customerName: string | null
+    netTotal: number | null
+    grandTotal: number | null
+    lineCount: number
+  }
+  lines: PoEditorLine[]
+  discount: { actor: string; maxPct: number; rateCardMarginPct: number }
+  taxRules: { description: string | null; rate: number; charge_type?: string | null }[]
+  /** Set when prices cannot safely be renegotiated on this quotation. */
+  taxBlocker: string | null
+  warnings: string[]
+  existing: PoRow[]
+}
+
 /** What the screen sends for one machine. */
 export interface QuoteLinePayload {
   kva: string
   qty: number
-  rate?: string | null
+  /**
+   * The list price to work from. The quote screen leaves this null and
+   * lets the catalogue price it; the PO dialog sends the rate the
+   * QUOTATION carried, so a negotiated order prices off what the customer
+   * was offered rather than off whatever the price list says today.
+   */
+  rate?: string | number | null
   discountPct?: number | null
   discountAmount?: number | null
   amcYears?: number | null
@@ -163,41 +204,19 @@ export interface QuoteApi {
   detach(erpName: string, fileName: string): Promise<{ removed: string }>
   /** Every PO this caller may see, newest first. */
   listPos(): Promise<PoRow[]>
-  /** Raise one against a quotation. The server derives everything else. */
-  raisePo(quotationErpName: string): Promise<PoRow>
+  /** What a PO for this quotation would say, and what may be changed. */
+  resolvePo(quotationErpName: string): Promise<PoResolve>
+  /**
+   * Raise one. Omit `lines` to take the quotation exactly as it stands —
+   * the server then copies its figures rather than recomputing them.
+   */
+  raisePo(quotationErpName: string, lines?: QuoteLinePayload[]): Promise<PoRow>
   /** By mirror id, not by ERPNext name — POs are scoped on our side. */
   poPdfUrl(id: number): Promise<string>
   /** Partner pickers only make sense for SGT staff. */
   partners?: () => Promise<{ id: number; code: string; legal_name: string }[]>
 }
 
-const rupees = (v: string | number | null | undefined) =>
-  v === null || v === undefined || v === '' ? '—'
-    : '₹' + Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 })
-
-const inputStyle = (bad?: boolean): React.CSSProperties => ({
-  width: '100%', boxSizing: 'border-box', padding: '9px 10px', fontSize: 13.5,
-  color: INK, backgroundColor: '#fff', border: `1px solid ${bad ? DANGER : LINE}`,
-  borderRadius: 6, outline: 'none', fontFamily: 'inherit',
-})
-
-const labelStyle: React.CSSProperties = {
-  display: 'block', fontSize: 11.5, fontWeight: 600, color: MUTED, marginBottom: 5,
-}
-
-function F({ label, value, onChange, placeholder, type = 'text', hint }: {
-  label: string; value: any; onChange: (v: string) => void
-  placeholder?: string; type?: string; hint?: string
-}) {
-  return (
-    <div style={{ marginBottom: 13 }}>
-      <label style={labelStyle}>{label}</label>
-      <input type={type} value={value ?? ''} placeholder={placeholder}
-        onChange={e => onChange(e.target.value)} style={inputStyle()} />
-      {hint && <div style={{ fontSize: 11, color: FAINT, marginTop: 3 }}>{hint}</div>}
-    </div>
-  )
-}
 
 function Card({ title, right, children }: {
   title: string; right?: React.ReactNode; children: React.ReactNode
@@ -213,262 +232,9 @@ function Card({ title, right, children }: {
   )
 }
 
-// ---------------------------------------------------------------------
-// One machine on the quotation.
-// ---------------------------------------------------------------------
+// One machine, as a form. Shared with the PO negotiation dialog — see
+// ./lineEditor.
 
-interface LineState {
-  /** Stable across re-orders, so React keys never collide. */
-  id: number
-  kva: string
-  qty: number
-  discountMode: 'pct' | 'amount'
-  discountPct: string
-  discountAmt: string
-  amcYears: number
-  spec: Record<string, string>
-  showSpec: boolean
-  res: Resolution | null
-  resolving: boolean
-}
-
-let nextLineId = 1
-const blankLine = (): LineState => ({
-  id: nextLineId++,
-  kva: '', qty: 1,
-  discountMode: 'pct', discountPct: '', discountAmt: '',
-  amcYears: 0, spec: {}, showSpec: false,
-  res: null, resolving: false,
-})
-
-/** Machine value, discount and AMC for one line — one place, so the
- *  summary, the cap check and the payload can never disagree. */
-function lineMaths(l: LineState) {
-  const machineAmt = (Number(l.res?.rate) || 0) * l.qty
-  const amcOption = l.res?.amcOptions?.find(o => o.years === l.amcYears)
-  const amcAmt = l.amcYears > 0 && amcOption?.rate ? Number(amcOption.rate) * l.qty : 0
-  const amcMissing = l.amcYears > 0 && !amcOption?.rate
-  const discountValue = l.discountMode === 'pct'
-    ? Math.round(machineAmt * (Number(l.discountPct) || 0) / 100)
-    : Math.round(Number(l.discountAmt) || 0)
-  const effectivePct = machineAmt > 0
-    ? Math.round((discountValue / machineAmt) * 10000) / 100
-    : 0
-  return { machineAmt, amcAmt, amcMissing, discountValue, effectivePct }
-}
-
-function MachineLine({
-  line, index, count, maxDiscount, specFields, api, onChange, onRemove,
-}: {
-  line: LineState
-  index: number
-  count: number
-  maxDiscount: number
-  specFields: SpecField[]
-  api: QuoteApi
-  onChange: (patch: Partial<LineState>) => void
-  onRemove: () => void
-}) {
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  // Debounced preview — resolving is free, so it can run as they type.
-  // Owned by the line rather than the screen: with several machines on
-  // one quotation a single shared timer would cancel its siblings.
-  useEffect(() => {
-    if (timer.current) clearTimeout(timer.current)
-    if (!line.kva.trim()) {
-      if (line.res || line.resolving) onChange({ res: null, resolving: false })
-      return
-    }
-    onChange({ resolving: true })
-    timer.current = setTimeout(async () => {
-      try { onChange({ res: await api.resolve(line.kva), resolving: false }) }
-      catch { onChange({ resolving: false }) }
-    }, 400)
-    return () => { if (timer.current) clearTimeout(timer.current) }
-  }, [line.kva])
-
-  const m = lineMaths(line)
-  const overCap = m.effectivePct > maxDiscount
-  const res = line.res
-  const specCount = Object.values(line.spec).filter(v => String(v).trim()).length
-
-  const groups = [...new Set(specFields.map(f => f.group))]
-
-  return (
-    <div style={{
-      border: `1px solid ${LINE}`, borderRadius: 9, padding: '12px 13px 1px',
-      marginBottom: 11, backgroundColor: '#FCFBF7',
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-        <span style={{
-          fontSize: 10.5, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
-          color: FAINT, flex: 1,
-        }}>
-          Machine {index + 1}{count > 1 ? ` of ${count}` : ''}
-        </span>
-        {count > 1 && (
-          <button type="button" onClick={onRemove} title="Remove this machine"
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: FAINT, padding: 2, display: 'flex' }}>
-            <X size={15} />
-          </button>
-        )}
-      </div>
-
-      <div style={{ display: 'flex', gap: 10 }}>
-        <div style={{ flex: 2 }}>
-          <F label="DG rating (kVA)" value={line.kva} type="number" placeholder="e.g. 70"
-             onChange={v => onChange({ kva: v })} />
-        </div>
-        <div style={{ flex: 1 }}>
-          <F label="Quantity" value={line.qty} type="number"
-             onChange={v => onChange({ qty: Math.max(1, Number(v) || 1) })} />
-        </div>
-      </div>
-
-      {line.resolving && <div style={{ fontSize: 12, color: FAINT, marginBottom: 13 }}>Resolving…</div>}
-
-      {res && !line.resolving && (
-        res.resolved ? (
-          <div style={{ padding: '11px 12px', marginBottom: 13, borderRadius: 8, backgroundColor: '#F2F6F2', border: '1px solid #CFE0D4' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13.5, fontWeight: 700, color: INK }}>
-              <Zap size={14} /> {res.modelCode}
-            </div>
-            <div style={{ fontSize: 11.5, color: MUTED, marginTop: 3 }}>
-              covers DG up to {res.coversUptoKva} kVA · GST {res.gstRate}%
-            </div>
-            <div style={{ fontSize: 15, fontWeight: 700, color: INK, marginTop: 6 }}>
-              {rupees(res.rate)} <span style={{ fontSize: 11, fontWeight: 500, color: FAINT }}>
-                per unit, ex-GST{line.qty > 1 ? ` · ${line.qty} units = ${rupees(m.machineAmt)}` : ''}
-              </span>
-            </div>
-            {res.rateSource === 'price_book' && (
-              <div style={{ fontSize: 11, color: WARN_FG, marginTop: 5 }}>
-                ERPNext has no price for this item — using the CRM price book.
-              </div>
-            )}
-            {res.rateMismatch && (
-              <div style={{ fontSize: 11, color: WARN_FG, marginTop: 5, display: 'flex', gap: 4 }}>
-                <AlertCircle size={12} />
-                ERPNext says {rupees(res.rate)}, the CRM price book says {rupees(res.priceBookMrp)}. ERPNext wins.
-              </div>
-            )}
-          </div>
-        ) : (
-          <div style={{ padding: '11px 12px', marginBottom: 13, borderRadius: 8, backgroundColor: WARN_BG, color: WARN_FG, fontSize: 12.5, display: 'flex', gap: 6 }}>
-            <AlertCircle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
-            <span>{res.message}</span>
-          </div>
-        )
-      )}
-
-      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-        <div style={{ flex: 1 }}>
-          <label style={labelStyle}>Discount</label>
-          <div style={{ display: 'flex', gap: 6 }}>
-            <select value={line.discountMode}
-              onChange={e => onChange({
-                discountMode: e.target.value as 'pct' | 'amount',
-                discountPct: '', discountAmt: '',
-              })}
-              style={{ ...inputStyle(), appearance: 'auto', width: 74, flexShrink: 0 }}>
-              <option value="pct">%</option>
-              <option value="amount">₹</option>
-            </select>
-            {line.discountMode === 'pct' ? (
-              <input type="number" value={line.discountPct} min={0} max={maxDiscount} step="0.5"
-                onChange={e => onChange({ discountPct: e.target.value })}
-                placeholder="0" style={inputStyle(overCap)} />
-            ) : (
-              <input type="number" value={line.discountAmt} min={0} step="1000"
-                onChange={e => onChange({ discountAmt: e.target.value })}
-                placeholder="0" style={inputStyle(overCap)} />
-            )}
-          </div>
-          <div style={{ fontSize: 11, color: overCap ? DANGER : FAINT, marginTop: 3 }}>
-            {overCap
-              ? `${m.effectivePct}% is over your ${maxDiscount}% limit — most you can give on this machine is ${rupees(Math.floor(m.machineAmt * maxDiscount / 100))}.`
-              : line.discountMode === 'amount' && m.discountValue > 0
-                ? `${m.effectivePct}% of this machine. Limit ${maxDiscount}%.`
-                : `Up to ${maxDiscount}%, on this machine only — never the AMC.`}
-          </div>
-        </div>
-
-        <div style={{ flex: 1 }}>
-          <label style={labelStyle}>AMC</label>
-          <select value={line.amcYears} onChange={e => onChange({ amcYears: Number(e.target.value) })}
-            style={{ ...inputStyle(m.amcMissing), appearance: 'auto' }}>
-            <option value={0}>Not included</option>
-            {(res?.amcOptions ?? [{ years: 1 }, { years: 2 }, { years: 3 }] as any).map((o: any) => (
-              <option key={o.years} value={o.years}>
-                {o.years} year{o.years > 1 ? 's' : ''}{o.rate ? ` — ${rupees(o.rate)}` : ''}
-              </option>
-            ))}
-          </select>
-          <div style={{ fontSize: 11, color: m.amcMissing ? DANGER : FAINT, marginTop: 3 }}>
-            {m.amcMissing
-              ? 'No price in ERPNext for this AMC — run the AMC matrix script.'
-              : 'Priced per model. Not discounted.'}
-          </div>
-        </div>
-      </div>
-
-      {/* ---- Specification: optional, and collapsed until asked for ---- */}
-      <div style={{ marginTop: 13, marginBottom: 13 }}>
-        <button type="button" onClick={() => onChange({ showSpec: !line.showSpec })}
-          style={{
-            background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-            color: MUTED, fontSize: 12.5, fontFamily: 'inherit',
-          }}>
-          {line.showSpec ? 'Hide' : 'Add'} specification
-          {specCount > 0 && <span style={{ color: OK }}> · {specCount} filled in</span>}
-        </button>
-        <div style={{ fontSize: 11, color: FAINT, marginTop: 3 }}>
-          Engine, alternator, dimensions. All optional — whatever you fill in is
-          printed under this line on the quotation.
-        </div>
-
-        {line.showSpec && (
-          <div style={{ marginTop: 10 }}>
-            {groups.map(g => (
-              <div key={g} style={{ marginBottom: 6 }}>
-                <div style={{
-                  fontSize: 10.5, fontWeight: 700, letterSpacing: '0.05em',
-                  textTransform: 'uppercase', color: FAINT, marginBottom: 7,
-                }}>{g}</div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-                  {specFields.filter(f => f.group === g).map(f => (
-                    <div key={f.key} style={{ flex: '1 1 200px', minWidth: 0, marginBottom: 11 }}>
-                      <label style={labelStyle}>
-                        {f.label}{f.unit ? ` (${f.unit})` : ''}
-                      </label>
-                      <input
-                        type={f.numeric ? 'number' : 'text'}
-                        value={line.spec[f.key] ?? ''}
-                        placeholder={f.placeholder}
-                        onChange={e => onChange({ spec: { ...line.spec, [f.key]: e.target.value } })}
-                        style={inputStyle()}
-                      />
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-            {specCount > 0 && (
-              <button type="button" onClick={() => onChange({ spec: {} })}
-                style={{
-                  background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-                  color: MUTED, fontSize: 11.5, fontFamily: 'inherit', marginBottom: 11,
-                }}>
-                Clear this specification
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
 
 // ---------------------------------------------------------------------
 
@@ -512,8 +278,8 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
    * request per quotation would be twenty requests to render one screen.
    */
   const [posByQuote, setPosByQuote] = useState<Record<string, PoRow[]>>({})
-  /** The quotation whose PO is being raised right now. */
-  const [poBusy, setPoBusy] = useState<string | null>(null)
+  /** The quotation whose PO dialog is open, if any. */
+  const [poFor, setPoFor] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [banner, setBanner] = useState<string | null>(null)
   const [made, setMade] = useState<any>(null)
@@ -700,38 +466,32 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
   }
 
   /**
-   * Raise a PO against a quotation, then open it.
+   * A PO has been raised. Show it, and file it against its quotation.
    *
-   * The PDF opens straight away on purpose: the whole point of the button
-   * is to produce the document, so making someone hunt for a second link
-   * to see what they just created would be a worse version of doing
-   * nothing. The list is refreshed behind the preview.
+   * The PDF opens straight away on purpose: the point of the button is to
+   * produce the document, so making someone hunt for a second link to see
+   * what they just created would be a worse version of doing nothing.
    *
-   * Warnings from the server (no GST on the source quotation, missing
-   * terms template) are shown in the banner rather than swallowed — the
-   * PO exists either way and the person who raised it should know.
+   * Warnings from the server (no GST on the source quotation, a child
+   * table that did not store) are shown rather than swallowed — the PO
+   * exists either way and whoever raised it should know.
    */
-  const raisePo = async (quotationErpName: string) => {
-    setBanner(null)
-    setPoBusy(quotationErpName)
-    try {
-      const po = await api.raisePo(quotationErpName)
-      setPosByQuote(prev => ({
-        ...prev,
-        [quotationErpName]: [po, ...(prev[quotationErpName] ?? [])],
-      }))
-      if (po.warnings?.length) setBanner(po.warnings.join(' '))
-      try { setPdfFor({ name: po.erp_name, url: await api.poPdfUrl(po.id) }) }
-      catch (e: any) {
-        // The document was created; only the render failed. Say which,
-        // because "PO failed" would be false and would invite a retry
-        // that raises a second one.
-        setBanner(`${po.erp_name} was raised, but its PDF could not be rendered: ${e.message}`)
-      }
-    } catch (e: any) {
-      setBanner(e.message)
-    } finally {
-      setPoBusy(null)
+  const poRaised = async (
+    quotationErpName: string,
+    po: { id: number; erp_name: string; warnings?: string[] },
+  ) => {
+    setPoFor(null)
+    setPosByQuote(prev => ({
+      ...prev,
+      [quotationErpName]: [po as PoRow, ...(prev[quotationErpName] ?? [])],
+    }))
+    if (po.warnings?.length) setBanner(po.warnings.join(' '))
+    try { setPdfFor({ name: po.erp_name, url: await api.poPdfUrl(po.id) }) }
+    catch (e: any) {
+      // The document was created; only the render failed. Say which,
+      // because "PO failed" would be false and would invite a retry that
+      // raises a second one.
+      setBanner(`${po.erp_name} was raised, but its PDF could not be rendered: ${e.message}`)
     }
   }
 
@@ -953,6 +713,16 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
             </div>
           </div>
         </div>
+      )}
+
+      {poFor && (
+        <PoDialog
+          api={api}
+          quotationErpName={poFor}
+          specFields={specFields}
+          onClose={() => setPoFor(null)}
+          onRaised={po => poRaised(poFor, po)}
+        />
       )}
 
       {pdfFor && (
@@ -1576,18 +1346,13 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
                       a revised quotation legitimately needs a fresh PO,
                       and the ones already raised are listed below so
                       nobody does it by accident. */}
-                  <button type="button"
-                    disabled={poBusy === q.erp_name}
-                    onClick={() => raisePo(q.erp_name)}
+                  <button type="button" onClick={() => { setBanner(null); setPoFor(q.erp_name) }}
                     style={{
                       display: 'flex', alignItems: 'center', gap: 5,
-                      background: 'none', border: 'none', padding: 0,
-                      cursor: poBusy === q.erp_name ? 'wait' : 'pointer',
-                      color: poBusy === q.erp_name ? FAINT : MUTED,
-                      fontSize: 12, fontFamily: 'inherit',
+                      background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                      color: MUTED, fontSize: 12, fontFamily: 'inherit',
                     }}>
-                    <FilePlus size={13} />
-                    {poBusy === q.erp_name ? 'Raising PO…' : 'Raise PO'}
+                    <FilePlus size={13} /> Raise PO
                   </button>
                 </div>
 

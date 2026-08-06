@@ -583,6 +583,56 @@ export default async function portalRoutes(app: FastifyInstance) {
     return reply.send({ data: { removed: true } })
   })
 
+  // ---- A dealer's signature ----------------------------------------------
+  // Scoped exactly like their logo: a distributor may set it for a dealer
+  // beneath them, and ownsDealer() excludes their own row, so this cannot
+  // be used to change their own signature.
+  app.get('/dealers/:id/sign', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { id } = req.params as { id: string }
+    if (!await ownsDealer(id, me.orgId)) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } })
+    }
+    return sendLogo(reply, await readLogo('org', id, 'sign'))
+  })
+
+  app.put('/dealers/:id/sign', {
+    preHandler: requireAuth, bodyLimit: LOGO_BODY_LIMIT,
+  }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { id } = req.params as { id: string }
+    if (!await ownsDealer(id, me.orgId)) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } })
+    }
+    const r = decodeLogo(req.body)
+    if (!r.ok) {
+      return reply.code(422).send({
+        error: { code: 'bad_image', message: r.message }, fields: { sign: r.message },
+      })
+    }
+    await saveLogo('org', id, r.logo, 'sign')
+    await query(
+      `insert into quote_service.org_event (org_id, event_type, actor, actor_name, changes, note)
+       values ($1, 'updated', $2, $3, $4, $5)`,
+      [id, me.userId, (req.user as any)?.name ?? null,
+       JSON.stringify({ signature: { from: 'replaced', to: r.logo.fileName } }),
+       `signature set via distributor portal (${me.orgCode})`])
+    return reply.send({ data: { fileName: r.logo.fileName, sizeBytes: r.logo.bytes.length } })
+  })
+
+  app.delete('/dealers/:id/sign', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { id } = req.params as { id: string }
+    if (!await ownsDealer(id, me.orgId)) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } })
+    }
+    await clearLogo('org', id, 'sign')
+    return reply.send({ data: { removed: true } })
+  })
+
   // ---- Edit a dealer they manage -----------------------------------------
   // Same master-data fields the director gets, with two deliberate omissions:
   //

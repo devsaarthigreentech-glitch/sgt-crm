@@ -36,7 +36,18 @@
 import { query, pool } from '../db/pool.js';
 import { shortFiscalYear } from '../domain/fiscalYear.js';
 import { withTermsFooter } from '../domain/quoteTerms.js';
-import { fetchQuotation, fetchTerms } from './erpQuotation.js';
+import { resolveForKva } from '../domain/quotePricing.js';
+import { cleanSpec, renderSpecHtml } from '../domain/quoteSpec.js';
+import {
+  actorFor, capFor, checkDiscount, checkDiscountAmount,
+  amcItemCode, AMC_TERMS, RATE_CARD_MARGIN_PCT,
+  type DiscountActor, type AmountCheck,
+} from '../domain/quoteDiscount.js';
+import {
+  computeTotals, priceLine, taxRecomputeBlocker, money,
+  type TaxRule, type PricedLine,
+} from '../domain/poPricing.js';
+import { fetchQuotation, fetchTerms, itemPrice, itemMeta } from './erpQuotation.js';
 import {
   createPoDoc, updatePoDoc, deletePoDoc, fetchPoPdf, fetchPoSummaries,
   PO_ITEM_DOCTYPE, PO_TAX_DOCTYPE,
@@ -161,11 +172,69 @@ export interface ResolvedPo {
     termsTemplate: string | null;
   };
   /**
+   * The quotation's lines in the shape the LINE EDITOR uses, so the PO
+   * screen opens prefilled with what was quoted and the person raising it
+   * only has to change what was actually negotiated.
+   *
+   * Taken from quote_service.quotation_ref.lines rather than from the
+   * ERPNext items, for the same reason loadForEdit() does: ERPNext stores
+   * the outcome (item codes and rates) but not the question — which kVA
+   * was typed, whether the discount was entered as a percentage or in
+   * rupees, what the specification said. Rebuilding that from item codes
+   * would lose it.
+   */
+  editorLines: EditorLine[];
+  /**
+   * How this customer is taxed, as RULES rather than amounts, so the
+   * totals can be recomputed if the prices change. Null charge types and
+   * anything that is not a flat percentage are what taxBlocker reports.
+   */
+  taxRules: TaxRule[];
+  /**
+   * Set when the prices CANNOT safely be renegotiated on this PO —
+   * see domain/poPricing.ts. The PO can still be raised unchanged.
+   */
+  taxBlocker: string | null;
+  /** Which cap applies to whoever is raising it, and how deep it goes. */
+  discount: { actor: DiscountActor; maxPct: number; rateCardMarginPct: number };
+  /**
    * Things that will print oddly or not at all. Surfaced so the screen
    * can show them BEFORE the document is created — afterwards they are
    * an autopsy.
    */
   warnings: string[];
+}
+
+/**
+ * One line as the editor holds it — the same shape the quote screen
+ * sends, deliberately, so both surfaces share MachineLine and there is
+ * one implementation of kVA resolution, discount modes, AMC and spec.
+ */
+export interface EditorLine {
+  kva: number | string | null;
+  qty: number;
+  /** MRP. Sent back so the screen can show what the discount is off. */
+  listRate: string | number | null;
+  /** What the QUOTATION charged per unit, for the "was / now" comparison. */
+  quotedRate: string | number | null;
+  discountPct: number | null;
+  /** Whole-line rupees, as the user types it — not per unit. */
+  discountAmount: number | null;
+  amcYears: number | null;
+  spec: Record<string, string> | null;
+  /** Resolved model, when the mirror knew it. */
+  modelCode: string | null;
+}
+
+/** What POST /pos accepts for one line. Mirrors QuoteLineBody. */
+export interface PoLineBody {
+  kva?: number | string;
+  qty?: number;
+  rate?: string | number | null;
+  discountPct?: number | string | null;
+  discountAmount?: number | string | null;
+  amcYears?: number | null;
+  spec?: Record<string, unknown> | null;
 }
 
 /**
@@ -181,9 +250,15 @@ export async function resolveFromQuotation(quotationErpName: string): Promise<Re
     throw new Error(`${quotationErpName} could not be read from ERPNext`);
   }
 
+  // org_type comes along for the discount cap: authority follows the ORG
+  // the PO is raised under, not the login's role — the same rule
+  // performQuotation() states, so a dealer's cap holds whether they raise
+  // it themselves or SGT raises it for them.
   const { rows } = await query(
-    `select org_id, model_code, line_count from quote_service.quotation_ref
-      where erp_name = $1`, [quotationErpName]);
+    `select q.org_id, q.model_code, q.line_count, q.lines, o.org_type
+       from quote_service.quotation_ref q
+       left join quote_service.org o on o.id = q.org_id
+      where q.erp_name = $1`, [quotationErpName]);
   const mirror = rows[0] ?? null;
 
   const warnings: string[] = [];
@@ -232,16 +307,72 @@ export async function resolveFromQuotation(quotationErpName: string): Promise<Re
       'Check the quotation before sending the order out.');
   }
 
+  // The same rows again, as RULES rather than amounts. Kept separate from
+  // `taxes` above because that one is what gets written when nothing is
+  // renegotiated — copied verbatim, exactly as before.
+  const taxRules: TaxRule[] = (Array.isArray(doc.taxes) ? doc.taxes : []).map((t: any) => ({
+    description: firstText(t.description, accountLabel(t.account_head), t.gst_tax_type),
+    account_head: t.account_head ?? null,
+    charge_type: t.charge_type ?? null,
+    rate: Number(t.rate) || 0,
+  }));
+  const taxBlocker = taxRecomputeBlocker(taxRules);
+
+  // ---- The editor's starting point ------------------------------------
+  // From the mirror, which knows the kVA that was typed and the spec that
+  // was filled in. Falls back to the ERPNext items so a quotation raised
+  // before line snapshots existed can still be renegotiated — it just
+  // opens without the kVA, which the editor then asks for.
+  const snapshot: any[] = Array.isArray(mirror?.lines) ? mirror.lines : [];
+  const byModel = new Map<string, any>();
+  for (const l of snapshot) if (l?.modelCode) byModel.set(String(l.modelCode), l);
+
+  const editorLines: EditorLine[] = (Array.isArray(doc.items) ? doc.items : [])
+    // AMC lines are priced by ERPNext from their own Item Price and are
+    // never discounted — the quotation's rule is that the discount is on
+    // the machine. They ride along with their machine's `amcYears` rather
+    // than appearing as editable lines of their own.
+    .filter((it: any) => !/-AMC-\d+Y$/i.test(String(it.item_code)))
+    .map((it: any) => {
+      const snap = byModel.get(String(it.item_code)) ?? null;
+      const qty = Number(it.qty ?? 1) || 1;
+      const perUnit = Number(it.discount_amount ?? 0) || 0;
+      return {
+        kva: snap?.kva ?? null,
+        qty,
+        listRate: num(it.price_list_rate),
+        quotedRate: num(it.rate),
+        // Whichever way it was originally expressed. The editor shows that
+        // mode so the figure the user sees is the figure they typed.
+        discountPct: snap?.discountPct ?? num(it.discount_percentage),
+        discountAmount: perUnit > 0 ? money(perUnit * qty) : (snap?.discountAmount ?? null),
+        amcYears: snap?.amcYears ?? null,
+        spec: (snap?.spec as Record<string, string> | null) ?? null,
+        modelCode: String(it.item_code),
+      };
+    });
+
+  const actor = actorFor(mirror?.org_type ?? null);
+
   // ---- Terms ---------------------------------------------------------
   // The PO's OWN template, so the two documents can diverge later without
   // touching the quotation. Falling back to the quotation's own terms is
   // better than printing none: an order with no terms on it is worse than
   // one carrying the terms the customer has already seen.
+  // The two signatories, taken off the QUOTATION's own snapshot rather
+  // than looked up again: the PO must be signed by whoever signed the
+  // offer it accepts, even if that partner has since changed their
+  // signature. Same rule as the partner block above.
+  const signatories = {
+    partnerSignUrl: doc.custom_partner_sign ?? null,
+    partnerName: doc.custom_partner_name ?? null,
+  };
+
   let termsTemplate: string | null = PO_TERMS_TEMPLATE;
   let terms: string | null = null;
   const templateBody = await fetchTerms(PO_TERMS_TEMPLATE);
   if (templateBody) {
-    terms = withTermsFooter(templateBody);
+    terms = withTermsFooter(templateBody, signatories);
   } else if (doc.terms) {
     // Already carries the footer — it was applied when the quotation was
     // created. Re-applying would print the closing rule and the stamps
@@ -283,6 +414,7 @@ export async function resolveFromQuotation(quotationErpName: string): Promise<Re
     custom_partner_gstin: doc.custom_partner_gstin ?? null,
     custom_partner_bank: doc.custom_partner_bank ?? null,
     custom_partner_logo: doc.custom_partner_logo ?? null,
+    custom_partner_sign: doc.custom_partner_sign ?? null,
 
     items,
     taxes,
@@ -325,7 +457,215 @@ export async function resolveFromQuotation(quotationErpName: string): Promise<Re
       grandTotal: fields.grand_total ?? null,
       termsTemplate,
     },
+    editorLines,
+    taxRules,
+    taxBlocker,
+    discount: {
+      actor,
+      maxPct: capFor(actor, 'po'),
+      rateCardMarginPct: RATE_CARD_MARGIN_PCT,
+    },
     warnings,
+  };
+}
+
+// ---------------------------------------------------------------------
+// The negotiation
+//
+// Everything below runs ONLY when the caller sent lines. A PO raised
+// without them still copies the quotation verbatim, which keeps the
+// common case exact and keeps our arithmetic off documents that never
+// needed it.
+// ---------------------------------------------------------------------
+
+export interface NegotiationResult {
+  items: PoItem[];
+  taxes: PoTax[];
+  total: number;
+  netTotal: number;
+  totalTaxes: number;
+  grandTotal: number;
+  roundedTotal: number;
+  /** Per line, quoted against agreed. Stored on the mirror for later. */
+  lineSnapshots: Record<string, unknown>[];
+}
+
+/** Thrown for anything the person raising the PO can fix on the form. */
+export class PoLineError extends Error {
+  constructor(message: string, readonly lineIndex: number | null = null) {
+    super(message);
+    this.name = 'PoLineError';
+  }
+}
+
+/**
+ * Turn edited lines into a fully priced PO.
+ *
+ * The discount is measured against the LIST rate every time, never
+ * against the rate the quotation happened to charge. That is what makes
+ * "35%" mean 35% off MRP: measuring off the quoted rate would let a 12%
+ * quote discount and a 35% PO discount compound to 43% with both checks
+ * passing — past the 40.48% the rate card leaves, i.e. below cost.
+ */
+export async function applyNegotiation(
+  resolved: ResolvedPo, bodies: PoLineBody[],
+): Promise<NegotiationResult> {
+  const filled = bodies.filter(l => String(l?.kva ?? '').trim() !== '');
+  if (!filled.length) {
+    throw new PoLineError('A PO needs at least one machine, with its kVA rating.');
+  }
+  if (resolved.taxBlocker) throw new PoLineError(resolved.taxBlocker);
+
+  // Resolve every line before pricing anything. One unresolvable rating
+  // fails the whole PO — a partial order, silently missing a set the
+  // customer agreed to, is worse than none.
+  const resolutions = await Promise.all(
+    filled.map(l => resolveForKva(l.kva, { erpRate: itemPrice })));
+  const badIndex = resolutions.findIndex(r => !r.resolved);
+  if (badIndex >= 0) {
+    const bad = resolutions[badIndex] as Extract<typeof resolutions[number], { resolved: false }>;
+    throw new PoLineError(
+      filled.length === 1 ? bad.message : `Line ${badIndex + 1}: ${bad.message}`, badIndex);
+  }
+  const models = resolutions as Extract<typeof resolutions[number], { resolved: true }>[];
+
+  const actor = resolved.discount.actor;
+  const priced: PricedLine[] = [];
+  const items: PoItem[] = [];
+  const lineSnapshots: Record<string, unknown>[] = [];
+  /** Quoted rate per model, so the snapshot can say what changed. */
+  const quotedByModel = new Map<string, number | null>();
+  for (const e of resolved.editorLines) {
+    if (e.modelCode) quotedByModel.set(e.modelCode, e.quotedRate == null ? null : Number(e.quotedRate));
+  }
+
+  // AMC rates, and item names / HSN for every code involved — one call
+  // each rather than one per line.
+  const amcCodes = filled
+    .map((l, i) => (l.amcYears && AMC_TERMS.includes(Number(l.amcYears))
+      ? amcItemCode(models[i].modelCode, Number(l.amcYears)) : null))
+    .filter((c): c is string => !!c);
+  const amcRates = new Map<string, number>();
+  await Promise.all([...new Set(amcCodes)].map(async code => {
+    try {
+      const r = await itemPrice(code);
+      if (r != null) amcRates.set(code, Number(r));
+    } catch { /* reported per line below */ }
+  }));
+  const meta = await itemMeta([...models.map(m => m.modelCode), ...amcCodes]).catch(() => new Map());
+
+  for (let i = 0; i < filled.length; i++) {
+    const l = filled[i];
+    const m = models[i];
+    const qty = Math.max(1, Math.floor(Number(l.qty ?? 1)));
+
+    const listRate = Number(l.rate ?? m.rate ?? 0);
+    if (!Number.isFinite(listRate) || listRate <= 0) {
+      throw new PoLineError(
+        `Line ${i + 1} (${m.modelCode}) has no price. Add an Item Price for it in ERPNext.`, i);
+    }
+    const lineTotal = listRate * qty;
+
+    // Either form, checked the same way, against the PO cap.
+    const usingAmount = l.discountPct == null || l.discountPct === '';
+    const check = usingAmount
+      ? checkDiscountAmount(l.discountAmount, lineTotal, actor, 'po')
+      : checkDiscount(l.discountPct, actor, 'po');
+    if (!check.ok) {
+      throw new PoLineError(
+        filled.length === 1 ? check.message! : `Line ${i + 1} (${m.modelCode}): ${check.message}`, i);
+    }
+
+    // The user types a discount for the WHOLE line; the document stores it
+    // PER UNIT. Divide before writing, or a qty of 3 takes it three times.
+    // checkDiscountAmount returns the rupee figure it accepted;
+    // checkDiscount returns only a percentage, so the rupees are derived
+    // from it. Both end up as one whole-line figure.
+    const wholeLineDiscount = usingAmount
+      ? money((check as AmountCheck).amount ?? 0)
+      : money(lineTotal * (check.pct || 0) / 100);
+    const perUnit = qty > 0 ? money(wholeLineDiscount / qty) : 0;
+
+    const p = priceLine(listRate, perUnit, qty);
+    priced.push(p);
+
+    const spec = cleanSpec(l.spec);
+    const specHtml = renderSpecHtml(spec);
+    const info = meta.get(m.modelCode);
+
+    items.push({
+      doctype: PO_ITEM_DOCTYPE,
+      item_code: m.modelCode,
+      item_name: info?.item_name ?? m.modelCode,
+      gst_hsn_code: info?.gst_hsn_code ?? null,
+      ...(specHtml ? { description: specHtml } : {}),
+      qty,
+      uom: info?.stock_uom ?? null,
+      price_list_rate: p.listRate,
+      discount_percentage: usingAmount ? null : (check.pct || null),
+      discount_amount: p.discountPerUnit || null,
+      rate: p.rate,
+      amount: p.amount,
+    });
+
+    const quoted = quotedByModel.get(m.modelCode) ?? null;
+    lineSnapshots.push({
+      kva: Number(l.kva),
+      modelCode: m.modelCode,
+      ratingLabel: m.ratingLabel,
+      qty,
+      listRate: p.listRate,
+      quotedRate: quoted,
+      agreedRate: p.rate,
+      discountAmount: wholeLineDiscount || null,
+      discountPct: check.pct || null,
+      amcYears: l.amcYears ?? null,
+      spec,
+    });
+
+    // The AMC rides with its machine and is NOT discounted — the
+    // quotation's rule, kept here so the two documents agree on it.
+    const years = l.amcYears && AMC_TERMS.includes(Number(l.amcYears)) ? Number(l.amcYears) : null;
+    if (years) {
+      const code = amcItemCode(m.modelCode, years);
+      const rate = amcRates.get(code);
+      if (rate == null) {
+        throw new PoLineError(
+          `Line ${i + 1}: no Item Price for ${code}, so the AMC cannot be priced. ` +
+          `Add one in ERPNext, or drop the AMC from this line.`, i);
+      }
+      const a = priceLine(rate, 0, qty);
+      priced.push(a);
+      const amcInfo = meta.get(code);
+      items.push({
+        doctype: PO_ITEM_DOCTYPE,
+        item_code: code,
+        item_name: amcInfo?.item_name ?? code,
+        gst_hsn_code: amcInfo?.gst_hsn_code ?? null,
+        qty,
+        uom: amcInfo?.stock_uom ?? null,
+        price_list_rate: a.listRate,
+        rate: a.rate,
+        amount: a.amount,
+      });
+    }
+  }
+
+  const totals = computeTotals(priced, resolved.taxRules);
+  return {
+    items,
+    taxes: totals.taxes.map(t => ({
+      doctype: PO_TAX_DOCTYPE,
+      description: t.description,
+      rate: t.rate,
+      tax_amount: t.tax_amount,
+    })),
+    total: totals.total,
+    netTotal: totals.netTotal,
+    totalTaxes: totals.totalTaxes,
+    grandTotal: totals.grandTotal,
+    roundedTotal: totals.roundedTotal,
+    lineSnapshots,
   };
 }
 
@@ -352,12 +692,17 @@ export interface PoRow {
   cancelled_at: string | null;
   cancel_reason: string | null;
   created_at: string;
+  /** What the quotation said, for the was/now comparison. */
+  quoted_total: string | null;
+  quoted_grand_total: string | null;
+  negotiated: boolean;
 }
 
 const ROW_COLS = `
   id, erp_name, quotation_erp_name, org_id, status, erp_customer, customer_name,
   model_code, line_count, net_total, grand_total, po_date, terms_template,
-  raised_by_name, raised_via, cancelled_at, cancel_reason, created_at`;
+  raised_by_name, raised_via, cancelled_at, cancel_reason, created_at,
+  quoted_total, quoted_grand_total, negotiated`;
 
 /**
  * Raise the PO: ERPNext document first, mirror row second.
@@ -367,12 +712,33 @@ const ROW_COLS = `
  * created, and the list would then show a PO nobody can print.
  */
 export async function createFromQuotation(
-  quotationErpName: string, actor: Actor,
+  quotationErpName: string, actor: Actor, lines?: PoLineBody[],
 ): Promise<{ row: PoRow; warnings: string[] }> {
   const resolved = await resolveFromQuotation(quotationErpName);
 
+  // Only when the caller actually sent lines. Without them the quotation's
+  // own figures are copied through untouched, which is both exact and the
+  // common case — most POs are raised at the quoted price.
+  const negotiated = lines?.length ? await applyNegotiation(resolved, lines) : null;
+
   const fields: PoFields = {
     ...resolved.fields,
+    ...(negotiated
+      ? {
+          items: negotiated.items,
+          taxes: negotiated.taxes,
+          total: negotiated.total,
+          net_total: negotiated.netTotal,
+          total_taxes_and_charges: negotiated.totalTaxes,
+          grand_total: negotiated.grandTotal,
+          rounded_total: negotiated.roundedTotal,
+          // Cleared on purpose. The quotation's words describe the
+          // quotation's total and would now be a lie; the print format
+          // falls back to frappe.utils.money_in_words(), so Frappe writes
+          // the right sentence and we own no second implementation.
+          in_words: null,
+        }
+      : {}),
     // Set LAST and never from the caller: this feeds the document name
     // through the series. Derived from the PO date rather than today so a
     // back-dated PO lands in the financial year it belongs to — and left
@@ -405,15 +771,23 @@ export async function createFromQuotation(
       `insert into quote_service.dealer_po_ref
          (erp_name, quotation_erp_name, org_id, status, erp_customer, customer_name,
           model_code, line_count, net_total, grand_total, po_date, terms_template,
-          raised_by, raised_by_name, raised_via)
-       values ($1,$2,$3,'generated',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+          raised_by, raised_by_name, raised_via,
+          quoted_total, quoted_grand_total, negotiated, lines)
+       values ($1,$2,$3,'generated',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
        returning ${ROW_COLS}`,
       [erpName, quotationErpName, resolved.orgId,
        resolved.summary.erpCustomer, resolved.summary.customerName,
-       resolved.summary.modelCode, resolved.summary.lineCount,
-       resolved.summary.netTotal, resolved.summary.grandTotal,
+       negotiated ? negotiated.lineSnapshots[0]?.modelCode ?? null : resolved.summary.modelCode,
+       negotiated ? negotiated.items.length : resolved.summary.lineCount,
+       negotiated ? negotiated.netTotal : resolved.summary.netTotal,
+       negotiated ? negotiated.grandTotal : resolved.summary.grandTotal,
        fields.transaction_date ?? null, resolved.summary.termsTemplate,
-       actor.userId, actor.name, actor.via]);
+       actor.userId, actor.name, actor.via,
+       // What the QUOTATION said, always — that is the comparison this
+       // column exists for, and it is recorded even on an unnegotiated PO
+       // so "was this one changed" is answerable without a join.
+       resolved.summary.netTotal, resolved.summary.grandTotal,
+       !!negotiated, JSON.stringify(negotiated?.lineSnapshots ?? [])]);
     return { row: rows[0] as PoRow, warnings };
   } catch (err) {
     // The ERPNext document exists but is unmirrored. Say so — swallowing

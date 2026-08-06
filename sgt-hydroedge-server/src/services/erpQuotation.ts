@@ -188,6 +188,53 @@ export async function itemPrice(itemCode: string): Promise<string | null> {
   return r === undefined || r === null ? null : String(r);
 }
 
+/**
+ * Item name, HSN and UOM for a set of codes, in one call.
+ *
+ * Needed by the dealer PO: a line ADDED during negotiation has no
+ * quotation row to copy those from, and an item table printing a blank
+ * HSN column beside populated ones looks like a mistake on the document.
+ *
+ * Best effort — a code the Item master does not know simply has no entry,
+ * and the caller falls back to the code itself.
+ */
+export async function itemMeta(
+  itemCodes: string[],
+): Promise<Map<string, { item_name: string; gst_hsn_code: string | null; stock_uom: string | null }>> {
+  const out = new Map<string, { item_name: string; gst_hsn_code: string | null; stock_uom: string | null }>();
+  const codes = [...new Set(itemCodes.filter(Boolean))];
+  if (!codes.length) return out;
+
+  for (let i = 0; i < codes.length; i += 50) {
+    let rows: any[] = [];
+    try {
+      rows = await get('Item', {
+        filters: [['item_code', 'in', codes.slice(i, i + 50)]],
+        // gst_hsn_code only exists with india_compliance; asking for it on a
+        // site without it errors the whole query, hence the fallback below.
+        fields: ['item_code', 'item_name', 'gst_hsn_code', 'stock_uom'],
+        limit_page_length: 100,
+      });
+    } catch {
+      try {
+        rows = await get('Item', {
+          filters: [['item_code', 'in', codes.slice(i, i + 50)]],
+          fields: ['item_code', 'item_name', 'stock_uom'],
+          limit_page_length: 100,
+        });
+      } catch { /* leave these codes unresolved */ }
+    }
+    for (const r of rows) {
+      out.set(String(r.item_code), {
+        item_name: r.item_name ?? String(r.item_code),
+        gst_hsn_code: r.gst_hsn_code ?? null,
+        stock_uom: r.stock_uom ?? null,
+      });
+    }
+  }
+  return out;
+}
+
 /** Search the customer master. Used by the picker so nothing is created by typing. */
 export async function searchCustomers(q: string): Promise<any[]> {
   const term = String(q ?? '').trim();
@@ -748,6 +795,14 @@ export interface CreateQuotationInput {
      * after a rebrand must still show the mark it went out with.
      */
     logo?: string | null;
+    /**
+     * Absolute URL of the partner's SIGNATURE, printed under the terms
+     * beside SGT's. Snapshotted for the same reason as the logo, and for
+     * a sharper one: a document that later prints a different signature
+     * than the copy the customer holds is a document nobody can stand
+     * behind.
+     */
+    sign?: string | null;
   } | null;
   /** Terms template name. Falls back to the configured default. */
   termsTemplate?: string | null;
@@ -979,6 +1034,7 @@ async function buildQuotationDoc(input: CreateQuotationInput): Promise<BuiltQuot
   if (input.partner?.gstin) doc.custom_partner_gstin = input.partner.gstin;
   if (input.partner?.bank) doc.custom_partner_bank = input.partner.bank;
   if (input.partner?.logo) doc.custom_partner_logo = input.partner.logo;
+  if (input.partner?.sign) doc.custom_partner_sign = input.partner.sign;
 
   // Naming the template is not enough over REST: the client-side fetch that
   // expands it into rows only runs in the UI. The rows must be sent.
@@ -1007,16 +1063,25 @@ async function buildQuotationDoc(input: CreateQuotationInput): Promise<BuiltQuot
   //
   // The closing rule and the company stamp are appended HERE, not stored
   // in the template and not shown in the editor — see withTermsFooter.
+  //
+  // The two signatories are passed in per document: SGT's comes from
+  // config, the partner's from their own record. Before this, both came
+  // from one env list and every quotation carried the same pair — see
+  // the note above SGT_SIGN_URL in domain/quoteTerms.ts.
   const termsTemplate = input.termsTemplate ?? DEFAULT_TERMS;
+  const signatories = {
+    partnerSignUrl: input.partner?.sign ?? null,
+    partnerName: input.partner?.name ?? null,
+  };
   let termsWarning: string | null = null;
   if (input.termsHtml && input.termsHtml.trim()) {
-    doc.terms = withTermsFooter(input.termsHtml);
+    doc.terms = withTermsFooter(input.termsHtml, signatories);
     if (termsTemplate) doc.tc_name = termsTemplate;
   } else if (termsTemplate) {
     const text = await fetchTerms(termsTemplate);
     if (text) {
       doc.tc_name = termsTemplate;
-      doc.terms = withTermsFooter(text);
+      doc.terms = withTermsFooter(text, signatories);
     } else {
       termsWarning =
         `Terms template "${termsTemplate}" was not found or is empty, so the ` +

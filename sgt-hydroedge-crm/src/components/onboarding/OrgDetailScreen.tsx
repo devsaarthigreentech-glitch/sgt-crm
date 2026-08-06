@@ -148,6 +148,21 @@ export default function OrgDetailScreen({ orgId, onBack }: { orgId: number; onBa
           />
         </Card>
 
+        {/* The second signature on every quotation and PO they raise. SGT
+            signs the left block; this is the right one. Without it the
+            document prints a ruled space under their name for them to
+            sign by hand — never somebody else's signature, which is what
+            the old shared config produced. */}
+        <Card title="Signature"
+          hint="Printed under the terms on quotations and POs this partner raises, beside SGT’s.">
+          <LogoField
+            key={`sign-${orgId}`}
+            noun="signature"
+            api={logoApiFor(BASE_URL, `/partners/orgs/${orgId}`, getToken, 'sign')}
+            hint="Takes effect on their next document. Until one is set, their documents print a blank signing line."
+          />
+        </Card>
+
         <Card title="Tax" hint="Leave blank if they are not registered. A wrong GSTIN is rejected.">
           <F label="GSTIN" value={form.gstin} placeholder="08AABCC1234D1ZB" onChange={v => set('gstin', v.toUpperCase())} error={errors.gstin} />
           <F label="PAN" value={form.pan} placeholder="AABCC1234D" onChange={v => set('pan', v.toUpperCase())} error={errors.pan} />

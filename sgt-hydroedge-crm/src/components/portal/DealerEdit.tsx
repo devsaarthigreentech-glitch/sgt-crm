@@ -146,6 +146,18 @@ export default function DealerEdit({ dealerId, onBack }: { dealerId: number; onB
           />
         </Card>
 
+        {/* Same snapshot rule as the logo: documents already raised keep
+            the signature they were printed with. */}
+        <Card title="Signature"
+          hint="Printed under the terms on quotations and POs this dealer raises, beside SGT’s.">
+          <LogoField
+            key={`sign-${dealerId}`}
+            noun="signature"
+            api={logoApiFor(BASE_URL, `/portal/dealers/${dealerId}`, getToken, 'sign')}
+            hint="Takes effect on their next document. Until one is set, their documents print a blank signing line."
+          />
+        </Card>
+
         <Card title="Contact">
           <F label="Name" value={form.contact_name} onChange={v => set('contact_name', v)} />
           <F label="Designation" value={form.contact_designation} onChange={v => set('contact_designation', v)} />

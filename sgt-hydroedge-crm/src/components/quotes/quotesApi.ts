@@ -3,6 +3,7 @@
 
 import type {
   QuoteApi, Resolution, SpecField, QuoteAttachment, RecipientPlan, PoRow,
+  PoResolve, QuoteLinePayload,
 } from './QuoteScreen'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3004/api/v1'
@@ -170,9 +171,17 @@ export function makeQuoteApi(prefix: string, withPartners: boolean, poPrefix: st
 
     listPos: () => request<{ data: PoRow[] }>(`${poPrefix}`).then(r => r.data),
 
-    raisePo: (quotationErpName: string) =>
+    resolvePo: (quotationErpName: string) =>
+      request<{ data: PoResolve }>(
+        `${poPrefix}/resolve/${encodeURIComponent(quotationErpName)}`).then(r => r.data),
+
+    // `lines` is omitted, not sent empty, when nothing was renegotiated —
+    // the server treats absence as "raise it exactly as quoted" and an
+    // empty array as "a PO with no machines on it", which it refuses.
+    raisePo: (quotationErpName: string, lines?: QuoteLinePayload[]) =>
       request<{ data: PoRow & { warnings?: string[] } }>(`${poPrefix}`, {
-        method: 'POST', body: JSON.stringify({ quotationErpName }),
+        method: 'POST',
+        body: JSON.stringify({ quotationErpName, ...(lines ? { lines } : {}) }),
       }).then(r => r.data),
 
     /** Fetched as a blob because the PDF route needs the bearer token. */

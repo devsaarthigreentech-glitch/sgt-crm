@@ -184,6 +184,46 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
     })
   }
 
+  // ---- The partner's signature -------------------------------------------
+  // On an ORG only. A logo is asked for with the application; a signature
+  // is not needed until the partner is appointed and starts raising
+  // documents, and partner_service.registration has no columns for one.
+  //
+  // Same decoder as the logo: this image is re-published to ERPNext as a
+  // PUBLIC file and printed on a document a customer receives, so it gets
+  // the same three checks — type, size, and the leading bytes actually
+  // being the format claimed.
+  app.get('/orgs/:id/sign', { preHandler: director }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    return sendLogo(reply, await readLogo('org', id, 'sign'))
+  })
+
+  app.put('/orgs/:id/sign', {
+    preHandler: director, bodyLimit: LOGO_BODY_LIMIT,
+  }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const r = decodeLogo(req.body)
+    if (!r.ok) {
+      return reply.code(422).send({
+        error: { code: 'bad_image', message: r.message }, fields: { sign: r.message },
+      })
+    }
+    await saveLogo('org', id, r.logo, 'sign')
+    const who = actor(req)
+    await query(
+      `insert into quote_service.org_event (org_id, event_type, actor, actor_name, changes, note)
+       values ($1, 'updated', $2, $3, $4, 'signature set from the CRM')`,
+      [id, who.id, who.name,
+       JSON.stringify({ signature: { from: 'replaced', to: r.logo.fileName } })])
+    return reply.send({ data: { fileName: r.logo.fileName, sizeBytes: r.logo.bytes.length } })
+  })
+
+  app.delete('/orgs/:id/sign', { preHandler: director }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    await clearLogo('org', id, 'sign')
+    return reply.send({ data: { removed: true } })
+  })
+
   // ---- Reference data for the form's dropdowns --------------------------
   app.get('/reference', { preHandler: director }, async (_req, reply) => {
     const [states, distributors] = await Promise.all([

@@ -243,7 +243,8 @@ export async function performQuotation(
               contact_name, contact_mobile, contact_email,
               bank_account_name, bank_account_number, bank_ifsc,
               bank_name, bank_branch,
-              logo_filename, logo_mime, logo_bytes, erp_logo_url
+              logo_filename, logo_mime, logo_bytes, erp_logo_url,
+              sign_filename, sign_mime, sign_bytes, erp_sign_url, signature_url
          from quote_service.org where id = $1 and is_active`, [orgId])
     if (!rows.length) {
       return {
@@ -263,22 +264,42 @@ export async function performQuotation(
     // fails, must never stop a quotation being raised. The document just
     // prints with SGT's mark alone, which is what happened before this
     // existed.
-    partnerSnapshot!.logo = rows[0].erp_logo_url ?? null
-    if (!partnerSnapshot!.logo && rows[0].logo_bytes) {
+    //
+    // The signature works the same way and is resolved alongside it. One
+    // difference: a partner may have a hand-typed `signature_url` from
+    // the agreement module instead of an uploaded file. The UPLOAD wins
+    // where both exist, because that is the one they can change
+    // themselves; the typed path is the fallback so the two partners
+    // seeded by migrate_agreement_01 keep working untouched.
+    const publish = async (
+      kind: 'logo' | 'sign', cache: string | null, bytes: Buffer | null,
+      fileName: string | null, mime: string | null,
+    ): Promise<string | null> => {
+      if (cache) return cache
+      if (!bytes) return null
       try {
         const url = await uploadPublicImage(
-          rows[0].logo_filename ?? `${rows[0].code}-logo.png`,
-          rows[0].logo_mime ?? 'image/png',
-          rows[0].logo_bytes as Buffer,
-        )
+          fileName ?? `${rows[0].code}-${kind}.png`, mime ?? 'image/png', bytes)
         await query(
-          `update quote_service.org set erp_logo_url = $2, updated_at = now() where id = $1`,
-          [rows[0].id, url])
-        partnerSnapshot!.logo = url
+          `update quote_service.org
+              set ${kind === 'logo' ? 'erp_logo_url' : 'erp_sign_url'} = $2, updated_at = now()
+            where id = $1`, [rows[0].id, url])
+        return url
       } catch (err) {
-        req.log.warn({ err, org: rows[0].code }, 'partner logo could not be published to ERPNext')
+        req.log.warn({ err, org: rows[0].code, kind },
+          `partner ${kind} could not be published to ERPNext`)
+        return null
       }
     }
+
+    partnerSnapshot!.logo = await publish(
+      'logo', rows[0].erp_logo_url ?? null, rows[0].logo_bytes ?? null,
+      rows[0].logo_filename ?? null, rows[0].logo_mime ?? null)
+
+    partnerSnapshot!.sign = await publish(
+      'sign', rows[0].erp_sign_url ?? null, rows[0].sign_bytes ?? null,
+      rows[0].sign_filename ?? null, rows[0].sign_mime ?? null)
+      ?? (String(rows[0].signature_url ?? '').trim() || null)
   }
 
   // Discount authority follows the ORG raising the quote, not the login's
