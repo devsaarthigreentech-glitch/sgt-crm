@@ -930,6 +930,30 @@ async function main() {
     ? `  It EXISTS — this run REPLACES its HTML. Hand-edits in ERPNext will be lost.`
     : '  It would be CREATED.');
 
+  // ---- REFUSE to hijack another doctype's print format ------------------
+  // The write below sets doc_type AND html. Pointed at a format belonging
+  // to some other doctype — a Quotation format, say, because
+  // ERP_PO_PRINT_FORMAT was set to its name — it would rebind that format
+  // to this doctype and overwrite its layout. The quotation would then
+  // print from whatever this file contains, which is exactly the "my
+  // quotation prints as a Purchase Order" failure.
+  //
+  // Checked here rather than trusted to the name being distinctive,
+  // because the name comes from an env var somebody types.
+  if (existingFmt && String(existingFmt.doc_type ?? '') !== DOCTYPE) {
+    console.error('');
+    console.error(`✗ Print Format "${FORMAT}" already exists and belongs to ` +
+                  `"${existingFmt.doc_type}", not "${DOCTYPE}".`);
+    console.error('  Refusing to touch it. Writing here would rebind that format to this');
+    console.error(`  doctype and replace its layout, so every ${existingFmt.doc_type} would`);
+    console.error('  start printing from this file.');
+    console.error('');
+    console.error('  Set ERP_PO_PRINT_FORMAT to a name that is not already taken, e.g.');
+    console.error(`    ERP_PO_PRINT_FORMAT="SGT Dealer PO Print"`);
+    console.error('  and make PO_FORMAT in src/services/erpDealerPo.ts agree with it.');
+    process.exit(1);
+  }
+
   // ---- The masthead ----------------------------------------------------
   // Worth its own paragraph: this, not the print format, is what makes a
   // PO look like a quotation, and it is the one part the script cannot

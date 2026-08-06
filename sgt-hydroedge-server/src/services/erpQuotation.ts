@@ -419,12 +419,33 @@ export async function quotePrintFormat(): Promise<string | null> {
     }
   } catch { /* fall through */ }
 
+  // LAST RESORT, and a fragile one: "most recently modified" means the
+  // winner changes whenever anybody adds or edits a Quotation print
+  // format. That is how quotations started printing under a layout
+  // titled "Purchase Order" — a PO format was duplicated from the
+  // quotation one in the ERPNext desk, left on doc_type Quotation, and
+  // immediately became the newest.
+  //
+  // The order is not changed, because on a site with one format it is
+  // correct and changing it would move the answer under a working
+  // deployment. Instead it now SAYS SO, once, so the next time this
+  // decides something nobody intended there is a line in the log naming
+  // the format it picked and the variable that would have prevented it.
   try {
     const rows = await get('Print Format', {
       filters: [['doc_type', '=', 'Quotation'], ['disabled', '=', 0]],
-      fields: ['name'], limit_page_length: 1, order_by: 'modified desc',
+      fields: ['name'], limit_page_length: 2, order_by: 'modified desc',
     });
     cachedFormat = rows[0]?.name ? String(rows[0].name) : '';
+    if (cachedFormat) {
+      console.warn(
+        `⚠ No quotation print format is pinned, so "${cachedFormat}" was chosen as the ` +
+        `most recently MODIFIED format for Quotation` +
+        (rows.length > 1 ? ` (of ${rows.length}+ enabled)` : '') +
+        `. Editing any Quotation print format changes this. Pin it with ` +
+        `ERP_QUOTE_PRINT_FORMAT, or set default_print_format on the Quotation doctype. ` +
+        `Diagnose with: npx tsx src/db/erp_print_format_probe.ts`);
+    }
   } catch {
     cachedFormat = '';
   }
