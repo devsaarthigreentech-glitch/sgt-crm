@@ -138,7 +138,14 @@ export interface PoResolve {
   /** Set when prices cannot safely be renegotiated on this quotation. */
   taxBlocker: string | null
   warnings: string[]
+  /** POs already raised against THIS quotation. */
   existing: PoRow[]
+  /**
+   * Every PO for this CUSTOMER, whichever quotation it came from — a
+   * customer negotiates once, and the order they want amended may sit
+   * against an earlier offer to the same company.
+   */
+  forCustomer?: PoRow[]
 }
 
 /** What the screen sends for one machine. */
@@ -206,11 +213,15 @@ export interface QuoteApi {
   listPos(): Promise<PoRow[]>
   /** What a PO for this quotation would say, and what may be changed. */
   resolvePo(quotationErpName: string): Promise<PoResolve>
+  /** Reload an existing PO into the editor — its own lines, not the quote's. */
+  loadPoForEdit(id: number): Promise<PoResolve & { po: PoRow }>
   /**
    * Raise one. Omit `lines` to take the quotation exactly as it stands —
    * the server then copies its figures rather than recomputing them.
    */
   raisePo(quotationErpName: string, lines?: QuoteLinePayload[]): Promise<PoRow>
+  /** Rewrite one that already exists. Same payload as raising. */
+  updatePo(id: number, lines?: QuoteLinePayload[]): Promise<PoRow>
   /** By mirror id, not by ERPNext name — POs are scoped on our side. */
   poPdfUrl(id: number): Promise<string>
   /** Partner pickers only make sense for SGT staff. */
@@ -481,10 +492,19 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
     po: { id: number; erp_name: string; warnings?: string[] },
   ) => {
     setPoFor(null)
-    setPosByQuote(prev => ({
-      ...prev,
-      [quotationErpName]: [po as PoRow, ...(prev[quotationErpName] ?? [])],
-    }))
+    // Replace-or-prepend, keyed on id: this fires for an AMENDED PO as
+    // well as a new one, and blindly prepending would list the same
+    // document twice.
+    setPosByQuote(prev => {
+      const was = prev[quotationErpName] ?? []
+      const row = po as PoRow
+      return {
+        ...prev,
+        [quotationErpName]: was.some(p => p.id === row.id)
+          ? was.map(p => (p.id === row.id ? row : p))
+          : [row, ...was],
+      }
+    })
     if (po.warnings?.length) setBanner(po.warnings.join(' '))
     try { setPdfFor({ name: po.erp_name, url: await api.poPdfUrl(po.id) }) }
     catch (e: any) {

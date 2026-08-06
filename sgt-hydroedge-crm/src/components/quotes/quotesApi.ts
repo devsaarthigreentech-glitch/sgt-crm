@@ -175,6 +175,9 @@ export function makeQuoteApi(prefix: string, withPartners: boolean, poPrefix: st
       request<{ data: PoResolve }>(
         `${poPrefix}/resolve/${encodeURIComponent(quotationErpName)}`).then(r => r.data),
 
+    loadPoForEdit: (id: number) =>
+      request<{ data: PoResolve & { po: PoRow } }>(`${poPrefix}/${id}/edit`).then(r => r.data),
+
     // `lines` is omitted, not sent empty, when nothing was renegotiated —
     // the server treats absence as "raise it exactly as quoted" and an
     // empty array as "a PO with no machines on it", which it refuses.
@@ -182,6 +185,12 @@ export function makeQuoteApi(prefix: string, withPartners: boolean, poPrefix: st
       request<{ data: PoRow & { warnings?: string[] } }>(`${poPrefix}`, {
         method: 'POST',
         body: JSON.stringify({ quotationErpName, ...(lines ? { lines } : {}) }),
+      }).then(r => r.data),
+
+    updatePo: (id: number, lines?: QuoteLinePayload[]) =>
+      request<{ data: PoRow & { warnings?: string[] } }>(`${poPrefix}/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ ...(lines ? { lines } : {}) }),
       }).then(r => r.data),
 
     /** Fetched as a blob because the PDF route needs the bearer token. */

@@ -26,7 +26,7 @@ import {
   INK, MUTED, LINE, FAINT, DANGER, PAPER, WARN_BG, WARN_FG, rupees,
 } from './theme'
 import { MachineLine, blankLine, type LineState } from './lineEditor'
-import type { QuoteApi, SpecField, PoResolve, QuoteLinePayload } from './QuoteScreen'
+import type { QuoteApi, SpecField, PoResolve, PoRow, QuoteLinePayload } from './QuoteScreen'
 
 /** Machine value, discount and AMC for one line, against a chosen base rate. */
 function maths(l: LineState, base: number | null) {
@@ -50,6 +50,15 @@ export function PoDialog({ api, quotationErpName, specFields, onClose, onRaised 
   onClose: () => void
   onRaised: (po: { id: number; erp_name: string; warnings?: string[] }) => void
 }) {
+  // Step one is a choice, not a form: raise a new PO, or amend one that
+  // already exists for this customer. Skipped entirely when there are no
+  // existing POs — offering to edit nothing is a dead end.
+  const [step, setStep] = useState<'choose' | 'edit'>('choose')
+  /** The PO being amended. Null means a new one against the quotation. */
+  const [editing, setEditing] = useState<PoRow | null>(null)
+  const [choices, setChoices] = useState<PoRow[] | null>(null)
+  const [picked, setPicked] = useState<number | ''>('')
+
   const [plan, setPlan] = useState<PoResolve | null>(null)
   const [lines, setLines] = useState<LineState[]>([])
   /** Line id -> the list rate the quotation carried. Absent = price it today. */
@@ -58,37 +67,66 @@ export function PoDialog({ api, quotationErpName, specFields, onClose, onRaised 
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  /** Fill the editor from a resolve payload, whichever step produced it. */
+  const load = (p: PoResolve) => {
+    const built: LineState[] = []
+    const bases: Record<number, number | null> = {}
+    for (const l of p.lines) {
+      const s = blankLine()
+      s.kva = l.kva == null ? '' : String(l.kva)
+      s.qty = l.qty || 1
+      // Shown the way it was originally entered, so the figure on screen
+      // is the figure whoever typed it actually typed.
+      s.discountMode = l.discountAmount != null && l.discountPct == null ? 'amount' : 'pct'
+      s.discountPct = l.discountPct != null ? String(l.discountPct) : ''
+      s.discountAmt = l.discountAmount != null ? String(l.discountAmount) : ''
+      s.amcYears = l.amcYears ?? 0
+      s.spec = l.spec ?? {}
+      s.showSpec = !!l.spec && Object.keys(l.spec).length > 0
+      built.push(s)
+      bases[s.id] = l.listRate == null ? null : Number(l.listRate)
+    }
+    if (!built.length) built.push(blankLine())
+    setPlan(p)
+    setLines(built)
+    setBase(bases)
+    setInitial(signature(built))
+  }
+
+  // The first fetch does double duty: it decides whether there is
+  // anything to amend, and it is the payload the editor needs if the
+  // answer is no.
   useEffect(() => {
     let dead = false
     api.resolvePo(quotationErpName)
       .then(p => {
         if (dead) return
-        const built: LineState[] = []
-        const bases: Record<number, number | null> = {}
-        for (const l of p.lines) {
-          const s = blankLine()
-          s.kva = l.kva == null ? '' : String(l.kva)
-          s.qty = l.qty || 1
-          // Shown the way it was originally entered, so the figure on
-          // screen is the figure whoever quoted it actually typed.
-          s.discountMode = l.discountAmount != null && l.discountPct == null ? 'amount' : 'pct'
-          s.discountPct = l.discountPct != null ? String(l.discountPct) : ''
-          s.discountAmt = l.discountAmount != null ? String(l.discountAmount) : ''
-          s.amcYears = l.amcYears ?? 0
-          s.spec = l.spec ?? {}
-          s.showSpec = !!l.spec && Object.keys(l.spec).length > 0
-          built.push(s)
-          bases[s.id] = l.listRate == null ? null : Number(l.listRate)
-        }
-        if (!built.length) built.push(blankLine())
-        setPlan(p)
-        setLines(built)
-        setBase(bases)
-        setInitial(signature(built))
+        const existing = p.forCustomer ?? p.existing ?? []
+        setChoices(existing)
+        load(p)
+        // Nothing to amend, so there is no choice to make.
+        if (!existing.length) setStep('edit')
       })
       .catch(e => { if (!dead) setError(e.message) })
     return () => { dead = true }
   }, [quotationErpName])
+
+  /** Move to the editor, either fresh or loaded from an existing PO. */
+  const start = async (po: PoRow | null) => {
+    setError(null)
+    setEditing(po)
+    if (!po) { setStep('edit'); return }
+    setBusy(true)
+    try {
+      const p = await api.loadPoForEdit(po.id)
+      load(p)
+      setStep('edit')
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   /** What the user has typed, flattened, so "did anything change" is cheap. */
   const signature = (ls: LineState[]) =>
@@ -126,9 +164,15 @@ export function PoDialog({ api, quotationErpName, specFields, onClose, onRaised 
     setError(null)
     setBusy(true)
     try {
-      // Untouched means untouched: no lines are sent, and the server
-      // copies the quotation's own figures rather than recomputing them.
-      const payload: QuoteLinePayload[] | undefined = changed
+      // On a NEW PO, untouched means untouched: no lines are sent and the
+      // server copies the quotation's own figures rather than recomputing
+      // them, which keeps the common case exact.
+      //
+      // On an EDIT the lines are always sent, even unchanged. Omitting
+      // them tells the server to fall back to the quotation — which would
+      // silently undo the negotiation on a PO somebody opened, looked at
+      // and saved without touching.
+      const payload: QuoteLinePayload[] | undefined = (editing || changed)
         ? filled.map(l => ({
             kva: l.kva,
             qty: l.qty,
@@ -141,7 +185,9 @@ export function PoDialog({ api, quotationErpName, specFields, onClose, onRaised 
             spec: Object.keys(l.spec).length ? l.spec : null,
           }))
         : undefined
-      onRaised(await api.raisePo(quotationErpName, payload))
+      onRaised(editing
+        ? await api.updatePo(editing.id, payload)
+        : await api.raisePo(quotationErpName, payload))
     } catch (e: any) {
       setError(e.message)
     } finally {
@@ -167,7 +213,9 @@ export function PoDialog({ api, quotationErpName, specFields, onClose, onRaised 
         }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 4 }}>
           <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: INK, flex: 1 }}>
-            Raise purchase order
+            {step === 'choose' ? 'Purchase order'
+              : editing ? `Amend ${editing.erp_name}`
+              : 'Raise purchase order'}
           </h3>
           <button type="button" onClick={onClose} style={{
             background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: MUTED,
@@ -195,7 +243,76 @@ export function PoDialog({ api, quotationErpName, specFields, onClose, onRaised 
           <p style={{ fontSize: 13, color: MUTED }}>Reading the quotation…</p>
         )}
 
-        {plan && (
+        {/* ---- Step one: new, or amend one that already exists ---- */}
+        {plan && step === 'choose' && (
+          <>
+            <button type="button" onClick={() => start(null)} disabled={busy}
+              style={{
+                width: '100%', textAlign: 'left', padding: '13px 14px', marginBottom: 10,
+                border: `1px solid ${LINE}`, borderRadius: 9, backgroundColor: '#fff',
+                cursor: busy ? 'wait' : 'pointer', fontFamily: 'inherit',
+              }}>
+              <div style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>
+                Create a new PO
+              </div>
+              <div style={{ fontSize: 12, color: MUTED, marginTop: 3 }}>
+                Against {quotationErpName}, prefilled with what was quoted.
+              </div>
+            </button>
+
+            <div style={{
+              border: `1px solid ${LINE}`, borderRadius: 9, backgroundColor: '#fff',
+              padding: '13px 14px',
+            }}>
+              <div style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>
+                Edit an existing PO
+              </div>
+              <div style={{ fontSize: 12, color: MUTED, margin: '3px 0 9px' }}>
+                Every PO for {plan.summary.customerName ?? 'this customer'}, whichever
+                quotation it came from.
+              </div>
+              <select
+                value={picked}
+                onChange={e => setPicked(e.target.value === '' ? '' : Number(e.target.value))}
+                style={{
+                  width: '100%', boxSizing: 'border-box', padding: '9px 10px', fontSize: 13.5,
+                  color: INK, backgroundColor: '#fff', border: `1px solid ${LINE}`,
+                  borderRadius: 6, outline: 'none', fontFamily: 'inherit', marginBottom: 9,
+                }}>
+                <option value="">Choose a PO…</option>
+                {(choices ?? []).map(p => (
+                  <option key={p.id} value={p.id}>
+                    {p.erp_name}
+                    {p.po_date ? ` · ${p.po_date}` : ''}
+                    {p.grand_total ? ` · ${rupees(p.grand_total)}` : ''}
+                    {p.status === 'cancelled' ? ' · cancelled' : ''}
+                  </option>
+                ))}
+              </select>
+              <button type="button"
+                disabled={busy || picked === '' ||
+                  (choices ?? []).find(p => p.id === picked)?.status === 'cancelled'}
+                onClick={() => start((choices ?? []).find(p => p.id === picked) ?? null)}
+                style={{
+                  width: '100%', padding: '10px', fontSize: 13, fontWeight: 700,
+                  fontFamily: 'inherit', border: 'none', borderRadius: 7,
+                  cursor: picked === '' || busy ? 'not-allowed' : 'pointer',
+                  backgroundColor: picked === '' || busy ? '#D8D3C4' : INK,
+                  color: picked === '' || busy ? '#8C887E' : '#fff',
+                }}>
+                {busy ? 'Opening…' : 'Edit this PO'}
+              </button>
+              {picked !== '' &&
+                (choices ?? []).find(p => p.id === picked)?.status === 'cancelled' && (
+                <div style={{ fontSize: 11.5, color: WARN_FG, marginTop: 7 }}>
+                  That PO was cancelled, so it can no longer be changed. Create a new one.
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {plan && step === 'edit' && (
           <>
             {(plan.warnings ?? []).map((w, i) => (
               <div key={i} style={{
@@ -269,12 +386,14 @@ export function PoDialog({ api, quotationErpName, specFields, onClose, onRaised 
             </div>
 
             <div style={{ display: 'flex', gap: 9 }}>
-              <button type="button" onClick={onClose} style={{
-                flex: '0 0 auto', padding: '11px 16px', fontSize: 13.5, fontFamily: 'inherit',
-                border: `1px solid ${LINE}`, borderRadius: 8, backgroundColor: 'transparent',
-                color: MUTED, cursor: 'pointer',
-              }}>
-                Cancel
+              <button type="button"
+                onClick={() => (choices?.length ? setStep('choose') : onClose())}
+                style={{
+                  flex: '0 0 auto', padding: '11px 16px', fontSize: 13.5, fontFamily: 'inherit',
+                  border: `1px solid ${LINE}`, borderRadius: 8, backgroundColor: 'transparent',
+                  color: MUTED, cursor: 'pointer',
+                }}>
+                {choices?.length ? 'Back' : 'Cancel'}
               </button>
               <button type="button" onClick={raise} disabled={busy || overCap || !filled.length}
                 style={{
@@ -284,8 +403,9 @@ export function PoDialog({ api, quotationErpName, specFields, onClose, onRaised 
                   backgroundColor: busy || overCap || !filled.length ? '#D8D3C4' : INK,
                   color: busy || overCap || !filled.length ? '#8C887E' : '#fff',
                 }}>
-                {busy ? 'Raising in ERPNext…'
+                {busy ? (editing ? 'Saving to ERPNext…' : 'Raising in ERPNext…')
                   : overCap ? `Over the ${maxPct}% limit`
+                  : editing ? `Save changes to ${editing.erp_name}`
                   : changed ? 'Raise PO at the agreed price'
                   : 'Raise PO as quoted'}
               </button>

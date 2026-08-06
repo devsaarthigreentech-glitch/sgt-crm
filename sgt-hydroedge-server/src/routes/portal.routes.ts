@@ -41,7 +41,7 @@ import {
 } from '../domain/quoteDiscount.js'
 import {
   itemPrice, listTermsTemplates, fetchTerms, searchCustomers, fetchQuotationPdf,
-  listQuotationAttachments, deleteQuotationAttachment,
+  listQuotationAttachments, deleteQuotationAttachment, lookupGstin,
 } from '../services/erpQuotation.js'
 import { SPEC_FIELDS } from '../domain/quoteSpec.js'
 import { termsToText } from '../domain/quoteTerms.js'
@@ -232,6 +232,28 @@ export default async function portalRoutes(app: FastifyInstance) {
     if (!me) return
     const { q } = (req.query ?? {}) as { q?: string }
     return reply.send({ data: await searchCustomers(String(q ?? '')) })
+  })
+
+  // Same GSTIN lookup the CRM gets. A partner creating a customer hits
+  // the blank-address problem harder than SGT does — they cannot reach
+  // ERPNext to fix it afterwards.
+  app.get('/quotes/gstin/:gstin', { preHandler: requireAuth }, async (req, reply) => {
+    const me = await resolveCaller(req, reply)
+    if (!me) return
+    const { gstin } = req.params as { gstin: string }
+    const g = inspectGstin(gstin)
+    if (!g.valid) {
+      return reply.send({ data: { found: false, message: g.message ?? 'GSTIN is not valid' } })
+    }
+    const info = await lookupGstin(gstin).catch(() => null)
+    return reply.send({
+      data: info
+        ? { found: true, ...info }
+        : {
+            found: false,
+            message: 'No details came back for that GSTIN. Type the address instead.',
+          },
+    })
   })
 
   app.post('/quotes/customers', { preHandler: requireAuth }, async (req, reply) => {

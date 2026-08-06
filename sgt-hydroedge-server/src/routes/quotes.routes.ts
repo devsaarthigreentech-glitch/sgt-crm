@@ -35,7 +35,7 @@ import {
   itemPrice, fetchQuotation, listTermsTemplates, fetchTerms,
   searchCustomers, ensureQuotationCustomer, updateQuotationCustomer,
   findCustomerAddress, upsertCustomerAddress, hasAddress,
-  fetchQuotationPdf, fetchQuotationSummaries,
+  fetchQuotationPdf, fetchQuotationSummaries, lookupGstin,
   type CustomerPatch, type AddressInput,
   listQuotationAttachments, uploadQuotationAttachment, deleteQuotationAttachment,
   uploadPublicImage,
@@ -550,9 +550,34 @@ export async function createCustomerChecked(b: Record<string, any>) {
     }
   }
 
+  // Nothing typed, but a GSTIN given: ask ERPNext what address is
+  // registered against it rather than creating a customer with none.
+  //
+  // A customer with no Address produces a quotation with a blank address
+  // block — the failure upsertCustomerAddress() exists to prevent,
+  // arriving by a different door. The person filling this form already
+  // typed the one field that knows the answer.
+  //
+  // Best effort, and it never overwrites: anything typed wins, because a
+  // registered address and a delivery address are often not the same
+  // place. `lookedUp` is reported so the screen can say where it came
+  // from instead of an address appearing from nowhere.
+  let resolvedAddress = address
+  let lookedUp = false
+  if (gstin && !hasAddress(address)) {
+    try {
+      const info = await lookupGstin(gstin)
+      if (info?.address && hasAddress(info.address)) {
+        resolvedAddress = info.address
+        lookedUp = true
+      }
+    } catch { /* the address can always be typed */ }
+  }
+
   const created = await ensureQuotationCustomer({
-    name, gstin: gstin || null, state: state || null, city: address.city ?? null,
-    entityType, address,
+    name, gstin: gstin || null, state: state || null,
+    city: resolvedAddress.city ?? null,
+    entityType, address: resolvedAddress,
   })
 
   // Did the address actually land? A customer with none produces a
@@ -569,8 +594,15 @@ export async function createCustomerChecked(b: Record<string, any>) {
       data: {
         ...created,
         addressWritten,
-        ...(hasAddress(address) && !addressWritten
+        addressFromGstin: lookedUp,
+        ...(hasAddress(resolvedAddress) && !addressWritten
           ? { note: 'The customer was created but the address could not be saved. Add it with "Fix details".' }
+          : {}),
+        ...(lookedUp && addressWritten
+          ? { note: 'The registered address for that GSTIN was used. Check it with "Fix details" if they deliver elsewhere.' }
+          : {}),
+        ...(!hasAddress(resolvedAddress)
+          ? { note: 'No address was saved, so quotations for this customer will print without one. Add it with "Fix details".' }
           : {}),
       },
     },
@@ -1022,6 +1054,30 @@ export default async function quotesRoutes(app: FastifyInstance) {
   app.get('/customers', { preHandler: staff }, async (req, reply) => {
     const { q } = (req.query ?? {}) as { q?: string }
     return reply.send({ data: await searchCustomers(String(q ?? '')) })
+  })
+
+  // What is registered against a GSTIN. Powers the "look it up" button on
+  // the add-customer form, so the address is visible and correctable
+  // BEFORE the customer is created rather than appearing afterwards.
+  //
+  // Always 200: an unknown GSTIN, a site without india_compliance and a
+  // government service that is down are all the same thing here — no
+  // answer — and none of them is an error the user caused.
+  app.get('/gstin/:gstin', { preHandler: staff }, async (req, reply) => {
+    const { gstin } = req.params as { gstin: string }
+    const g = inspectGstin(gstin)
+    if (!g.valid) {
+      return reply.send({ data: { found: false, message: g.message ?? 'GSTIN is not valid' } })
+    }
+    const info = await lookupGstin(gstin).catch(() => null)
+    return reply.send({
+      data: info
+        ? { found: true, ...info }
+        : {
+            found: false,
+            message: 'No details came back for that GSTIN. Type the address instead.',
+          },
+    })
   })
 
   app.post('/customers', { preHandler: staff }, async (req, reply) => {

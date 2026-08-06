@@ -235,6 +235,77 @@ export async function itemMeta(
   return out;
 }
 
+/**
+ * The registered name and address behind a GSTIN, from ERPNext.
+ *
+ * WHY THIS EXISTS. Creating a customer with a GSTIN and no address
+ * produced an ERPNext Customer with no Address document, and therefore a
+ * quotation with a blank address block — the exact failure
+ * upsertCustomerAddress() was written for, arriving by a different door.
+ * The person filling the form had already typed the one field that knows
+ * the address; they simply had no way to turn it into one.
+ *
+ * india_compliance ships the lookup (the same one its own Customer form
+ * calls when you type a GSTIN) and it is whitelisted, so this is a
+ * proxy rather than a new integration.
+ *
+ * BEST EFFORT, ALWAYS. Returns null when india_compliance is absent, when
+ * the site has no GST API credentials, when the GSTIN is unknown, or when
+ * the government service is down — which it frequently is. A failed
+ * lookup must never stop a customer being created, because the address
+ * can always be typed.
+ */
+export interface GstinInfo {
+  legalName: string | null;
+  tradeName: string | null;
+  address: AddressInput | null;
+}
+
+export async function lookupGstin(gstin: string): Promise<GstinInfo | null> {
+  const g = String(gstin ?? '').trim().toUpperCase();
+  if (!/^[0-9A-Z]{15}$/.test(g)) return null;
+  if (!BASE || !KEY || !SECRET) return null;
+
+  // Both spellings. The method moved between india_compliance versions
+  // and the older one is still in the field.
+  const methods = [
+    'india_compliance.gst_india.utils.gstin_info.get_gstin_info',
+    'india_compliance.gst_india.doctype.gstin.gstin.get_gstin_info',
+  ];
+
+  for (const method of methods) {
+    try {
+      const res = await erpFetch(
+        `${BASE}/api/method/${method}?gstin=${encodeURIComponent(g)}`,
+        { headers: authHeaders() });
+      if (!res.ok) continue;
+      const info = (await res.json())?.message;
+      if (!info) continue;
+
+      // `all_addresses` is the full list; `permanent_address` is the
+      // registered one and is what a bill goes to.
+      const a = info.permanent_address ?? info.all_addresses?.[0] ?? null;
+      return {
+        legalName: info.legal_name ?? null,
+        tradeName: info.trade_name ?? null,
+        address: a
+          ? {
+              line1: a.address_line1 ?? null,
+              line2: a.address_line2 ?? null,
+              city: a.city ?? null,
+              state: a.state ?? null,
+              pincode: a.pincode != null ? String(a.pincode) : null,
+              country: a.country ?? 'India',
+            }
+          : null,
+      };
+    } catch {
+      // Try the next spelling, then give up quietly.
+    }
+  }
+  return null;
+}
+
 /** Search the customer master. Used by the picker so nothing is created by typing. */
 export async function searchCustomers(q: string): Promise<any[]> {
   const term = String(q ?? '').trim();

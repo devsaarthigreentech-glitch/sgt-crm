@@ -256,20 +256,60 @@ export async function createPoDoc(fields: PoFields): Promise<CreatedPo> {
   return { name: String(name), doc: doc ?? {}, shortTables: stillShort };
 }
 
-/** Patch an existing document. Partial — only what is passed is written. */
+/**
+ * Patch an existing document. Partial — only what is passed is written.
+ *
+ * Child tables are REPLACED WHOLESALE when supplied, not merged: sending
+ * three items where there were five leaves three. That is what editing a
+ * PO means, and it is the same behaviour updateQuotation() relies on.
+ *
+ * Returns what ERPNext stored, and — as on create — reports any child
+ * table that came back shorter than it went in, after one repair attempt.
+ * A PUT that silently drops the tax rows looks exactly like one that
+ * worked.
+ */
 export async function updatePoDoc(
   erpName: string, fields: Partial<PoFields>,
-): Promise<void> {
+): Promise<{ doc: Record<string, any>; shortTables: string[] }> {
   await assertDoctype();
-  const res = await erpFetch(path(PO_DOCTYPE, erpName), {
-    method: 'PUT',
-    headers: authHeaders(),
-    body: JSON.stringify(fields),
-  });
-  if (!res.ok) {
-    throw new Error(
-      `ERPNext could not update ${erpName}: ${frappeError(await res.text()).slice(0, 300)}`);
+  const put = async (body: unknown) => {
+    const res = await erpFetch(path(PO_DOCTYPE, erpName), {
+      method: 'PUT', headers: authHeaders(), body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(
+        `ERPNext could not update ${erpName}: ${frappeError(text).slice(0, 300)}`);
+    }
+    return JSON.parse(text)?.data ?? {};
+  };
+
+  let doc = await put(fields);
+
+  const expected: Array<['items' | 'taxes', number]> = [
+    ['items', fields.items?.length ?? 0],
+    ['taxes', fields.taxes?.length ?? 0],
+  ];
+  const short = expected.filter(([k, n]) => n > 0 && (doc?.[k]?.length ?? 0) < n);
+  if (short.length) {
+    const patch: Record<string, unknown> = {};
+    for (const [k] of short) patch[k] = fields[k];
+    try { doc = await put(patch); }
+    catch (e) {
+      return {
+        doc,
+        shortTables: short.map(([k]) =>
+          `${k} (${String((e as Error).message ?? e).replace(/\s+/g, ' ').slice(0, 180)})`),
+      };
+    }
   }
+
+  return {
+    doc,
+    shortTables: expected
+      .filter(([k, n]) => n > 0 && (doc?.[k]?.length ?? 0) < n)
+      .map(([k, n]) => `${k}: sent ${n}, stored ${doc?.[k]?.length ?? 0}`),
+  };
 }
 
 /**

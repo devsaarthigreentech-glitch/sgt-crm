@@ -886,6 +886,33 @@ export async function listPos(orgIds: number[] | null): Promise<PoRow[]> {
   return reconcilePos(rows as PoRow[]);
 }
 
+/**
+ * Every PO for one CUSTOMER, not just for one quotation.
+ *
+ * That is the wider net on purpose: a customer negotiates once and the
+ * order may have been raised against an earlier quotation for the same
+ * company. Someone amending "the PO for AKS Gen Services" is thinking
+ * about the customer, not about which offer it happened to come from.
+ *
+ * Cancelled ones are included and marked, rather than hidden — a
+ * cancelled PO is exactly the sort of thing someone needs to see before
+ * raising another.
+ */
+export async function listPosForCustomer(
+  erpCustomer: string, orgIds: number[] | null,
+): Promise<PoRow[]> {
+  const { rows } = orgIds
+    ? await query(
+        `select ${ROW_COLS} from quote_service.dealer_po_ref
+          where erp_customer = $1 and org_id = any($2::int[])
+          order by created_at desc limit 100`, [erpCustomer, orgIds])
+    : await query(
+        `select ${ROW_COLS} from quote_service.dealer_po_ref
+          where erp_customer = $1
+          order by created_at desc limit 100`, [erpCustomer]);
+  return reconcilePos(rows as PoRow[]);
+}
+
 /** Every PO raised against one quotation. Drives the button's state. */
 export async function posForQuotation(quotationErpName: string): Promise<PoRow[]> {
   const { rows } = await query(
@@ -908,6 +935,128 @@ export function isVisible(row: PoRow, orgIds: number[] | null): boolean {
 
 export async function poPdf(row: PoRow): Promise<ArrayBuffer> {
   return fetchPoPdf(row.erp_name);
+}
+
+// ---------------------------------------------------------------------
+// Edit an existing PO
+// ---------------------------------------------------------------------
+
+/**
+ * Reload a PO into the shape the line editor uses.
+ *
+ * The lines come from the PO's OWN snapshot where it has one, because
+ * that is what was agreed — falling back to the quotation's only for a
+ * PO raised before line snapshots existed, or one raised at the quoted
+ * price and never edited. Everything else (tax rules, the cap, the
+ * customer) still comes from the source quotation, which remains the
+ * document that knows how this customer is taxed.
+ */
+export async function loadPoForEdit(row: PoRow): Promise<ResolvedPo & { po: PoRow }> {
+  const resolved = await resolveFromQuotation(row.quotation_erp_name);
+
+  const { rows } = await query(
+    `select lines from quote_service.dealer_po_ref where id = $1`, [row.id]);
+  const snap: any[] = Array.isArray(rows[0]?.lines) ? rows[0].lines : [];
+
+  const editorLines: EditorLine[] = snap.length
+    ? snap.map(l => ({
+        kva: l.kva ?? null,
+        qty: Number(l.qty ?? 1) || 1,
+        listRate: l.listRate ?? null,
+        // On a re-edit the "was" figure is what THIS PO last agreed, not
+        // what the quotation offered — that is the number the customer
+        // is amending from.
+        quotedRate: l.agreedRate ?? l.quotedRate ?? null,
+        discountPct: l.discountPct ?? null,
+        discountAmount: l.discountAmount ?? null,
+        amcYears: l.amcYears ?? null,
+        spec: (l.spec as Record<string, string> | null) ?? null,
+        modelCode: l.modelCode ?? null,
+      }))
+    : resolved.editorLines;
+
+  return { ...resolved, editorLines, po: row };
+}
+
+/**
+ * Rewrite a PO that already exists.
+ *
+ * The whole body is recomputed and PUT, never patched — Frappe replaces a
+ * child table wholesale when one is supplied, which is what editing an
+ * order means. Patching rows would leave discarded ones behind.
+ *
+ * Unlike a quotation there is no draft/submitted boundary to respect: the
+ * PO doctype is not submittable, so it stays editable for its whole life.
+ * A CANCELLED one is refused all the same — the point of cancelling is
+ * that the document stops changing.
+ */
+export async function updatePo(
+  row: PoRow, actor: Actor, lines?: PoLineBody[],
+): Promise<{ row: PoRow; warnings: string[] }> {
+  if (row.status === 'cancelled') {
+    throw new PoLineError(
+      `${row.erp_name} has been cancelled, so it can no longer be edited. ` +
+      `Raise a new PO instead.`);
+  }
+
+  const resolved = await resolveFromQuotation(row.quotation_erp_name);
+  const negotiated = lines?.length ? await applyNegotiation(resolved, lines) : null;
+
+  const fields: Partial<PoFields> = {
+    ...(negotiated
+      ? {
+          items: negotiated.items,
+          taxes: negotiated.taxes,
+          total: negotiated.total,
+          net_total: negotiated.netTotal,
+          total_taxes_and_charges: negotiated.totalTaxes,
+          grand_total: negotiated.grandTotal,
+          rounded_total: negotiated.roundedTotal,
+          in_words: null,
+        }
+      : {
+          items: resolved.fields.items,
+          taxes: resolved.fields.taxes,
+          total: resolved.fields.total,
+          net_total: resolved.fields.net_total,
+          total_taxes_and_charges: resolved.fields.total_taxes_and_charges,
+          grand_total: resolved.fields.grand_total,
+          rounded_total: resolved.fields.rounded_total,
+          in_words: resolved.fields.in_words,
+        }),
+    // Re-stamped: an edit is an act by whoever made it, not a silent
+    // continuation of whoever raised the original.
+    custom_raised_by: actor.name,
+    custom_raised_via: actor.via === 'portal' ? 'Partner portal' : 'SGT CRM',
+  };
+
+  const updated = await updatePoDoc(row.erp_name, fields);
+
+  const warnings = [...resolved.warnings];
+  if (updated.shortTables.length) {
+    warnings.push(
+      `${row.erp_name} was updated but ERPNext did not store all of it — ` +
+      `${updated.shortTables.join('; ')}. Diagnose with: ` +
+      `npx tsx src/db/erp_po_probe.ts ${row.erp_name}`);
+  }
+
+  const { rows } = await query(
+    `update quote_service.dealer_po_ref
+        set net_total = $2, grand_total = $3, line_count = $4,
+            model_code = coalesce($5, model_code),
+            negotiated = $6, lines = $7, updated_at = now()
+      where id = $1
+      returning ${ROW_COLS}`,
+    [row.id,
+     negotiated ? negotiated.netTotal : resolved.summary.netTotal,
+     negotiated ? negotiated.grandTotal : resolved.summary.grandTotal,
+     negotiated ? negotiated.items.length : resolved.summary.lineCount,
+     negotiated ? negotiated.lineSnapshots[0]?.modelCode ?? null : null,
+     // An edit back to the quoted figures is still an edit somebody made.
+     !!negotiated || row.negotiated,
+     JSON.stringify(negotiated?.lineSnapshots ?? [])]);
+
+  return { row: rows[0] as PoRow, warnings };
 }
 
 // ---------------------------------------------------------------------

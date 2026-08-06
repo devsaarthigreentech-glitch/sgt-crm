@@ -25,6 +25,7 @@ import { query } from '../db/pool.js';
 import { requireAuth, requireRole } from '../auth/guard.js';
 import {
   resolveFromQuotation, createFromQuotation, listPos, posForQuotation,
+  listPosForCustomer, loadPoForEdit, updatePo,
   getPo, isVisible, poPdf, deletePo, cancelPo, PoLineError,
   type Actor, type PoRow, type PoLineBody,
 } from '../services/dealerPo.js';
@@ -202,6 +203,13 @@ export default function dealerPoRoutes(opts: PoRoutesOptions) {
             taxRules: r.taxRules,
             taxBlocker: r.taxBlocker,
             existing: await posForQuotation(quotationErpName),
+            // Every PO for this CUSTOMER, so the first step can offer
+            // "amend an existing one" — a customer negotiates once, and
+            // the order may sit against an earlier quotation for the
+            // same company.
+            forCustomer: r.summary.erpCustomer
+              ? await listPosForCustomer(r.summary.erpCustomer, me.orgIds)
+              : [],
           },
         });
       } catch (e) {
@@ -258,6 +266,55 @@ export default function dealerPoRoutes(opts: PoRoutesOptions) {
       const row = await loadScoped((req.params as { id: string }).id, me, reply);
       if (!row) return;
       return reply.send({ data: row });
+    });
+
+    // ---- Reload one into the editor ------------------------------------
+    // Its own lines where it has them, the quotation's where it does not.
+    app.get('/:id/edit', { preHandler: guard }, async (req, reply) => {
+      const me = await resolveCaller(req, reply, opts.surface);
+      if (!me) return;
+      const row = await loadScoped((req.params as { id: string }).id, me, reply);
+      if (!row) return;
+      try {
+        const r = await loadPoForEdit(row);
+        return reply.send({
+          data: {
+            po: r.po,
+            quotationErpName: r.quotationErpName,
+            summary: r.summary,
+            warnings: r.warnings,
+            lines: r.editorLines,
+            discount: r.discount,
+            taxRules: r.taxRules,
+            taxBlocker: r.taxBlocker,
+          },
+        });
+      } catch (e) {
+        return fail(reply, 502, 'resolve_failed', e);
+      }
+    });
+
+    // ---- Rewrite one ----------------------------------------------------
+    app.put('/:id', { preHandler: guard }, async (req, reply) => {
+      const me = await resolveCaller(req, reply, opts.surface);
+      if (!me) return;
+      const row = await loadScoped((req.params as { id: string }).id, me, reply);
+      if (!row) return;
+      const body = (req.body ?? {}) as { lines?: PoLineBody[] };
+      const lines = Array.isArray(body.lines) ? body.lines : undefined;
+      try {
+        const r = await updatePo(row, me, lines);
+        return reply.send({ data: { ...r.row, warnings: r.warnings } });
+      } catch (e) {
+        if (e instanceof PoLineError) {
+          return reply.code(422).send({
+            error: { code: 'line_rejected', message: e.message },
+            lineIndex: e.lineIndex,
+          });
+        }
+        req.log.error({ err: e, erpName: row.erp_name }, 'dealer PO update failed');
+        return fail(reply, 502, 'update_failed', e);
+      }
     });
 
     // ---- The PDF ---------------------------------------------------------
