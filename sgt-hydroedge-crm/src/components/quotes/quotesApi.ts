@@ -61,6 +61,20 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     },
   })
   if (!res.ok) {
+    // See agreementsApi for the full reasoning: an unparseable 413 comes
+    // from the reverse proxy in front of the app, not from the app, and
+    // used to surface as an unactionable "HTTP 413". Quotation
+    // attachments upload the same way and fail the same way.
+    if (res.status === 413) {
+      const raw = await res.text().catch(() => '')
+      const parsed = (() => { try { return JSON.parse(raw) } catch { return null } })()
+      throw new ApiError(
+        parsed?.message
+          ?? 'The upload was refused by the web server before it reached the application, '
+             + 'because the request was larger than the server accepts. Send it to SGT to '
+             + 'raise the upload limit (nginx client_max_body_size).',
+        413, 'payload_too_large', null)
+    }
     const body = await res.json().catch(() => ({} as any))
     const fields = body?.fields && typeof body.fields === 'object' ? body.fields : null
     throw new ApiError(

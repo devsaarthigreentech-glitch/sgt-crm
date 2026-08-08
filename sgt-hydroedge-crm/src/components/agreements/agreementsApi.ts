@@ -29,6 +29,25 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     },
   })
   if (!res.ok) {
+    // 413 with a body we cannot parse did not come from us.
+    //
+    // This route's own limit is 15 MB and the screen checks the file
+    // against it before uploading, so a rejection here means something
+    // in front of the application refused the request first — in this
+    // deployment, nginx, whose client_max_body_size defaults to 1 MB.
+    // Fastify's own 413 is JSON and carries a message; nginx's is an
+    // HTML page, which is why this used to surface as a bare "HTTP 413"
+    // with nothing to act on.
+    if (res.status === 413) {
+      const raw = await res.text().catch(() => '')
+      const parsed = (() => { try { return JSON.parse(raw) } catch { return null } })()
+      if (parsed?.message) throw new Error(parsed.message)
+      throw new Error(
+        'The upload was refused by the web server before it reached the application, '
+        + 'because the request was larger than the server accepts. The file is within '
+        + "the app's own limit, so this is a server setting — send it to SGT to raise "
+        + 'the upload limit (nginx client_max_body_size).')
+    }
     const body = await res.json().catch(() => ({} as any))
     throw new Error(body?.error?.message ?? body?.message ?? `HTTP ${res.status}`)
   }

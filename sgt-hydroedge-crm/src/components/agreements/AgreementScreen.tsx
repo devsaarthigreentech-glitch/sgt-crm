@@ -50,6 +50,19 @@ const STATUS: Record<Agreement['status'], { label: string; bg: string; fg: strin
   cancelled: { label: 'Cancelled', bg: '#F3DAD5', fg: DANGER },
 }
 
+// A signed agreement is the only state in this list that is FINISHED —
+// everything else is a step on the way there. The card is tinted to say
+// so at a glance, scanning down a long list, without competing with the
+// status chip that already names it.
+//
+// Both values are pulled off the chip's own palette rather than picked
+// fresh, so the accent, the chip and the date can never drift apart.
+const SIGNED_FG = STATUS.signed.fg
+const SIGNED_EDGE = '#CFE3D3'
+// Barely a colour. It reads as "not plain white" next to its neighbours
+// and as nothing at all on its own, which is the intent.
+const SIGNED_WASH = '#FAFCFA'
+
 const fmtDate = (v: string | null) =>
   v ? new Date(v).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'
 
@@ -492,10 +505,21 @@ export default function AgreementScreen({ api }: { api: AgreementApi }) {
               )}
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {visibleAgreements.map(a => (
+                {visibleAgreements.map(a => {
+                  // Keyed off status, not signed_at: a cancelled agreement can
+                  // still carry a signed copy, and that one is not finished.
+                  const isSigned = a.status === 'signed'
+                  return (
                   <div key={a.id} style={{
-                    background: CARD, border: `1px solid ${LINE}`, borderRadius: 10,
-                    padding: '13px 16px',
+                    background: isSigned ? SIGNED_WASH : CARD,
+                    border: `1px solid ${isSigned ? SIGNED_EDGE : LINE}`,
+                    // 3px instead of 1px, with the left padding wound back by
+                    // the same 2px so the text stays on the same vertical line
+                    // as every other card. An accent that shunts the content
+                    // sideways is what makes a list look broken.
+                    borderLeft: `3px solid ${isSigned ? SIGNED_FG : LINE}`,
+                    borderRadius: 10,
+                    padding: isSigned ? '13px 16px 13px 14px' : '13px 16px',
                   }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                       <div style={{ flex: 1, minWidth: 200 }}>
@@ -517,7 +541,15 @@ export default function AgreementScreen({ api }: { api: AgreementApi }) {
                     }}>
                       <span><Clock size={11} style={{ verticalAlign: -1 }} /> raised {fmtDate(a.created_at)}{a.raised_by_name ? ` by ${a.raised_by_name}` : ''}</span>
                       {a.sent_at && <span>sent {fmtDate(a.sent_at)} to {a.sent_to.join(', ')}</span>}
-                      {a.signed_at && <span>signed {fmtDate(a.signed_at)}</span>}
+                      {a.signed_at && (
+                        <span style={{
+                          color: isSigned ? SIGNED_FG : FAINT,
+                          fontWeight: isSigned ? 600 : 400,
+                        }}>
+                          {isSigned && <Check size={11} style={{ verticalAlign: -1 }} />}
+                          {isSigned ? ' ' : ''}signed {fmtDate(a.signed_at)}
+                        </span>
+                      )}
                     </div>
 
                     <div style={{ display: 'flex', gap: 8, marginTop: 11, flexWrap: 'wrap' }}>
@@ -562,7 +594,8 @@ export default function AgreementScreen({ api }: { api: AgreementApi }) {
                       ) : null}
                     </div>
                   </div>
-                ))}
+                  )
+                })}
               </div>
             </>
           )}
