@@ -11,19 +11,21 @@
 // that margin to nothing, and so the deeper the discount the higher the
 // approval needed. Working from your own numbers:
 //
-//   dealer      12%   — raised from 7% by the owner, 2026-08-05. Leaves
-//                       ~32% margin on the 40.48% rate card.
-//   distributor 12%   — was set above the dealer on the reasoning that
-//                       the tier carrying the relationship gets more
-//                       room. The dealer raise has levelled the two, so
-//                       that distinction no longer holds. Left at 12
-//                       rather than moved: raising the distributor is a
-//                       separate commercial decision, and the caps are
-//                       still enforced separately, so lifting it later
-//                       is a one-line change here.
-//   SGT staff   20%   — beyond that it stops being a discount and
-//                       becomes a pricing decision, which belongs to a
-//                       director, not a quotation screen.
+//   dealer      25%   — the owner's figure. 7% until 2026-08-05, then 12%,
+//                       then 25% on 2026-08-06. Leaves ~15 points of the
+//                       40.48% the rate card gives them.
+//   distributor 12%   — NOT raised with the dealer, because only the
+//                       dealer figure was given. Two consequences the
+//                       owner should see rather than discover: a dealer
+//                       may now discount MORE THAN TWICE what the
+//                       distributor above them may, and more than SGT's
+//                       own staff. Both are one line below.
+//   SGT staff   20%   — now BELOW the dealer cap. It used to be the
+//                       ceiling everyone else sat under.
+//
+// None of this is enforced as a hierarchy — the three caps are
+// independent numbers, so an inversion produces no error anywhere. It is
+// only visible by reading them together, which is why it is written down.
 //
 // These are defaults, not laws — override per deployment with
 // QUOTE_MAX_DISCOUNT_DEALER / _DISTRIBUTOR / _STAFF.
@@ -54,8 +56,8 @@
 //
 // ── Who actually pays for a discount ────────────────────────────────
 // Worth being explicit, because it is easy to get wrong by accident.
-// ERPNext computes commission on the NET total, so a 12% discount reduces
-// the customer's price by 12% AND the partner's commission by 12%. The cost
+// ERPNext computes commission on the NET total, so a 25% discount reduces
+// the customer's price by 25% AND the partner's commission by 25%. The cost
 // is therefore SHARED between SGT and the partner in proportion to the
 // split — SGT does not absorb it alone, and neither does the partner.
 //
@@ -79,7 +81,7 @@ const num = (v: string | undefined, fallback: number) => {
 export type DiscountStage = 'quote' | 'po';
 
 export const DISCOUNT_CAPS: Record<DiscountActor, number> = {
-  dealer: num(process.env.QUOTE_MAX_DISCOUNT_DEALER, 12),
+  dealer: num(process.env.QUOTE_MAX_DISCOUNT_DEALER, 25),
   distributor: num(process.env.QUOTE_MAX_DISCOUNT_DISTRIBUTOR, 12),
   staff: num(process.env.QUOTE_MAX_DISCOUNT_STAFF, 20),
 };
@@ -158,7 +160,7 @@ export function checkDiscount(
 // Both are accepted, but the CAP is always expressed as a percentage,
 // because that is what protects the margin. So an amount is converted to
 // its effective percentage of the machine line and checked the same way —
-// otherwise "₹2,00,000 off" would sail past a 12% limit.
+// otherwise "₹2,00,000 off" would sail past a 25% limit.
 
 export interface AmountCheck extends DiscountCheck {
   /** The rupee figure to put on the line. */
