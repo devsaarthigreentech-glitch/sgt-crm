@@ -21,6 +21,34 @@ function getToken(): string | null {
   } catch { return null }
 }
 
+/**
+ * An API failure with the server's own classification kept intact.
+ *
+ * The plain `new Error(message)` this replaces threw away `code` and
+ * `fields`, so every caller had exactly one thing to do with a failure —
+ * put the message in the banner at the top of the screen. That is why
+ * per-field validation never appeared next to its field despite the
+ * server sending it, and it is why `if (e?.fields)` branches in the
+ * screens above have never once been true.
+ *
+ * `message` is unchanged, so anything that only reads that keeps working.
+ */
+export class ApiError extends Error {
+  readonly status: number
+  /** The server's error.code, e.g. 'customer_claimed'. */
+  readonly code: string | null
+  /** Per-field messages, keyed by field name. Empty when none were sent. */
+  readonly fields: Record<string, string> | null
+
+  constructor(message: string, status: number, code: string | null, fields: Record<string, string> | null) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.code = code
+    this.fields = fields
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const token = getToken()
   const hasBody = options?.body !== undefined && options?.body !== null
@@ -34,7 +62,13 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => ({} as any))
-    throw new Error(body?.error?.message ?? body?.message ?? `HTTP ${res.status}`)
+    const fields = body?.fields && typeof body.fields === 'object' ? body.fields : null
+    throw new ApiError(
+      body?.error?.message ?? body?.message ?? `HTTP ${res.status}`,
+      res.status,
+      body?.error?.code ?? null,
+      fields && Object.keys(fields).length ? fields : null,
+    )
   }
   return res.json()
 }

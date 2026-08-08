@@ -269,6 +269,11 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
     line1: '', city: '', state: '', pincode: '',
   })
   const [custErrors, setCustErrors] = useState<Record<string, string>>({})
+  // Kept out of `banner` on purpose. This one is not a validation failure
+  // — nothing they can retype fixes it — so it belongs at the button they
+  // just pressed, where they are looking, rather than at the top of a
+  // form they have scrolled past.
+  const [custBlocked, setCustBlocked] = useState<string | null>(null)
   const [taxMode, setTaxMode] = useState<'auto' | 'in_state' | 'out_state'>('auto')
   const [pdfFor, setPdfFor] = useState<{ name: string; url: string } | null>(null)
   const [sendFor, setSendFor] = useState<{
@@ -357,7 +362,7 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
   }, [custQuery, picked])
 
   const addCustomer = async () => {
-    setCustErrors({}); setCustNote(null)
+    setCustErrors({}); setCustNote(null); setCustBlocked(null)
     try {
       const r = await api.createCustomer({
         name: newCust.name.trim(),
@@ -379,7 +384,11 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
       setBanner(null)
       if (r.note) setCustNote(r.note)
     } catch (e: any) {
-      if (e?.fields) setCustErrors(e.fields)
+      // Three different failures, three different places. The customer
+      // already belonging to another dealer is not something the top-of
+      // -screen banner should swallow — it is the answer to the button.
+      if (e?.code === 'customer_claimed') setCustBlocked(e.message)
+      else if (e?.fields) setCustErrors(e.fields)
       else setBanner(e.message)
     }
   }
@@ -1106,16 +1115,35 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
                 and printed on the quotation — leave it blank and the address
                 block comes out empty. Without a GSTIN, set the GST below by hand.
               </div>
+              {custBlocked && (
+                <div role="alert" style={{
+                  display: 'flex', gap: 9, alignItems: 'flex-start',
+                  padding: '10px 11px', marginBottom: 10, borderRadius: 6,
+                  border: `1px solid ${DANGER}`, backgroundColor: '#FDF3F1',
+                }}>
+                  <span aria-hidden style={{ fontSize: 13, lineHeight: 1.4, color: DANGER }}>⊘</span>
+                  <div>
+                    <div style={{ fontSize: 12.5, fontWeight: 600, color: DANGER, lineHeight: 1.45 }}>
+                      {custBlocked}
+                    </div>
+                    <div style={{ fontSize: 11, color: MUTED, marginTop: 3, lineHeight: 1.5 }}>
+                      Nothing was saved. The customer stays with the dealer who registered them.
+                    </div>
+                  </div>
+                </div>
+              )}
               <div style={{ display: 'flex', gap: 8 }}>
                 <button type="button" onClick={addCustomer} style={{
                   padding: '8px 14px', fontSize: 12.5, fontWeight: 600, fontFamily: 'inherit',
                   border: 'none', borderRadius: 6, cursor: 'pointer', backgroundColor: INK, color: '#fff',
                 }}>Add customer</button>
-                <button type="button" onClick={() => { setAddingCust(false); setCustErrors({}) }} style={{
-                  padding: '8px 14px', fontSize: 12.5, fontFamily: 'inherit',
-                  border: `1px solid ${LINE}`, borderRadius: 6, cursor: 'pointer',
-                  background: '#fff', color: MUTED,
-                }}>Cancel</button>
+                <button type="button"
+                  onClick={() => { setAddingCust(false); setCustErrors({}); setCustBlocked(null) }}
+                  style={{
+                    padding: '8px 14px', fontSize: 12.5, fontFamily: 'inherit',
+                    border: `1px solid ${LINE}`, borderRadius: 6, cursor: 'pointer',
+                    background: '#fff', color: MUTED,
+                  }}>Cancel</button>
               </div>
             </div>
           ) : (
@@ -1144,7 +1172,10 @@ export default function QuoteScreen({ api, showPartnerPicker = false }: {
               {custQuery.trim().length >= 2 && !custSearching && custHits.length === 0 && (
                 <div style={{ fontSize: 12, color: MUTED, marginTop: 7 }}>No match.</div>
               )}
-              <button type="button" onClick={() => { setAddingCust(true); setNewCust(c => ({ ...c, name: custQuery.trim() })) }}
+              <button type="button" onClick={() => {
+                setAddingCust(true); setCustBlocked(null); setCustErrors({})
+                setNewCust(c => ({ ...c, name: custQuery.trim() }))
+              }}
                 style={{
                   marginTop: 9, display: 'flex', alignItems: 'center', gap: 5,
                   background: 'none', border: 'none', cursor: 'pointer', padding: 0,

@@ -46,9 +46,15 @@
 // reprinted next year must show what the dealer ordered, at the prices
 // they ordered it at, under the partner details current at the time.
 //
-// Re-running is safe. An existing doctype gains any fields missing from
-// it and keeps the rest; the print format is always REPLACED, so this
-// file is the one place to edit the layout and push it out.
+// Re-running is safe, and safe in BOTH directions. An existing doctype
+// gains any fields missing from it and keeps the rest, and an existing
+// print format is LEFT ALONE — the layout on this site is maintained in
+// ERPNext's Print Format Builder, not in this file. PRINT_HTML below is
+// only a seed for a site that has no format yet. Pass
+// REPLACE_PRINT_FORMAT=1 to push it over an existing one.
+//
+// That matters because adding a field to the doctype is a thing that
+// keeps needing to happen, and it must never cost somebody their layout.
 // =====================================================================
 
 import 'dotenv/config';
@@ -59,6 +65,23 @@ const KEY = process.env.ERPNEXT_API_KEY;
 const SECRET = process.env.ERPNEXT_API_SECRET;
 const CONFIRMED = process.env.CONFIRM_CREATE === '1';
 const WANT_CLONE = process.env.CLONE_FROM_QUOTATION === '1';
+
+/**
+ * Overwrite a print format that already exists.
+ *
+ * OFF by default, and that default changed on 2026-08-06 after the owner
+ * built the PO layout in ERPNext's Print Format Builder instead. A
+ * builder format keeps its layout in `format_data` with
+ * `custom_format = 0`; this script writes `html` with
+ * `custom_format = 1`. Replacing one with the other does not merge, it
+ * REPLACES — and it would happen on a run whose only purpose was adding
+ * a field to the doctype, which is a thing that keeps needing to happen.
+ *
+ * So the rule is now: CREATE a print format when none exists, never
+ * touch one that does. REPLACE_PRINT_FORMAT=1 restores the old
+ * behaviour for anyone maintaining the layout in this file.
+ */
+const REPLACE_FORMAT = process.env.REPLACE_PRINT_FORMAT === '1';
 
 // Frappe requires a real Module Def to hang a custom doctype off. Selling
 // is where this belongs and is guaranteed present in ERPNext.
@@ -926,9 +949,21 @@ async function main() {
     console.log('    Use CLONE_FROM_QUOTATION=1 to copy the live quotation HTML verbatim');
     console.log('    instead — it will then say "Quotation" wherever the original does.');
   }
-  console.log(existingFmt
-    ? `  It EXISTS — this run REPLACES its HTML. Hand-edits in ERPNext will be lost.`
-    : '  It would be CREATED.');
+  if (!existingFmt) {
+    console.log('  It would be CREATED.');
+  } else if (REPLACE_FORMAT) {
+    console.log('  It EXISTS and REPLACE_PRINT_FORMAT=1 — this run REPLACES its layout.');
+    if (!existingFmt.custom_format) {
+      console.log('    ⚠ IT IS A PRINT FORMAT BUILDER FORMAT (custom_format = 0). Replacing');
+      console.log('      it switches it to raw HTML from this file and its builder layout');
+      console.log('      STOPS BEING USED. That is almost certainly not what you want.');
+    }
+  } else {
+    console.log('  It EXISTS — LEFT ALONE. The layout is maintained in ERPNext, not here.');
+    console.log(`    custom_format=${existingFmt.custom_format ?? 0}` +
+                `${existingFmt.custom_format ? ' (raw HTML)' : ' (Print Format Builder)'}`);
+    console.log('    Pass REPLACE_PRINT_FORMAT=1 to overwrite it from this file instead.');
+  }
 
   // ---- REFUSE to hijack another doctype's print format ------------------
   // The write below sets doc_type AND html. Pointed at a format belonging
@@ -1061,11 +1096,18 @@ async function main() {
     default_print_language: 'en',
     html,
   };
-  const fr = existingFmt
-    ? await call('PUT', `/api/resource/${encodeURIComponent('Print Format')}/${encodeURIComponent(FORMAT)}`, fmtBody)
-    : await call('POST', `/api/resource/${encodeURIComponent('Print Format')}`, { ...fmtBody, __newname: FORMAT });
-  if (!fr.ok) { console.error(`    ✗ could not write print format: ${why(fr)}`); process.exitCode = 1; return; }
-  console.log(`    ✓ ${existingFmt ? 'replaced' : 'created'} print format "${FORMAT}" from ${source}`);
+  if (existingFmt && !REPLACE_FORMAT) {
+    // The layout is maintained in ERPNext. Touching it here would swap a
+    // Print Format Builder layout for raw HTML on a run whose only job
+    // was adding a field to the doctype.
+    console.log(`    · print format "${FORMAT}" left alone (maintained in ERPNext)`);
+  } else {
+    const fr = existingFmt
+      ? await call('PUT', `/api/resource/${encodeURIComponent('Print Format')}/${encodeURIComponent(FORMAT)}`, fmtBody)
+      : await call('POST', `/api/resource/${encodeURIComponent('Print Format')}`, { ...fmtBody, __newname: FORMAT });
+    if (!fr.ok) { console.error(`    ✗ could not write print format: ${why(fr)}`); process.exitCode = 1; return; }
+    console.log(`    ✓ ${existingFmt ? 'replaced' : 'created'} print format "${FORMAT}" from ${source}`);
+  }
 
   // Pin it as the doctype default, so download_pdf renders this one even
   // if someone later adds a second. AFTER the format exists — it is a

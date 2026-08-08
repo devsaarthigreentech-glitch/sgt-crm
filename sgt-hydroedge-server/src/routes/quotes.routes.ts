@@ -30,6 +30,7 @@ import {
 } from '../services/quoteMail.js'
 import { cleanSpec, SPEC_FIELDS } from '../domain/quoteSpec.js'
 import { termsToText, textToTerms } from '../domain/quoteTerms.js'
+import { mayApproach, claimCustomer, claimBlockedPayload } from '../domain/customerClaim.js'
 import {
   createQuotation, updateQuotation, quotationIsDraft,
   itemPrice, fetchQuotation, listTermsTemplates, fetchTerms,
@@ -228,6 +229,34 @@ export async function performQuotation(
     const { rows } = await query(
       `select org_id from quote_service.quotation_ref where erp_name = $1`, [opts.updating])
     orgId = rows[0]?.org_id ?? null
+  }
+
+  // The last line of defence on customer ownership.
+  //
+  // The portal filters its search and refuses at "Add customer", but
+  // both of those are screens. This is the write, and it is the only
+  // check a hand-made request cannot go around — customerErpName
+  // arrives in the body, so without this any partner could quote any
+  // customer in ERPNext by posting their name directly.
+  //
+  // Portal only. SGT staff quoting from the CRM are never blocked: they
+  // are the ones who arbitrate these disputes, and a claim is a rule
+  // between partners, not a rule about SGT.
+  if (opts.via === 'portal' && orgId) {
+    if (!await mayApproach(customerErpName, orgId)) {
+      return {
+        ok: false as const, code: 409,
+        payload: claimBlockedPayload(),
+      }
+    }
+    // Quoting an unclaimed customer claims them. Otherwise a partner
+    // who picked one out of search before this existed would keep
+    // re-quoting an account no row ever attaches to them.
+    await claimCustomer({
+      erpCustomer: customerErpName, orgId,
+      claimedBy: who.id, claimedByName: who.name,
+      via: 'portal',
+    })
   }
 
   // A partner code goes on the quotation as sales_partner so ERPNext

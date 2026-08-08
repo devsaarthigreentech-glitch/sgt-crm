@@ -48,6 +48,9 @@ import { termsToText } from '../domain/quoteTerms.js'
 import { decodeLogo, LOGO_MAX_BYTES } from '../domain/partnerLogo.js'
 import { readLogo, saveLogo, clearLogo } from '../services/partnerLogoStore.js'
 import {
+  mayApproach, claimCustomer, hiddenFrom, claimBlockedPayload,
+} from '../domain/customerClaim.js'
+import {
   performQuotation, createCustomerChecked, updateCustomerChecked, customerDetail,
   loadForEdit, reconcileQuotations,
   buildRecipients, performSend, performAttach, ATTACH_MAX_BYTES,
@@ -227,11 +230,23 @@ export default async function portalRoutes(app: FastifyInstance) {
     return reply.send({ data: SPEC_FIELDS })
   })
 
+  // Search is filtered, not just the Add form.
+  //
+  // Blocking creation alone would be theatre: every customer in ERPNext
+  // is reachable from this box, so a partner who is refused at "Add"
+  // could simply search for the same company and quote them. Another
+  // partner's customers do not appear here at all — hidden rather than
+  // shown-and-disabled, because a greyed-out row still tells a dealer
+  // exactly which companies their competitors are working.
   app.get('/quotes/customers', { preHandler: requireAuth }, async (req, reply) => {
     const me = await resolveCaller(req, reply)
     if (!me) return
     const { q } = (req.query ?? {}) as { q?: string }
-    return reply.send({ data: await searchCustomers(String(q ?? '')) })
+    const [hits, hidden] = await Promise.all([
+      searchCustomers(String(q ?? '')),
+      hiddenFrom(me.orgId),
+    ])
+    return reply.send({ data: hits.filter((c: any) => !hidden.has(c?.name)) })
   })
 
   // Same GSTIN lookup the CRM gets. A partner creating a customer hits
@@ -256,11 +271,42 @@ export default async function portalRoutes(app: FastifyInstance) {
     })
   })
 
+  // Adding a customer is also how a partner CLAIMS one.
+  //
+  // createCustomerChecked() is idempotent by design — it matches on GSTIN
+  // then on name and hands back the existing customer rather than making
+  // a duplicate. That is right for ERPNext and wrong for us: it is the
+  // exact moment two dealers end up on the same account without either
+  // being told. So the answer depends on what it did:
+  //
+  //   created  -> brand new customer, claim it for the caller
+  //   matched  -> already existed; whoever holds it decides. Free or
+  //               inside the caller's subtree, they take it. Held
+  //               elsewhere, they are refused with 409.
+  //
+  // Nothing is written to ERPNext on the matched path (it returns before
+  // touching the address), so refusing here leaves no debris behind.
   app.post('/quotes/customers', { preHandler: requireAuth }, async (req, reply) => {
     const me = await resolveCaller(req, reply)
     if (!me) return
-    const result = await createCustomerChecked((req.body ?? {}) as Record<string, string>)
+    const body = (req.body ?? {}) as Record<string, string>
+    const result = await createCustomerChecked(body)
     if (!result.ok) return reply.code(result.code).send(result.payload)
+
+    const data = result.payload.data as { erpName: string; matchedOn: string }
+    if (data.matchedOn !== 'created' && !await mayApproach(data.erpName, me.orgId)) {
+      return reply.code(409).send(claimBlockedPayload())
+    }
+
+    await claimCustomer({
+      erpCustomer: data.erpName,
+      orgId: me.orgId,
+      customerName: String(body.name ?? '').trim() || null,
+      customerGstin: String(body.gstin ?? '').trim().toUpperCase() || null,
+      claimedBy: me.userId,
+      claimedByName: me.legalName,
+      via: 'portal',
+    })
     return reply.code(201).send(result.payload)
   })
 
@@ -268,16 +314,29 @@ export default async function portalRoutes(app: FastifyInstance) {
     const me = await resolveCaller(req, reply)
     if (!me) return
     const { erpName } = req.params as { erpName: string }
+    // 404, not 409: this route answers "show me this customer", and a
+    // partner who cannot approach them should not be able to confirm
+    // they exist by guessing names against it.
+    if (!await mayApproach(erpName, me.orgId)) {
+      return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } })
+    }
     return reply.send({ data: await customerDetail(erpName) })
   })
 
-  // A partner may correct a customer they can already quote for. Not
-  // scoped further on purpose: ERPNext's customer master is shared, and
-  // the same partner could equally have created this one a minute ago.
+  // A partner may correct a customer they can approach — which now means
+  // one that is theirs, inside their subtree, or unclaimed.
+  //
+  // This used to be unscoped, on the reasoning that ERPNext's customer
+  // master is shared anyway. That reasoning does not survive the claim:
+  // editing a GSTIN or an address on another dealer's customer changes
+  // the tax position of THEIR next quotation, from outside their org.
   app.patch('/quotes/customers/:erpName', { preHandler: requireAuth }, async (req, reply) => {
     const me = await resolveCaller(req, reply)
     if (!me) return
     const { erpName } = req.params as { erpName: string }
+    if (!await mayApproach(erpName, me.orgId)) {
+      return reply.code(409).send(claimBlockedPayload())
+    }
     try {
       const r = await updateCustomerChecked(erpName, (req.body ?? {}) as Record<string, unknown>)
       if (!r.ok) return reply.code(r.code).send(r.payload)

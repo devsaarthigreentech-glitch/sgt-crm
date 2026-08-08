@@ -56,11 +56,22 @@ async function getDoc(doctype: string, name: string) {
   return r.ok ? r.json?.data ?? null : null;
 }
 
-/** What a format's HTML actually says. Names lie; this does not. */
-function fingerprint(html: string): string {
+/**
+ * What a format actually says. Names lie; this does not.
+ *
+ * Reads `html` AND `format_data`. Only a custom_format holds its layout
+ * in `html`; a Print Format Builder one keeps it in `format_data` as
+ * JSON, and looking at `html` alone reports "(no known markers)" for
+ * every builder format on the site — which is a false negative, and a
+ * misleading one, because it makes the real quotation format look as
+ * empty as the stray that is shadowing it.
+ */
+function fingerprint(doc: Record<string, any> | null): string {
+  const src = `${String(doc?.html ?? '')}\n${String(doc?.format_data ?? '')}`;
+  if (!src.trim()) return '(empty — nothing in html or format_data)';
   const marks: string[] = [];
   const has = (needle: string, label: string) => {
-    if (html.toLowerCase().includes(needle.toLowerCase())) marks.push(label);
+    if (src.toLowerCase().includes(needle.toLowerCase())) marks.push(label);
   };
   has('Techno-Commercial Offer', 'title:Techno-Commercial Offer');
   has('Purchase Order', 'says:Purchase Order');
@@ -132,7 +143,7 @@ async function main() {
     } else {
       console.log(`     doc_type=${fmt.doc_type}  disabled=${fmt.disabled ?? 0}  ` +
                   `custom=${fmt.custom_format ?? 0}  modified=${fmt.modified}`);
-      console.log(`     contains: ${fingerprint(String(fmt.html ?? ''))}`);
+      console.log(`     contains: ${fingerprint(fmt)}`);
       if (String(fmt.doc_type) !== 'Quotation') {
         console.log(`     ✗ IT BELONGS TO "${fmt.doc_type}", NOT Quotation.`);
         console.log('       Something rebound it. That is the bug: quotations are being');
@@ -154,9 +165,20 @@ async function main() {
     else {
       console.log(`     doc_type=${fmt.doc_type}  disabled=${fmt.disabled ?? 0}  ` +
                   `modified=${fmt.modified}`);
-      console.log(`     contains: ${fingerprint(String(fmt.html ?? ''))}`);
+      console.log(`     custom_format=${fmt.custom_format ?? 0}`);
+      console.log(`     contains: ${fingerprint(fmt)}`);
       if (String(fmt.doc_type) !== PO_DOCTYPE) {
         console.log(`     ✗ IT BELONGS TO "${fmt.doc_type}", NOT ${PO_DOCTYPE}.`);
+      }
+      // custom_format is the switch that tells Frappe to render `html`.
+      // With it off, a format can hold a perfectly good layout in `html`
+      // and print none of it — Frappe uses the format builder instead.
+      if (!fmt.custom_format && String(fmt.html ?? '').trim()) {
+        console.log('     ✗ custom_format is 0, so ERPNext will IGNORE its html and');
+        console.log('       render through the format builder instead. The layout in');
+        console.log('       html is there and unused.');
+        console.log('       Fix: CONFIRM_CREATE=1 npx tsx src/db/erp_create_dealer_po_doctype.ts');
+        console.log('       (that write sets custom_format = 1 and pushes the current HTML)');
       }
     }
   }
@@ -170,7 +192,7 @@ async function main() {
       console.log(`     · ${f.name}`);
       console.log(`         disabled=${f.disabled ?? 0} custom=${f.custom_format ?? 0} ` +
                   `type=${f.print_format_type ?? '—'} modified=${f.modified}`);
-      console.log(`         contains: ${fingerprint(String(full?.html ?? ''))}`);
+      console.log(`         contains: ${fingerprint(full)}`);
     }
   }
 
