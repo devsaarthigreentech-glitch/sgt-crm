@@ -14,14 +14,17 @@
 //   dealer      25%   — the owner's figure. 7% until 2026-08-05, then 12%,
 //                       then 25% on 2026-08-06. Leaves ~15 points of the
 //                       40.48% the rate card gives them.
-//   distributor 12%   — NOT raised with the dealer, because only the
-//                       dealer figure was given. Two consequences the
-//                       owner should see rather than discover: a dealer
-//                       may now discount MORE THAN TWICE what the
-//                       distributor above them may, and more than SGT's
-//                       own staff. Both are one line below.
-//   SGT staff   20%   — now BELOW the dealer cap. It used to be the
-//                       ceiling everyone else sat under.
+//   distributor 25%   — raised to match the dealer on 2026-08-09, on the
+//                       owner's instruction. This closes the inversion
+//                       that stood for three days, where a dealer could
+//                       discount more than twice what the distributor
+//                       above them could.
+//   SGT staff   20%   — STILL BELOW BOTH PARTNER CAPS. It used to be the
+//                       ceiling everyone else sat under, and it is now
+//                       the floor: SGT's own people are the most
+//                       restricted party on their own document. Left at
+//                       20 because only the distributor figure was given.
+//                       One line below if that is not intended.
 //
 // None of this is enforced as a hierarchy — the three caps are
 // independent numbers, so an inversion produces no error anywhere. It is
@@ -36,7 +39,7 @@
 // quotation goes out, and a cap that made sense for an opening offer
 // would block the deal it was meant to protect.
 //
-//   quote  dealer 12 · distributor 12 · staff 20
+//   quote  dealer 25 · distributor 25 · staff 20
 //   po     dealer 35 · distributor 35 · staff 40
 //
 // 35% is the owner's figure for a dealer raising a PO. Worth knowing what
@@ -82,7 +85,7 @@ export type DiscountStage = 'quote' | 'po';
 
 export const DISCOUNT_CAPS: Record<DiscountActor, number> = {
   dealer: num(process.env.QUOTE_MAX_DISCOUNT_DEALER, 25),
-  distributor: num(process.env.QUOTE_MAX_DISCOUNT_DISTRIBUTOR, 12),
+  distributor: num(process.env.QUOTE_MAX_DISCOUNT_DISTRIBUTOR, 25),
   staff: num(process.env.QUOTE_MAX_DISCOUNT_STAFF, 20),
 };
 
