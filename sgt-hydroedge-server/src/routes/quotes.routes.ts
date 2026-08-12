@@ -286,6 +286,8 @@ export async function performQuotation(
     const { rows } = await query(
       `select id, code, org_type, legal_name, trade_name, gstin,
               address_line1, address_line2, city, state, pincode,
+              branch_address_line1, branch_address_line2, branch_city,
+              branch_state, branch_pincode, branch_phone, branch_email,
               contact_name, contact_mobile, contact_email,
               bank_account_name, bank_account_number, bank_ifsc,
               bank_name, bank_branch,

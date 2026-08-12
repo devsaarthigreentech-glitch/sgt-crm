@@ -175,11 +175,25 @@ export default function OrgDetailScreen({ orgId, onBack }: { orgId: number; onBa
           <F label="Email" value={form.contact_email} onChange={v => set('contact_email', v)} error={errors.contact_email} />
         </Card>
 
-        <Card title="Address">
+        <Card title="Registered address">
           <F label="Address" value={form.address_line1} onChange={v => set('address_line1', v)} />
           <F label="City" value={form.city} onChange={v => set('city', v)} />
           <F label="State" value={form.state} onChange={v => set('state', v)} />
           <F label="PIN code" value={form.pincode} onChange={v => set('pincode', v)} error={errors.pincode} />
+        </Card>
+
+        {/* Optional. Where it is filled in it prints ABOVE the registered
+            office on that partner's quotations. This is the only place an
+            ALREADY-APPROVED partner can be given one — the registration
+            form only reaches partners still being onboarded. */}
+        <Card title="Branch office (optional)">
+          <F label="Address" value={form.branch_address_line1} onChange={v => set('branch_address_line1', v)} />
+          <F label="Address line 2" value={form.branch_address_line2} onChange={v => set('branch_address_line2', v)} />
+          <F label="City" value={form.branch_city} onChange={v => set('branch_city', v)} />
+          <F label="State" value={form.branch_state} onChange={v => set('branch_state', v)} />
+          <F label="PIN code" value={form.branch_pincode} onChange={v => set('branch_pincode', v)} error={errors.branch_pincode} />
+          <F label="Phone" value={form.branch_phone} onChange={v => set('branch_phone', v)} />
+          <F label="Email" value={form.branch_email} onChange={v => set('branch_email', v)} error={errors.branch_email} />
         </Card>
 
         <Card title="Banking">

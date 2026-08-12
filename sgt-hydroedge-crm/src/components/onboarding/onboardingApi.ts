@@ -110,6 +110,9 @@ export interface RegContact {
 export interface OrgDetail extends PartnerOrg {
   status: 'active' | 'suspended' | 'terminated'
   address_line1: string | null; city: string | null; state: string | null; pincode: string | null
+  branch_address_line1: string | null; branch_address_line2: string | null
+  branch_city: string | null; branch_state: string | null; branch_pincode: string | null
+  branch_phone: string | null; branch_email: string | null
   contact_name: string | null; contact_designation: string | null
   contact_mobile: string | null; contact_email: string | null
   pan: string | null; bank_name: string | null; bank_ifsc: string | null
