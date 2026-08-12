@@ -873,6 +873,12 @@ export interface CreateQuotationInput {
   partner?: {
     name?: string | null;
     address?: string | null;
+    /**
+     * The optional branch office, already flattened. Null for a partner
+     * who has none — the letter head prints the registered office alone,
+     * exactly as it did before this field existed.
+     */
+    branch?: string | null;
     contact?: string | null;
     gstin?: string | null;
     /**
@@ -1122,6 +1128,7 @@ async function buildQuotationDoc(input: CreateQuotationInput): Promise<BuiltQuot
   if (input.raisedVia) doc.custom_raised_via = input.raisedVia;
   if (input.partner?.name) doc.custom_partner_name = input.partner.name;
   if (input.partner?.address) doc.custom_partner_address = input.partner.address;
+  if (input.partner?.branch) doc.custom_partner_branch = input.partner.branch;
   if (input.partner?.contact) doc.custom_partner_contact = input.partner.contact;
   if (input.partner?.gstin) doc.custom_partner_gstin = input.partner.gstin;
   if (input.partner?.bank) doc.custom_partner_bank = input.partner.bank;

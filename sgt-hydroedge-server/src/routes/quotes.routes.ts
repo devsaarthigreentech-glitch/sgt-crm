@@ -133,9 +133,26 @@ function snapshotPartner(o: Record<string, any>): CreateQuotationInput['partner'
       ].filter(Boolean).join('\n')
     : null
 
+  // The optional branch office — where they actually work, as against
+  // the registered address the GST certificate points at. Null for the
+  // partners who have none, which is most of them, and the letter head
+  // then prints exactly what it printed before.
+  const branchAddr = [
+    o.branch_address_line1, o.branch_address_line2,
+    o.branch_city, o.branch_state, o.branch_pincode,
+  ].map(x => String(x ?? '').trim()).filter(Boolean).join(', ')
+  // Phone and email ride along on the same line: a branch the customer
+  // cannot ring is just a second address to ignore.
+  const branchContact = [o.branch_phone, o.branch_email]
+    .map(x => String(x ?? '').trim()).filter(Boolean).join(' · ')
+  const branch = branchAddr
+    ? [branchAddr, branchContact || null].filter(Boolean).join('\n')
+    : null
+
   return {
     name: `${o.legal_name}${o.code ? ` (${o.code})` : ''}`,
     address: addr || null,
+    branch,
     contact: contact || null,
     gstin: o.gstin ?? null,
     bank,

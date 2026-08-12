@@ -13,7 +13,7 @@
 // Inline styles only, per house convention.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Plus, Check, AlertCircle, Trash2, X } from 'lucide-react'
+import { ArrowLeft, Plus, Check, AlertCircle, Trash2, X, RefreshCw } from 'lucide-react'
 import OrgDetailScreen from './OrgDetailScreen'
 import {
   onboardingApi, ValidationError,
@@ -774,6 +774,31 @@ export default function PartnerOnboarding() {
                             >
                               <X size={13} /> Reject
                             </button>
+                            {/* Neither approve nor reject — just "this was
+                                filled in wrong". Offered on the same two
+                                statuses because those are the only ones the
+                                server will reopen. */}
+                            <button
+                              onClick={async () => {
+                                const reason = window.prompt(
+                                  `Reopen "${r.legal_name}" for editing?\n\n` +
+                                  'It goes back to draft so the details can be corrected, ' +
+                                  'then submitted again.\n\nReason (optional):') ?? ''
+                                try {
+                                  await onboardingApi.reopen(r.id, reason.trim() || undefined)
+                                  setList(await onboardingApi.list())
+                                  setBanner(`${r.legal_name} is a draft again — open it to edit.`)
+                                } catch (e: any) { setBanner(e.message) }
+                              }}
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: 5,
+                                background: 'none', border: 'none', cursor: 'pointer',
+                                color: MUTED, fontSize: 11.5, fontWeight: 600,
+                                fontFamily: 'inherit', padding: '2px 4px',
+                              }}
+                            >
+                              <RefreshCw size={13} /> Reopen
+                            </button>
                           </>
                         )}
                       </div>
@@ -953,6 +978,27 @@ export default function PartnerOnboarding() {
             <Select label="State" required={isIndividual} value={form.state} onChange={v => set('state', v)}
                     error={errors.state} options={stateOptions} />
             <Text label="PIN code" value={form.pincode} onChange={v => set('pincode', v)} error={errors.pincode} />
+          </Section>
+
+          {/* Optional throughout. Most partners work out of the address
+              above and leave this empty, in which case nothing about the
+              quotation changes. Where it IS filled in, it prints ABOVE the
+              registered office on the quotation — the branch is where the
+              customer actually deals with them; the registered office is
+              where the GST certificate points. */}
+          <Section
+            title="Branch office"
+            hint="Optional. The office they actually operate from, if it differs from the registered address. When filled in, it prints first on quotations."
+          >
+            <Text label="Address" value={form.branch_address_line1} onChange={v => set('branch_address_line1', v)} />
+            <Text label="Address line 2" value={form.branch_address_line2} onChange={v => set('branch_address_line2', v)} />
+            <Text label="City" value={form.branch_city} onChange={v => set('branch_city', v)} />
+            <Select label="State" value={form.branch_state} onChange={v => set('branch_state', v)}
+                    options={stateOptions} />
+            <Text label="PIN code" value={form.branch_pincode} onChange={v => set('branch_pincode', v)} error={errors.branch_pincode} />
+            <Text label="Phone" value={form.branch_phone} onChange={v => set('branch_phone', v)} />
+            <Text label="Email" type="email" value={form.branch_email}
+                  onChange={v => set('branch_email', v)} error={errors.branch_email} />
           </Section>
 
           <Section title="Primary contact">

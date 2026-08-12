@@ -224,4 +224,14 @@ export const onboardingApi = {
     request<{ data: Registration }>(`/partners/registrations/${id}/submit`, {
       method: 'POST',
     }).then(r => r.data),
+
+  /**
+   * Back to draft so it can be corrected. Refused once approved — at
+   * that point the application is the onboarding record and the partner
+   * is edited instead.
+   */
+  reopen: (id: number, reason?: string) =>
+    request<{ data: Registration }>(`/partners/registrations/${id}/reopen`, {
+      method: 'POST', body: JSON.stringify({ reason }),
+    }).then(r => r.data),
 }

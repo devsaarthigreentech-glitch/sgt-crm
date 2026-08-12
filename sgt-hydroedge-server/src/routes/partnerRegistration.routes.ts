@@ -41,6 +41,11 @@ const WRITABLE = [
   'legal_name', 'trade_name', 'constitution', 'incorporation_date', 'years_in_business',
   'gstin', 'pan', 'gst_category', 'state_code', 'udyam_number', 'tan',
   'address_line1', 'address_line2', 'city', 'state', 'pincode', 'country',
+  // The optional branch office. Separate from the registered address
+  // above because both print, in a fixed order — see the quotation
+  // letter head.
+  'branch_address_line1', 'branch_address_line2', 'branch_city',
+  'branch_state', 'branch_pincode', 'branch_phone', 'branch_email',
   'contact_name', 'contact_designation', 'contact_mobile', 'contact_email',
   'alt_contact_name', 'alt_contact_mobile', 'alt_contact_email',
   'bank_account_name', 'bank_account_number', 'bank_ifsc', 'bank_name', 'bank_branch',
@@ -284,6 +289,8 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
   const ORG_WRITABLE = [
     'legal_name', 'trade_name', 'territory', 'gstin', 'pan', 'entity_type',
     'address_line1', 'address_line2', 'city', 'state', 'state_code', 'pincode', 'country',
+    'branch_address_line1', 'branch_address_line2', 'branch_city',
+    'branch_state', 'branch_pincode', 'branch_phone', 'branch_email',
     'contact_name', 'contact_designation', 'contact_mobile', 'contact_email',
     'bank_account_name', 'bank_account_number', 'bank_ifsc', 'bank_name', 'bank_branch',
     'notes',
@@ -1146,6 +1153,83 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
            (registration_id, event_type, from_status, to_status, actor, actor_name)
          values ($1, 'submitted', 'draft', 'submitted', $2, $3)`,
         [id, who.id, who.name],
+      )
+      await client.query('commit')
+      return reply.send({ data: updated })
+    } catch (err) {
+      await client.query('rollback')
+      throw err
+    } finally {
+      client.release()
+    }
+  })
+
+  // ---- Back to draft ------------------------------------------------------
+  //
+  // Submitting used to be a one-way door. The reasoning was sound — a
+  // registration records what was applied for, and a record you can
+  // rewrite after the fact records nothing. But it assumed the only
+  // reason to reopen was to rewrite history, and the common case is far
+  // duller: the wrong dealer type was picked from a dropdown and spotted
+  // a minute later.
+  //
+  // What keeps the original guarantee intact:
+  //
+  //   - APPROVED registrations are refused outright. Once a code is
+  //     allotted the application is the record of how that partner was
+  //     onboarded, and it is frozen for good. Corrections after that
+  //     point belong on the org (PATCH /orgs/:id), and a dealer type
+  //     specifically goes through /orgs/:id/dealer-type, which re-mints
+  //     the code rather than quietly editing it.
+  //   - Every reopen is written to registration_event with the reason,
+  //     so the round trip is visible in the history rather than the
+  //     record silently appearing to have always said this.
+  //
+  // Director only, like every other route on this surface.
+  app.post('/registrations/:id/reopen', { preHandler: director }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const { reason } = (req.body ?? {}) as { reason?: string }
+    const who = actor(req)
+
+    const client = await pool.connect()
+    try {
+      await client.query('begin')
+      const { rows } = await client.query(
+        `select id, status, legal_name, allotted_code
+           from partner_service.registration where id = $1 for update`, [id])
+      if (!rows.length) {
+        await client.query('rollback')
+        return reply.code(404).send({ error: { code: 'not_found', message: 'Registration not found' } })
+      }
+      const reg = rows[0]
+
+      if (reg.status === 'approved') {
+        await client.query('rollback')
+        return reply.code(409).send({
+          error: {
+            code: 'already_approved',
+            message: `${reg.legal_name} was approved as ${reg.allotted_code}. The application is the record of how they were onboarded and cannot be reopened — edit the partner instead, or change their dealer type, which mints a new code.`,
+          },
+        })
+      }
+      if (reg.status === 'draft') {
+        await client.query('rollback')
+        return reply.code(409).send({
+          error: { code: 'no_change', message: 'Already a draft — it is editable now.' },
+        })
+      }
+
+      const { rows: [updated] } = await client.query(
+        `update partner_service.registration
+            set status = 'draft', submitted_at = null, updated_at = now()
+          where id = $1
+          returning *`, [id])
+      await client.query(
+        `insert into partner_service.registration_event
+           (registration_id, event_type, from_status, to_status, actor, actor_name, payload)
+         values ($1, 'reopened', $2, 'draft', $3, $4, $5::jsonb)`,
+        [id, reg.status, who.id, who.name,
+         JSON.stringify(reason ? { reason } : {})],
       )
       await client.query('commit')
       return reply.send({ data: updated })
