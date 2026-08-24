@@ -17,6 +17,7 @@ import targetRoutes from './routes/targets.js'
 import { vaultRoutes } from './routes/vault.js'
 import vaultPocRoutes from './routes/vaultPoc.routes.js'
 import { outreachRoutes } from './routes/outreach.routes.js'
+import { timesheetRoutes } from './routes/timesheet.routes.js'
 
 dotenv.config()
 
@@ -75,6 +76,10 @@ async function start() {
   await app.register(vaultRoutes, { prefix: '/api/v1/vault' })
   await app.register(vaultPocRoutes, { prefix: '/api/v1/vault' })
   await app.register(outreachRoutes, { prefix: '/api/v1' })
+  // Daily timesheets. Every SGT login files their own; only a director
+  // reads anyone else's. Left off EXTERNAL_ROLE_ALLOW on purpose, so
+  // partners are denied by auth/policy.ts without a rule of its own.
+  await app.register(timesheetRoutes, { prefix: '/api/v1' })
 
   // Global error handler
   app.setErrorHandler((error: any, request, reply) => {

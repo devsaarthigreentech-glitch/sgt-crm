@@ -19,13 +19,14 @@ import UsersScreen from './components/users/UsersScreen'
 import { staffQuoteApi } from './components/quotes/quotesApi'
 import AgreementScreen from './components/agreements/AgreementScreen'
 import { staffAgreementApi } from './components/agreements/agreementsApi'
+import TimesheetScreen from './components/timesheet/TimesheetScreen'
 
 // Roles belonging to partners rather than SGT staff. These get their own
 // shell entirely — see the branch below. Kept in sync with
 // EXTERNAL_ROLE_ALLOW in the server's src/auth/policy.ts.
 const EXTERNAL_ROLES = ['distributor', 'dealer']
 
-type Page = 'home' | 'my-dashboard' | 'pipeline' | 'customers' | 'triage' | 'capture' | 'outreach' | 'onboarding' | 'quotes' | 'agreements' | 'users'
+type Page = 'home' | 'my-dashboard' | 'pipeline' | 'customers' | 'triage' | 'capture' | 'outreach' | 'onboarding' | 'quotes' | 'agreements' | 'users' | 'timesheet'
 
 export default function App() {
   const [page, setPage] = useState<Page>('home')
@@ -108,7 +109,9 @@ export default function App() {
       />
       <main style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-        {effectivePage === 'users' ? (
+        {effectivePage === 'timesheet' ? (
+            <TimesheetScreen role={user.role} />
+        ) : effectivePage === 'users' ? (
             <UsersScreen />
         ) : effectivePage === 'quotes' ? (
             <QuoteScreen api={staffQuoteApi} showPartnerPicker />

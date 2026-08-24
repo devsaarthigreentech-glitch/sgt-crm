@@ -1,7 +1,7 @@
 import { useIsMobile } from '../hooks/useIsMobile'
-import { LayoutGrid, Inbox, Plus, BarChart3, LayoutDashboard, User, LogOut, Building2, Send, Handshake, FileText , KeyRound, FileSignature } from 'lucide-react'
+import { LayoutGrid, Inbox, Plus, BarChart3, LayoutDashboard, User, LogOut, Building2, Send, Handshake, FileText , KeyRound, FileSignature, ClipboardList } from 'lucide-react'
 
-type Page = 'home' | 'my-dashboard' | 'pipeline' | 'triage' | 'capture' | 'customers' | 'outreach' | 'onboarding' | 'quotes' | 'agreements' | 'users'
+type Page = 'home' | 'my-dashboard' | 'pipeline' | 'triage' | 'capture' | 'customers' | 'outreach' | 'onboarding' | 'quotes' | 'agreements' | 'users' | 'timesheet'
 
 interface Props {
   current: Page
@@ -23,6 +23,10 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { id: 'home', label: 'Director view', short: 'Director', icon: LayoutDashboard, roles: ['director'] },
   { id: 'my-dashboard', label: 'My dashboard', short: 'My view', icon: User },
+  // No `roles` on purpose — every SGT login files a timesheet, supply_chain
+  // and accounts included. The server agrees: routes/timesheet.routes.ts is
+  // requireAuth-only, and partners are already denied by auth/policy.ts.
+  { id: 'timesheet', label: 'Timesheet', short: 'Timesheet', icon: ClipboardList },
   // CRM functions — hidden from supply_chain (they only need the capacity view)
   { id: 'pipeline', label: 'Pipeline', short: 'Pipeline', icon: LayoutGrid, roles: ['director', 'sales'] },
   { id: 'customers', label: 'Customers', short: 'Customers', icon: Building2, roles: ['director', 'sales'] },
