@@ -1,0 +1,41 @@
+{
+  "_source": "GST letterhead + Axis Bank cheque, read 2026-08-25. Name spelling and contact email confirmed by the owner.",
+
+  "parent": "Continental Power System",
+  "dealer_type": "SS",
+  "entity_type": "company",
+
+  "_name_note": "Owner's instruction 2026-08-25: use 'Expert Engineers', matching the cheque and the bank account. The GST letterhead reads 'Expert Engineering & Trading Co.' against the same GSTIN, so the GST registry name differs from what is recorded here.",
+  "legal_name": "Expert Engineers & Trading Co.",
+  "trade_name": "Expert Engineers & Trading Co.",
+  "constitution": "Partnership",
+
+  "gstin": "08AAMFE3737G1ZA",
+  "pan": "AAMFE3737G",
+  "state_code": "08",
+
+  "address_line1": "Punjabi Chowk, Unnamed Road",
+  "address_line2": "Near MTI Chowk, RIICO Industrial Area, Bhiwadi Extension",
+  "city": "Bhiwadi",
+  "state": "Rajasthan",
+  "pincode": "301019",
+  "country": "India",
+
+  "_contact_note": "TODO — contact_name and contact_mobile are still required; neither document carries them. contact_email confirmed by the owner 2026-08-25: the '&' is spelled out as 'and', because Gmail usernames cannot contain '&'.",
+  "contact_name": "",
+  "contact_designation": "Partner",
+  "contact_mobile": "",
+  "contact_email": "expertengineersandtradingco@gmail.com",
+
+  "_bank_note": "bank_branch omitted — the branch line on the cheque image is not legible enough to record.",
+  "bank_account_name": "Expert Engineers & Trading Co.",
+  "bank_account_number": "925020007977046",
+  "bank_ifsc": "UTIB0005344",
+  "bank_name": "Axis Bank Ltd",
+
+  "product_lines": ["GreenX"],
+
+  "customer_segments": ["Industrial", "Commercial"],
+
+  "proposed_territory": ""
+}
