@@ -99,6 +99,49 @@ async function callGemini(payload: unknown): Promise<any> {
   return response.json()
 }
 
+/**
+ * Longest edge the uploaded photo is shrunk to before it leaves the phone.
+ * A card at 1600px is still perfectly legible to the model; a 12MP camera
+ * shot is ~4MB and blows through the 1MB body limit nginx enforces in
+ * front of n8n. That 413 carries no CORS headers, so the browser reports
+ * it as a CORS failure and the workflow never even runs.
+ */
+const MAX_EDGE_PX = 1600
+const JPEG_QUALITY = 0.8
+
+/**
+ * Shrink and re-encode a photo as JPEG. Returns { base64, mimeType }.
+ * Falls back to the untouched file if the browser cannot decode it
+ * (e.g. an HEIC that canvas has no decoder for) — better to try the
+ * original than to fail before the upload.
+ */
+async function prepareImage(file: File): Promise<{ base64: string; mimeType: string }> {
+  try {
+    const bitmap = await createImageBitmap(file)
+    const { width: srcW, height: srcH } = bitmap
+    const scale = Math.min(1, MAX_EDGE_PX / Math.max(srcW, srcH))
+    const w = Math.round(srcW * scale)
+    const h = Math.round(srcH * scale)
+
+    const canvas = document.createElement('canvas')
+    canvas.width = w
+    canvas.height = h
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new Error('no 2d context')
+    ctx.drawImage(bitmap, 0, 0, w, h)
+    bitmap.close()
+
+    const dataUrl = canvas.toDataURL('image/jpeg', JPEG_QUALITY)
+    const base64 = dataUrl.split(',')[1]
+    console.info(`[gemini] image ${srcW}x${srcH} ${Math.round(file.size / 1024)}KB ` +
+      `→ ${w}x${h} ${Math.round(base64.length * 0.75 / 1024)}KB`)
+    return { base64, mimeType: 'image/jpeg' }
+  } catch (e) {
+    console.warn('[gemini] could not downscale image, sending original', e)
+    return { base64: await fileToBase64(file), mimeType: file.type || 'image/jpeg' }
+  }
+}
+
 // Convert image file to base64
 export async function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -123,8 +166,7 @@ export async function extractBusinessCard(file: File): Promise<ExtractedCard> {
     return { ...SAMPLE_CARD }
   }
 
-  const base64 = await fileToBase64(file)
-  const mimeType = file.type || 'image/jpeg'
+  const { base64, mimeType } = await prepareImage(file)
 
   const data = await callGemini({
     contents: [{
