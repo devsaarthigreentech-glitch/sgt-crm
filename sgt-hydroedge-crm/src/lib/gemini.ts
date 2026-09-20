@@ -96,7 +96,21 @@ async function callGemini(payload: unknown): Promise<any> {
     throw new Error(`Card scanning failed (${response.status}). Enter the details by hand.`)
   }
 
-  return response.json()
+  // n8n answers 200 with an empty body when the HTTP Request node inside
+  // the workflow fails (bad key, quota, Gemini error) and "Respond to
+  // Webhook" has nothing to send. That is a proxy fault, not a card
+  // fault — say so instead of "Unexpected end of JSON input".
+  const raw = await response.text()
+  if (!raw.trim()) {
+    throw new Error(
+      'The card-scanning service returned an empty reply — the n8n workflow ' +
+      'likely failed at the Gemini step (key or quota). Enter the details by hand.')
+  }
+  try {
+    return JSON.parse(raw)
+  } catch {
+    throw new Error('The card-scanning service returned an unreadable reply. Enter the details by hand.')
+  }
 }
 
 /**
@@ -204,6 +218,9 @@ Do not include any text before or after the JSON object.`,
     },
   })
 
+  if (data?.error?.message) {
+    throw new Error(`Gemini rejected the request: ${data.error.message}. Enter the details by hand.`)
+  }
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}'
 
   console.log('Gemini raw response:', text)
