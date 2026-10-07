@@ -18,6 +18,9 @@ import QuoteScreen from '../quotes/QuoteScreen'
 import { portalQuoteApi } from '../quotes/quotesApi'
 import AgreementScreen from '../agreements/AgreementScreen'
 import { portalAgreementApi } from '../agreements/agreementsApi'
+import { ProductLineFrame } from '../greendrive/ProductLineFrame'
+import GreenDriveQuoteScreen from '../greendrive/GreenDriveQuoteScreen'
+import GreenDriveAgreementScreen from '../greendrive/GreenDriveAgreementScreen'
 
 type PortalPage = 'overview' | 'dealers' | 'quotes' | 'agreements'
 
@@ -149,10 +152,18 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
 
       {editDealerId !== null ? (
         <DealerEdit dealerId={editDealerId} onBack={() => { setEditDealerId(null); load() }} />
-      ) : page === 'quotes' ? <QuoteScreen api={portalQuoteApi} />
+      ) : page === 'quotes' ? (
+        <div style={{ display: 'flex', flexDirection: 'column', minHeight: '70vh' }}>
+          <ProductLineFrame
+            greenx={<QuoteScreen api={portalQuoteApi} />}
+            greendrive={<GreenDriveQuoteScreen surface="portal" />} />
+        </div>
+      )
       : page === 'agreements' ? (
         <div style={{ display: 'flex', flexDirection: 'column', minHeight: '70vh' }}>
-          <AgreementScreen api={portalAgreementApi} />
+          <ProductLineFrame
+            greenx={<AgreementScreen api={portalAgreementApi} />}
+            greendrive={<GreenDriveAgreementScreen />} />
         </div>
       )
       : page === 'dealers' ? <DealerRegistration /> : (

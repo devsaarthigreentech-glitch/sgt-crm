@@ -20,6 +20,10 @@ import { staffQuoteApi } from './components/quotes/quotesApi'
 import AgreementScreen from './components/agreements/AgreementScreen'
 import { staffAgreementApi } from './components/agreements/agreementsApi'
 import TimesheetScreen from './components/timesheet/TimesheetScreen'
+import { ProductLineFrame } from './components/greendrive/ProductLineFrame'
+import GreenDriveQuoteScreen from './components/greendrive/GreenDriveQuoteScreen'
+import GreenDriveAgreementScreen from './components/greendrive/GreenDriveAgreementScreen'
+import GreenDriveOnboarding from './components/greendrive/GreenDriveOnboarding'
 
 // Roles belonging to partners rather than SGT staff. These get their own
 // shell entirely — see the branch below. Kept in sync with
@@ -114,11 +118,17 @@ export default function App() {
         ) : effectivePage === 'users' ? (
             <UsersScreen />
         ) : effectivePage === 'quotes' ? (
-            <QuoteScreen api={staffQuoteApi} showPartnerPicker />
+            <ProductLineFrame
+              greenx={<QuoteScreen api={staffQuoteApi} showPartnerPicker />}
+              greendrive={<GreenDriveQuoteScreen surface="staff" />} />
         ) : effectivePage === 'agreements' ? (
-            <AgreementScreen api={staffAgreementApi} />
+            <ProductLineFrame
+              greenx={<AgreementScreen api={staffAgreementApi} />}
+              greendrive={<GreenDriveAgreementScreen />} />
         ) : effectivePage === 'onboarding' ? (
-            <PartnerOnboarding />
+            <ProductLineFrame
+              greenx={<PartnerOnboarding />}
+              greendrive={<GreenDriveOnboarding />} />
         ) : effectivePage === 'outreach' ? (
             <OutreachDesk />
         ) : effectivePage === 'home' || effectivePage === 'my-dashboard' ? (
