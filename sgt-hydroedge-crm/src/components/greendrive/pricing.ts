@@ -1,15 +1,21 @@
-// GreenDrive rate card — TENTATIVE, owner's figures of 2026-10-07.
+// GreenDrive rate card — owner's figures, finalised 2026-10-09.
 //
 // Held in the frontend only while GreenDrive is a preview: nothing here is
 // stored and no quotation is raised from it. When GreenDrive goes live these
 // move into the price book and ERPNext Item Price, as GreenX's did, and this
 // file stops being the source of any number.
 //
-// GreenDrive is priced the OPPOSITE way to GreenX. A GreenX partner may only
-// discount off MRP; a GreenDrive dealer who takes on sales, installation and
-// support may MARK UP to MRP + 40%. SGT invoices the customer at the quoted
-// price (SGT-direct, same as GreenX) and the dealer earns a base margin on
-// MRP plus the whole markup.
+// The listed price IS the customer price. It already includes the dealer's
+// 30% markup — nothing is added on top (an earlier reading of "MRP + 40%"
+// was withdrawn by the owner). SGT invoices the customer at this price
+// (SGT-direct, same as GreenX) and settles the dealer's share afterwards:
+//
+//   SGT's price   = price / 1.30        e.g. ₹1,04,000 / 1.3 = ₹80,000
+//   dealer earns  = price − SGT's price e.g. ₹24,000
+//
+// ASSUMPTION: "including 30%" is read as 30% markup ON SGT's price. If it
+// means 30% OF the customer price instead, the dealer share is price × 0.30
+// (₹31,200 on One) — change dealerShare() below, nothing else.
 
 export type GdModel = 'One' | 'Neo' | 'Pro'
 export type GdCurrency = 'INR' | 'USD'
@@ -23,14 +29,11 @@ export const GD_MODELS: { code: GdModel; label: string; inr: number; usd: number
 /** The owner's reference rate. The USD list prices are set in their own right, not converted. */
 export const USD_INR = 95
 
-/** Maximum markup over MRP. Owner's figure for a dealer; applied to everyone until told otherwise. */
-export const MAX_MARKUP_PCT = 40
+/** Dealer markup already included in the listed price. */
+export const DEALER_MARKUP_PCT = 30
 
-/**
- * Dealer's base margin as a % of MRP, earned on every sale before markup.
- * NOT YET GIVEN by the owner — null shows "to be confirmed" on screen.
- */
-export const BASE_MARGIN_PCT: number | null = null
+/** The dealer's share of a price that already includes their markup. */
+export const dealerShare = (price: number) => price - price / (1 + DEALER_MARKUP_PCT / 100)
 
 /** ASSUMED 18%, same as GreenX. HSN not yet given. */
 export const GD_GST_PCT = 18
@@ -38,7 +41,7 @@ export const GD_GST_PCT = 18
 export const money = (v: number, cur: GdCurrency) =>
   cur === 'USD'
     ? '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-    : '₹' + v.toLocaleString('en-IN', { maximumFractionDigits: 2 })
+    : '₹' + v.toLocaleString('en-IN', { maximumFractionDigits: 0 })
 
 export const listPrice = (m: GdModel, cur: GdCurrency) => {
   const row = GD_MODELS.find(x => x.code === m)!

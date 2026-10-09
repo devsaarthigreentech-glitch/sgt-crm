@@ -6,14 +6,14 @@
 import { useState } from 'react'
 import { Info } from 'lucide-react'
 import { INK, MUTED, LINE, FAINT, PAPER, WARN_BG, WARN_FG } from '../quotes/theme'
-import { MAX_MARKUP_PCT } from './pricing'
+import { DEALER_MARKUP_PCT } from './pricing'
 
 const OUTLINE: { title: string; body: string; review?: boolean }[] = [
   { title: 'Appointment', body: 'SGT, through the Distributor, appoints the Dealer to sell, install and support GreenDrive products in the operating area in Annexure A.' },
   { title: 'Dealer code', body: 'The Dealer is identified by a code in the form EDINGD001-SS01 (Sales & Service) or -SM01 (Sales & Marketing).' },
   { title: 'Products', body: 'GreenDrive One, Neo and Pro. Product description, patents and certifications to be supplied.', review: true },
-  { title: 'Pricing', body: `Customers are quoted from MRP. A Dealer responsible for sales, installation and support may mark up to MRP + ${MAX_MARKUP_PCT}%.`, review: true },
-  { title: 'Billing and earnings', body: 'SGT invoices the customer directly. The Dealer earns a base margin on MRP plus the full markup, settled by SGT. Base margin % to be confirmed.', review: true },
+  { title: 'Pricing', body: `Customers are quoted the fixed GreenDrive price list, which already includes the Dealer's ${DEALER_MARKUP_PCT}% markup. No discount or further markup.`, review: true },
+  { title: 'Billing and earnings', body: "SGT invoices the customer directly. The Dealer's markup included in the price is settled to the Dealer by SGT.", review: true },
   { title: 'Installation and support', body: 'Dealer obligations for installation, commissioning, warranty handling and service response times.', review: true },
   { title: 'Training and branding', body: 'Mandatory product training, use of the GreenDrive name and marks, and the authorised-dealer sticker in Annexure B.' },
   { title: 'Intellectual property and non-compete', body: 'The GreenX clauses cite CHFA™ and Indian Patent No. 582824; the GreenDrive equivalents are needed.', review: true },
