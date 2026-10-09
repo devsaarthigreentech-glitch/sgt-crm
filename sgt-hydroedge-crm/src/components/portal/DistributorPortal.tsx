@@ -156,7 +156,7 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
         <div style={{ display: 'flex', flexDirection: 'column', minHeight: '70vh' }}>
           <ProductLineFrame
             greenx={<QuoteScreen api={portalQuoteApi} />}
-            greendrive={<GreenDriveQuoteScreen surface="portal" />} />
+            greendrive={<GreenDriveQuoteScreen api={portalQuoteApi} surface="portal" />} />
         </div>
       )
       : page === 'agreements' ? (

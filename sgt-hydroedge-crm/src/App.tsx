@@ -120,7 +120,7 @@ export default function App() {
         ) : effectivePage === 'quotes' ? (
             <ProductLineFrame
               greenx={<QuoteScreen api={staffQuoteApi} showPartnerPicker />}
-              greendrive={<GreenDriveQuoteScreen surface="staff" />} />
+              greendrive={<GreenDriveQuoteScreen api={staffQuoteApi} surface="staff" />} />
         ) : effectivePage === 'agreements' ? (
             <ProductLineFrame
               greenx={<AgreementScreen api={staffAgreementApi} />}

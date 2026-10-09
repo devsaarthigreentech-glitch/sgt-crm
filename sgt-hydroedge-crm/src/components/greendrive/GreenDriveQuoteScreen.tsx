@@ -1,5 +1,7 @@
-// GreenDrive quotation — PREVIEW. Nothing is saved and no quotation is
-// raised; the numbers come from the tentative rate card in pricing.ts.
+// GreenDrive quotation — PREVIEW. No quotation is raised; the numbers come
+// from the rate card in pricing.ts. The Customer card is the real one shared
+// with GreenX: search reads ERPNext, and "Add a new customer" DOES create
+// the customer there (and claims them for a partner on the portal).
 //
 // Differs from the GreenX screen in three ways the owner set:
 //   - pick a model (One / Neo / Pro) instead of typing a DG kVA rating
@@ -9,6 +11,8 @@
 
 import { useState } from 'react'
 import { Plus, Trash2, Info } from 'lucide-react'
+import { CustomerPicker, type CustomerApi } from '../quotes/CustomerPicker'
+import type { ErpCustomer } from '../quotes/QuoteScreen'
 import { INK, MUTED, LINE, FAINT, PAPER, WARN_BG, WARN_FG, inputStyle, labelStyle } from '../quotes/theme'
 import {
   GD_MODELS, DEALER_MARKUP_PCT, GD_GST_PCT, USD_INR,
@@ -31,11 +35,15 @@ function maths(l: Line, cur: GdCurrency) {
   return { qty, unit, lineTotal: unit * qty, dealerTotal: dealerShare(unit) * qty }
 }
 
-export default function GreenDriveQuoteScreen({ surface }: { surface: 'staff' | 'portal' }) {
+export default function GreenDriveQuoteScreen({ api, surface }: {
+  /** Only the customer calls are used — they are product-neutral. */
+  api: CustomerApi
+  surface: 'staff' | 'portal'
+}) {
   const [currency, setCurrency] = useState<GdCurrency>('INR')
   const [lines, setLines] = useState<Line[]>([blank()])
-  const [customer, setCustomer] = useState('')
-  const [taxId, setTaxId] = useState('')
+  const [picked, setPicked] = useState<ErpCustomer | null>(null)
+  const [banner, setBanner] = useState<string | null>(null)
 
   const patch = (id: number, p: Partial<Line>) =>
     setLines(ls => ls.map(l => (l.id === id ? { ...l, ...p } : l)))
@@ -62,10 +70,16 @@ export default function GreenDriveQuoteScreen({ surface }: { surface: 'staff' | 
       }}>
         <Info size={15} style={{ flexShrink: 0, marginTop: 1 }} />
         <span>
-          <strong>Preview.</strong> GreenDrive quotations can't be raised yet — nothing on
-          this screen is saved.
+          <strong>Preview.</strong> GreenDrive quotations can't be raised yet. Customers
+          you add here are saved to ERPNext, the same as on GreenX.
         </span>
       </div>
+
+      {banner && (
+        <div style={{ maxWidth: 940, padding: '10px 12px', marginBottom: 14, borderRadius: 8, backgroundColor: '#F3DAD5', color: '#A6301C', fontSize: 12.5 }}>
+          {banner}
+        </div>
+      )}
 
       {/* Market */}
       <div style={card}>
@@ -141,17 +155,7 @@ export default function GreenDriveQuoteScreen({ surface }: { surface: 'staff' | 
       {/* Customer */}
       <div style={card}>
         <h2 style={{ margin: '0 0 12px', fontSize: 15.5, fontWeight: 700, color: INK }}>Customer</h2>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-          <div>
-            <label style={labelStyle}>Customer name</label>
-            <input value={customer} onChange={e => setCustomer(e.target.value)} placeholder="Company name" style={inputStyle()} />
-          </div>
-          <div>
-            <label style={labelStyle}>{currency === 'INR' ? 'GSTIN' : 'Country'}</label>
-            <input value={taxId} onChange={e => setTaxId(e.target.value)}
-              placeholder={currency === 'INR' ? 'Optional' : 'e.g. United Arab Emirates'} style={inputStyle()} />
-          </div>
-        </div>
+        <CustomerPicker api={api} picked={picked} setPicked={setPicked} setBanner={setBanner} />
       </div>
 
       {/* Summary */}
@@ -179,7 +183,9 @@ export default function GreenDriveQuoteScreen({ surface }: { surface: 'staff' | 
             Create quotation
           </button>
           <span style={{ fontSize: 12, color: FAINT }}>
-            {'Preview only — quotations can be raised once GreenDrive is set up in ERPNext.'}
+            {picked
+              ? `For ${picked.customer_name || picked.name}. Preview only — quotations can be raised once GreenDrive is set up in ERPNext.`
+              : 'Preview only — quotations can be raised once GreenDrive is set up in ERPNext.'}
           </span>
         </div>
       </div>
