@@ -106,6 +106,17 @@ export const DEALER_QUOTATION_TERMS: Clause[] = [
  */
 export const DEALER_PO_TERMS: Clause[] = DEALER_QUOTATION_TERMS;
 
+/**
+ * The GreenDrive quotation terms — a COPY of the GreenX ones, on the
+ * owner's instruction of 2026-10-09. Separate export for the same reason
+ * as the PO terms: they are expected to diverge.
+ *
+ * Known to need GreenDrive wording when the owner gets to it: Buyer's
+ * Scope (water tank) and Exclusions (alternator, CEIG, diesel day tank)
+ * were written for DG sets, and Annual Maintenance quotes 15%.
+ */
+export const GREENDRIVE_QUOTATION_TERMS: Clause[] = DEALER_QUOTATION_TERMS;
+
 /** Clauses that still say "quotation". Reported by the PO terms script. */
 export function clausesNamingQuotation(clauses: Clause[]): string[] {
   return clauses.filter(([, body]) => /\bquotation\b/i.test(body)).map(([h]) => h);

@@ -52,7 +52,9 @@ export function CustomerPicker({ api, picked, setPicked, setBanner }: {
   const custTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
     if (custTimer.current) clearTimeout(custTimer.current)
-    if (picked || custQuery.trim().length < 2) { setCustHits([]); return }
+    // Clears the spinner too: a search cancelled mid-flight (the form was
+    // reset while it was pending) would otherwise say "Searching…" forever.
+    if (picked || custQuery.trim().length < 2) { setCustHits([]); setCustSearching(false); return }
     setCustSearching(true)
     custTimer.current = setTimeout(async () => {
       try { setCustHits(await api.searchCustomers(custQuery)) }

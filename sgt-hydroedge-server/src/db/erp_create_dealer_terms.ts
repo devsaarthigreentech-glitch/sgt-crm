@@ -8,6 +8,12 @@
 //   npx tsx src/db/erp_create_dealer_terms.ts                  # report
 //   CONFIRM_CREATE=1 npx tsx src/db/erp_create_dealer_terms.ts # create
 //
+// GreenDrive has its own template, a copy of these clauses (owner,
+// 2026-10-09). Same script, one switch:
+//
+//   PRODUCT=GreenDrive npx tsx src/db/erp_create_dealer_terms.ts
+//   PRODUCT=GreenDrive CONFIRM_CREATE=1 npx tsx src/db/erp_create_dealer_terms.ts
+//
 // The existing "Quotation Terms and Conditions" is NOT touched — this is a
 // separate template, so SGT-direct quotes keep their own wording.
 //
@@ -23,12 +29,20 @@
 // =====================================================================
 
 import 'dotenv/config';
-import { DEALER_QUOTATION_TERMS, clausesToHtml } from '../domain/dealerTerms.js';
+import { DEALER_QUOTATION_TERMS, GREENDRIVE_QUOTATION_TERMS, clausesToHtml } from '../domain/dealerTerms.js';
+import { GREENDRIVE_TERMS } from '../domain/greenDrive.js';
 
 const BASE = process.env.ERPNEXT_URL?.replace(/\/+$/, '');
 const KEY = process.env.ERPNEXT_API_KEY;
 const SECRET = process.env.ERPNEXT_API_SECRET;
-const TITLE = process.env.ERP_DEALER_TERMS ?? 'GreenX Dealer Quotation Terms';
+const GREENDRIVE = process.env.PRODUCT === 'GreenDrive';
+if (process.env.PRODUCT && !GREENDRIVE && process.env.PRODUCT !== 'GreenX') {
+  console.error(`✗ PRODUCT must be GreenX or GreenDrive, not "${process.env.PRODUCT}"`);
+  process.exit(1);
+}
+const TITLE = GREENDRIVE
+  ? GREENDRIVE_TERMS
+  : (process.env.ERP_DEALER_TERMS ?? 'GreenX Dealer Quotation Terms');
 const CONFIRMED = process.env.CONFIRM_CREATE === '1';
 
 if (!BASE || !KEY || !SECRET) {
@@ -44,7 +58,7 @@ const headers = {
 // The clause set now lives in domain/dealerTerms.ts, which carries the
 // full history of the wording — what was merged in, what was dropped, and
 // why. Named locally so the report below reads as it always did.
-const TERMS = DEALER_QUOTATION_TERMS;
+const TERMS = GREENDRIVE ? GREENDRIVE_QUOTATION_TERMS : DEALER_QUOTATION_TERMS;
 const html = clausesToHtml(TERMS);
 
 
@@ -119,7 +133,7 @@ async function main() {
     return;
   }
   console.log(`\n✔ ${exists ? 'updated' : 'created'} "${r.json.data.name}" with ${TERMS.length} clauses`);
-  console.log(`  Set ERP_DEALER_TERMS="${r.json.data.name}" in .env if you renamed it.`);
+  console.log(`  Set ${GREENDRIVE ? 'ERP_GREENDRIVE_TERMS' : 'ERP_DEALER_TERMS'}="${r.json.data.name}" in .env if you renamed it.`);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

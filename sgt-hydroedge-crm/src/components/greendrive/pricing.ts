@@ -1,9 +1,9 @@
 // GreenDrive rate card — owner's figures, finalised 2026-10-09.
 //
-// Held in the frontend only while GreenDrive is a preview: nothing here is
-// stored and no quotation is raised from it. When GreenDrive goes live these
-// move into the price book and ERPNext Item Price, as GreenX's did, and this
-// file stops being the source of any number.
+// DISPLAY ONLY. The quotation is priced on the server, from ERPNext's Item
+// Price with sgt-hydroedge-server/src/domain/greenDrive.ts as the fallback.
+// These figures drive the on-screen estimate and the portal calculator;
+// keep them equal to that file.
 //
 // The listed price IS the customer price. It already includes the dealer's
 // 30% markup — nothing is added on top (an earlier reading of "MRP + 40%"
@@ -13,9 +13,7 @@
 //   SGT's price   = price / 1.30        e.g. ₹1,04,000 / 1.3 = ₹80,000
 //   dealer earns  = price − SGT's price e.g. ₹24,000
 //
-// ASSUMPTION: "including 30%" is read as 30% markup ON SGT's price. If it
-// means 30% OF the customer price instead, the dealer share is price × 0.30
-// (₹31,200 on One) — change dealerShare() below, nothing else.
+// "30% on top" of SGT's price — confirmed by the owner 2026-10-09.
 
 export type GdModel = 'One' | 'Neo' | 'Pro'
 export type GdCurrency = 'INR' | 'USD'

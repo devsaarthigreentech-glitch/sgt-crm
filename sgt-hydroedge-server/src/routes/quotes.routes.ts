@@ -19,6 +19,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { query, pool } from '../db/pool.js'
 import { requireRole } from '../auth/guard.js'
 import { resolveForKva } from '../domain/quotePricing.js'
+import { gdRow, resolveGreenDrive, GREENDRIVE_TERMS, GD_CATALOGUE } from '../domain/greenDrive.js'
 import { inspectGstin } from '../domain/gstin.js'
 import {
   checkDiscount, checkDiscountAmount, actorFor, DISCOUNT_CAPS,
@@ -57,6 +58,8 @@ function actor(req: FastifyRequest) {
  */
 export interface QuoteLineBody {
   kva?: number | string
+  /** GreenDrive only: 'One' | 'Neo' | 'Pro'. GreenX lines use kva. */
+  model?: string
   qty?: number
   rate?: string | number | null
   /** Either a percentage OR a rupee amount. Percentage wins if both. */
@@ -95,6 +98,8 @@ export interface QuoteBody extends QuoteLineBody {
    * individual with no GSTIN and no address on file.
    */
   taxMode?: 'auto' | 'in_state' | 'out_state'
+  /** Absent means GreenX, which is every client that predates GreenDrive. */
+  productLine?: 'GreenX' | 'GreenDrive'
 }
 
 /**
@@ -193,6 +198,8 @@ export async function performQuotation(
     updating?: string
   },
 ) {
+  if (body.productLine === 'GreenDrive') return performGreenDriveQuotation(req, body, opts)
+
   const who = actor(req)
 
   // A quotation attaches to a customer that ALREADY exists. Creating one is
@@ -535,6 +542,163 @@ export async function performQuotation(
         totalCommission: created.totalCommission,
         customer: created.customer,
         salesPartner,
+        mirrored,
+        updated: !!opts.updating,
+      },
+    },
+  }
+}
+
+/**
+ * A GreenDrive quotation. Kept apart from performQuotation rather than
+ * threaded through it, because almost nothing there applies: no kVA, no
+ * discount, no AMC, no specification, no partner. What IS shared — the
+ * ERPNext document builder, tax derivation, the mirror table — is called,
+ * not copied.
+ *
+ * Staff only (owner, 2026-10-09): no GreenDrive partner exists yet, so a
+ * portal request is refused and the quotation carries no sales partner.
+ * The price is fixed and already includes the dealer's 30%, so any rate
+ * or discount in the body is ignored rather than trusted.
+ */
+async function performGreenDriveQuotation(
+  req: FastifyRequest,
+  body: QuoteBody,
+  opts: { forcedOrgId?: number | null; via: 'crm' | 'portal'; updating?: string },
+) {
+  const who = actor(req)
+  const fail = (code: number, errCode: string, message: string, extra: Record<string, unknown> = {}) => ({
+    ok: false as const, code, payload: { error: { code: errCode, message }, ...extra },
+  })
+
+  if (opts.via === 'portal') {
+    return fail(403, 'greendrive_staff_only', 'GreenDrive quotations are raised by SGT for now.')
+  }
+
+  const customerErpName = String(body.customerErpName ?? '').trim()
+  if (!customerErpName) {
+    return fail(400, 'customer_required',
+      'Select an existing customer, or add one first. Quoting does not create customers.')
+  }
+
+  const picked = (Array.isArray(body.lines) ? body.lines : [])
+    .filter(l => String(l?.model ?? '').trim() !== '')
+  if (!picked.length) return fail(400, 'no_lines', 'Add at least one GreenDrive model.')
+
+  const rows = picked.map(l => gdRow(l.model))
+  const bad = rows.findIndex(r => !r)
+  if (bad >= 0) {
+    return fail(422, 'unknown_model',
+      `Line ${bad + 1}: "${picked[bad].model}" is not a GreenDrive model — ` +
+      `choose ${GD_CATALOGUE.map(r => r.model).join(', ')}.`, { lineIndex: bad })
+  }
+
+  // An edit must stay GreenDrive. Rewriting a GreenX quotation through
+  // here would strip its partner, discounts and AMC without a word.
+  if (opts.updating) {
+    const { rows: was } = await query(
+      `select product_line from quote_service.quotation_ref where erp_name = $1`, [opts.updating])
+    if (was[0] && was[0].product_line !== 'GreenDrive') {
+      return fail(409, 'wrong_product_line',
+        `${opts.updating} is a GreenX quotation and cannot be edited as GreenDrive.`)
+    }
+  }
+
+  const resolved = await Promise.all(rows.map(r => resolveGreenDrive(r!, itemPrice)))
+
+  const lines: CreateQuotationLine[] = []
+  const lineSnapshots: Record<string, unknown>[] = []
+  picked.forEach((l, i) => {
+    const r = resolved[i]
+    const qty = Math.max(1, Math.floor(Number(l.qty ?? 1)))
+    lines.push({ itemCode: r.row.itemCode, qty, rate: r.rate })
+    lineSnapshots.push({
+      model: r.row.model, modelCode: r.row.itemCode, label: r.row.label,
+      qty, unitRate: r.rate, rateSource: r.rateSource,
+    })
+  })
+
+  const input: CreateQuotationInput = {
+    customerErpName,
+    lines,
+    salesPartner: null,
+    commissionRate: null,
+    validDays: body.validDays,
+    taxMode: body.taxMode ?? 'auto',
+    termsTemplate: body.termsTemplate ?? GREENDRIVE_TERMS,
+    termsHtml: body.termsText?.trim() ? textToTerms(body.termsText) : (body.termsHtml ?? null),
+    raisedBy: who.name ? `${who.name}${who.id ? ` (user ${who.id})` : ''}` : null,
+    raisedByOrg: null,
+    raisedVia: 'SGT CRM',
+    partner: null,
+  }
+
+  let created: Awaited<ReturnType<typeof createQuotation>>
+  try {
+    created = opts.updating ? await updateQuotation(opts.updating, input) : await createQuotation(input)
+  } catch (e: any) {
+    const message = String(e?.message ?? e)
+    if (opts.updating && /submitted/i.test(message)) return fail(409, 'not_editable', message)
+    throw e
+  }
+
+  // Mirror it. As for GreenX, a failure here must not lose a quotation
+  // that already exists in ERPNext. It fails if migrate_quote_07 has not
+  // been run — logged, and the document is still returned.
+  let mirrored = true
+  const first = lineSnapshots[0]
+  try {
+    await pool.query(
+      `insert into quote_service.quotation_ref
+         (erp_name, org_id, input_kva, model_id, model_code, qty, unit_rate,
+          net_total, grand_total, commission_rate, erp_customer, customer_name,
+          status, raised_by, raised_by_name, raised_via,
+          line_count, lines, tax_mode, product_line)
+       values ($1, null, null, null, $2, $3, $4, $5, $6, null, $7, $7,
+               'draft', $8, $9, 'crm', $10, $11, $12, 'GreenDrive')
+       on conflict (erp_name) do update set
+          org_id = null, input_kva = null, model_id = null,
+          model_code = excluded.model_code, qty = excluded.qty, unit_rate = excluded.unit_rate,
+          net_total = excluded.net_total, grand_total = excluded.grand_total,
+          commission_rate = null,
+          erp_customer = excluded.erp_customer, customer_name = excluded.customer_name,
+          status = excluded.status, raised_by = excluded.raised_by,
+          raised_by_name = excluded.raised_by_name, raised_via = excluded.raised_via,
+          line_count = excluded.line_count, lines = excluded.lines,
+          tax_mode = excluded.tax_mode, product_line = 'GreenDrive',
+          updated_at = now()`,
+      [created.erpName, first.modelCode, first.qty, first.unitRate,
+       created.netTotal, created.grandTotal, created.customer.erpName, who.id, who.name,
+       lineSnapshots.length, JSON.stringify(lineSnapshots), created.taxMode],
+    )
+  } catch (err) {
+    mirrored = false
+    req.log.error({ err, erpName: created.erpName },
+      'GreenDrive quotation created in ERPNext but not mirrored locally')
+  }
+
+  return {
+    ok: true as const,
+    payload: {
+      data: {
+        erpName: created.erpName,
+        productLine: 'GreenDrive',
+        model: first.modelCode,
+        qty: first.qty,
+        rate: first.unitRate,
+        lineCount: lineSnapshots.length,
+        lines: lineSnapshots,
+        netTotal: created.netTotal,
+        grandTotal: created.grandTotal,
+        taxTemplate: created.taxTemplate,
+        taxMode: created.taxMode,
+        addressWarning: created.addressWarning,
+        termsTemplate: created.termsTemplate,
+        termsWarning: created.termsWarning,
+        totalTax: created.totalTax,
+        taxWarning: created.taxWarning,
+        customer: created.customer,
+        salesPartner: null,
         mirrored,
         updated: !!opts.updating,
       },
@@ -1268,18 +1432,23 @@ export default async function quotesRoutes(app: FastifyInstance) {
 
   // ---- List from the mirror --------------------------------------------
   app.get('/', { preHandler: staff }, async (req, reply) => {
-    const { orgId } = (req.query ?? {}) as { orgId?: string }
+    const { orgId, product } = (req.query ?? {}) as { orgId?: string; product?: string }
+    // Each screen lists its own product line. No parameter means GreenX,
+    // which is what every client that predates GreenDrive expects.
+    const line = product === 'GreenDrive' ? 'GreenDrive' : 'GreenX'
     const { rows } = orgId
       ? await query(
           `select q.*, o.code as org_code, o.legal_name as org_name
              from quote_service.quotation_ref q
              left join quote_service.org o on o.id = q.org_id
-            where q.org_id = $1 order by q.created_at desc limit 200`, [orgId])
+            where q.org_id = $1 and q.product_line = $2
+            order by q.created_at desc limit 200`, [orgId, line])
       : await query(
           `select q.*, o.code as org_code, o.legal_name as org_name
              from quote_service.quotation_ref q
              left join quote_service.org o on o.id = q.org_id
-            order by q.created_at desc limit 200`)
+            where q.product_line = $1
+            order by q.created_at desc limit 200`, [line])
     return reply.send({ data: await reconcileQuotations(rows) })
   })
 

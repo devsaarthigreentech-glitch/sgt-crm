@@ -106,7 +106,13 @@ export function makeQuoteApi(prefix: string, withPartners: boolean, poPrefix: st
     create: (body) =>
       request<any>(`${prefix}`, { method: 'POST', body: JSON.stringify(body) }),
 
-    list: () => request<{ data: any[] }>(`${prefix}`).then(r => r.data),
+    list: (product?: 'GreenX' | 'GreenDrive') =>
+      request<{ data: any[] }>(product ? `${prefix}?product=${product}` : `${prefix}`).then(r => r.data),
+
+    createGreenDrive: (body) =>
+      request<any>(`${prefix}`, {
+        method: 'POST', body: JSON.stringify({ ...body, productLine: 'GreenDrive' }),
+      }),
 
     loadForEdit: (erpName: string) =>
       request<{ data: any }>(`${prefix}/${encodeURIComponent(erpName)}/edit`)
