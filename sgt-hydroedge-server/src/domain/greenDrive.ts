@@ -6,11 +6,13 @@
 //   - Fixed models (One / Neo / Pro), chosen by name. No kVA, so none of
 //     quotePricing.ts's ceiling match applies.
 //   - The listed price IS the customer price and already includes the
-//     dealer's 30% markup ON SGT's price (2026-10-09, "30% on top is
-//     correct"): ₹1,04,000 = ₹80,000 SGT + ₹24,000 dealer. So there is no
-//     discount and no markup to enter, and none is accepted.
-//   - Raised by SGT STAFF ONLY for now (2026-10-09). No GreenDrive partner
-//     exists yet, so a GreenDrive quotation carries no sales partner.
+//     dealer's markup ON SGT's price. 30% on 2026-10-09, raised to 40% on
+//     2026-10-10 with the prices unchanged: ₹1,04,000 = ₹74,286 SGT +
+//     ₹29,714 dealer. There is no discount and no markup to enter, and
+//     none is accepted.
+//   - Raised by SGT staff (SGT-direct, or on behalf of a GreenDrive
+//     partner) and by GreenDrive partners on the portal (2026-10-10).
+//     A GreenX partner can never raise one, nor the reverse.
 //   - Terms are a copy of the GreenX dealer quotation terms, pushed to
 //     ERPNext under their own name so they can diverge later.
 //   - HSN 85433000, same as GreenX.
@@ -28,7 +30,7 @@ export interface GdCatalogueRow {
   model: GdModel
   itemCode: string
   label: string
-  /** India price, ex-GST. Includes the dealer's 30%. */
+  /** India price, ex-GST. Includes the dealer's markup. */
   inr: number
   /** Export list price. Not yet quotable — no USD setup in ERPNext. */
   usd: number
@@ -45,14 +47,13 @@ export const GD_HSN = process.env.ERP_GREENDRIVE_HSN ?? '85433000'
 export const GREENDRIVE_TERMS =
   process.env.ERP_GREENDRIVE_TERMS ?? 'GreenDrive Dealer Quotation Terms'
 
-/** Dealer markup included in the price, on top of SGT's price. */
-export const GD_DEALER_MARKUP_PCT = 30
+/** Dealer markup included in the price, on top of SGT's price. Owner, 2026-10-10. */
+export const GD_DEALER_MARKUP_PCT = 40
 
 /**
- * The dealer's share as a percentage of the price they sell at:
- * 30 / 130 = 23.08%. This is the figure an ERPNext commission rate would
- * need, because ERPNext computes commission on the net total. Unused
- * while GreenDrive is staff-only; here so nobody reaches for 30.
+ * The partner's share as a percentage of the price they sell at:
+ * 40 / 140 = 28.57%. This — not 40 — is the commission rate a GreenDrive
+ * quotation carries, because ERPNext computes commission on the net total.
  */
 export const GD_DEALER_SHARE_OF_PRICE_PCT =
   Math.round((GD_DEALER_MARKUP_PCT / (100 + GD_DEALER_MARKUP_PCT)) * 10000) / 100
@@ -80,4 +81,16 @@ export async function resolveGreenDrive(row: GdCatalogueRow, erpRate?: RateLooku
     } catch { /* fall through to the catalogue */ }
   }
   return { row, rate: String(row.inr), rateSource: 'catalogue' }
+}
+
+/** The two partner networks. Absent or unknown means GreenX. */
+export type ProductLine = 'GreenX' | 'GreenDrive'
+
+export function asProductLine(v: unknown): ProductLine {
+  return v === 'GreenDrive' ? 'GreenDrive' : 'GreenX'
+}
+
+/** The product segment of a partner code: EDIN{GX|GD}001. */
+export function productCodeFor(line: ProductLine): 'GX' | 'GD' {
+  return line === 'GreenDrive' ? 'GD' : 'GX'
 }

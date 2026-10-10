@@ -18,9 +18,7 @@ import QuoteScreen from '../quotes/QuoteScreen'
 import { portalQuoteApi } from '../quotes/quotesApi'
 import AgreementScreen from '../agreements/AgreementScreen'
 import { portalAgreementApi } from '../agreements/agreementsApi'
-import { ProductLineFrame } from '../greendrive/ProductLineFrame'
 import GreenDriveQuoteScreen from '../greendrive/GreenDriveQuoteScreen'
-import GreenDriveAgreementScreen from '../greendrive/GreenDriveAgreementScreen'
 
 type PortalPage = 'overview' | 'dealers' | 'quotes' | 'agreements'
 
@@ -93,6 +91,7 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
   }
 
   const org = me!.org
+  const productLine = org.product_line === 'GreenDrive' ? 'GreenDrive' : 'GreenX'
   const activeDealers = dealers.filter(d => d.is_active)
 
   return (
@@ -115,7 +114,7 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
             {org.trade_name || org.legal_name}
           </div>
           <div style={{ fontSize: 11, color: MUTED }}>
-            {org.org_type === 'distributor' ? 'Distributor' : org.org_type} · {org.code}
+            {productLine} {org.org_type === 'distributor' ? 'Distributor' : org.org_type} · {org.code}
           </div>
         </div>
         <button onClick={load} title="Refresh"
@@ -153,17 +152,17 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
       {editDealerId !== null ? (
         <DealerEdit dealerId={editDealerId} onBack={() => { setEditDealerId(null); load() }} />
       ) : page === 'quotes' ? (
+        // A partner works in ONE network, so there is no toggle here: the
+        // org's product line picks the screen. The server forces the same.
         <div style={{ display: 'flex', flexDirection: 'column', minHeight: '70vh' }}>
-          <ProductLineFrame
-            greenx={<QuoteScreen api={portalQuoteApi} />}
-            greendrive={<GreenDriveQuoteScreen api={portalQuoteApi} surface="portal" />} />
+          {productLine === 'GreenDrive'
+            ? <GreenDriveQuoteScreen api={portalQuoteApi} surface="portal" />
+            : <QuoteScreen api={portalQuoteApi} />}
         </div>
       )
       : page === 'agreements' ? (
         <div style={{ display: 'flex', flexDirection: 'column', minHeight: '70vh' }}>
-          <ProductLineFrame
-            greenx={<AgreementScreen api={portalAgreementApi} />}
-            greendrive={<GreenDriveAgreementScreen />} />
+          <AgreementScreen api={portalAgreementApi} productLine={productLine} />
         </div>
       )
       : page === 'dealers' ? <DealerRegistration /> : (

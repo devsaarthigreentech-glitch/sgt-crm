@@ -133,7 +133,11 @@ function Row({ label, value, onChange, placeholder }: {
 
 // ---------------------------------------------------------------------
 
-export default function AgreementScreen({ api }: { api: AgreementApi }) {
+export default function AgreementScreen({ api, productLine = 'GreenX' }: {
+  api: AgreementApi
+  /** Which network's dealers and agreements this screen shows. */
+  productLine?: 'GreenX' | 'GreenDrive'
+}) {
   const [tab, setTab] = useState<'appoint' | 'list'>('appoint')
   const [dealers, setDealers] = useState<DealerOption[]>([])
   const [showAll, setShowAll] = useState(false)
@@ -156,7 +160,7 @@ export default function AgreementScreen({ api }: { api: AgreementApi }) {
 
   const load = () => {
     setLoading(true)
-    Promise.all([api.dealers(showAll), api.list(), api.meta()])
+    Promise.all([api.dealers(showAll, productLine), api.list(productLine), api.meta()])
       .then(([d, a, m]) => {
         setDealers(d); setAgreements(a)
         setSignedMaxMb(m.signedMaxMb); setProvider(m.provider); setError(null)
@@ -393,7 +397,7 @@ export default function AgreementScreen({ api }: { api: AgreementApi }) {
       }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
           <h1 style={{ fontSize: 22, fontWeight: 600, letterSpacing: '-0.03em', margin: 0 }}>
-            Agreements
+            {productLine === 'GreenDrive' ? 'GreenDrive agreements' : 'Agreements'}
           </h1>
           <span style={{ fontSize: 12.5, color: MUTED }}>
             {loading ? 'Loading…' : `${agreements.length} raised · ${dealers.length} dealer${dealers.length === 1 ? '' : 's'} ${showAll ? 'total' : 'awaiting appointment'}`}

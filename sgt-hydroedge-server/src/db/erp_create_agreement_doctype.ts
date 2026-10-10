@@ -152,6 +152,13 @@ const FIELDS: Field[] = [
     description: 'The date the appointment takes effect. Printed in the opening recital.',
   },
   {
+    fieldname: 'product_line', label: 'Product Line', fieldtype: 'Select',
+    options: 'GreenX\nGreenDrive', default: 'GreenX', in_list_view: 1,
+    description:
+      'Which network the dealer is appointed to. Picks the product named in the subtitle, ' +
+      'the appointment paragraph and the Annexure B sticker. Taken from the dealer at creation.',
+  },
+  {
     fieldname: 'naming_series', label: 'Series', fieldtype: 'Select',
     options: SERIES, default: SERIES, no_copy: 1,
     description:
@@ -363,6 +370,8 @@ const PRINT_HTML = `<style>
 {%- set dtype_phrase = "a full-spectrum Sales & Service (SS) Dealer" if dtype == "SS" else "a Sales & Marketing (SM) Dealer" -%}
 {%- set sticker_verb = "Sold, installed and serviced by" if dtype == "SS" else "Sold by" -%}
 {%- set eff = doc.get_formatted("effective_date") if doc.effective_date else "" -%}
+{%- set gd = doc.product_line == "GreenDrive" -%}
+{%- set brand = "GreenDrive" if gd else "GreenX" -%}
 
 <div class="ag">
 
@@ -373,7 +382,7 @@ const PRINT_HTML = `<style>
   </div>
 
   <div class="title">TRIPARTITE DEALER APPOINTMENT AGREEMENT</div>
-  <div class="subtitle">GreenX&trade; CHFA Hydrogen Fuel-Assist Systems for Diesel Generator Sets</div>
+  <div class="subtitle">{% if gd %}GreenDrive&trade; Systems{% else %}GreenX&trade; CHFA Hydrogen Fuel-Assist Systems for Diesel Generator Sets{% endif %}</div>
 
   <div class="parties">
     SGT HydroEdge &nbsp;&middot;&nbsp; Distributor: <strong>{{ doc.distributor_name }} ({{ doc.distributor_code }})</strong>
@@ -409,9 +418,10 @@ const PRINT_HTML = `<style>
 
   <p>SGT, the Distributor and the Dealer are each a &ldquo;Party&rdquo; and together the
     &ldquo;Parties&rdquo;. By this Agreement, SGT &mdash; together with the Distributor &mdash; appoints the
-    Dealer to sell and service the GreenX&trade; Products within the Distributor&rsquo;s ecosystem. The
-    Products are SGT&rsquo;s GreenX&trade; CHFA&trade; systems for diesel generator sets
-    (Indian Patent No. 582824).</p>
+    Dealer to sell and service the {{ brand }}&trade; Products within the Distributor&rsquo;s ecosystem. The
+    Products are {% if gd %}SGT&rsquo;s GreenDrive&trade; One, Neo and Pro systems, as listed in SGT&rsquo;s
+    current GreenDrive price list.{% else %}SGT&rsquo;s GreenX&trade; CHFA&trade; systems for diesel generator sets
+    (Indian Patent No. 582824).{% endif %}</p>
 
   {{ doc.agreement_body or "" }}
 
@@ -434,9 +444,9 @@ const PRINT_HTML = `<style>
 
   <div class="annex">Annexure B &mdash; Dealer Branding / Sticker Specification</div>
   <p>Every unit deployed through the Dealer carries SGT branding plus the sticker below, applied
-    before handover; each deployment registered in GreenVision under the Dealer Code.</p>
+    before handover; each deployment registered in {% if gd %}the CRM{% else %}GreenVision{% endif %} under the Dealer Code.</p>
   <div class="sticker">
-    &ldquo;{{ sticker_verb }}: <strong>{{ doc.dealer_name }}</strong>, authorised GreenX&trade; Dealer
+    &ldquo;{{ sticker_verb }}: <strong>{{ doc.dealer_name }}</strong>, authorised {{ brand }}&trade; Dealer
     (<strong>{{ doc.dealer_code }}</strong>) under {{ doc.distributor_name }}
     (Distributor{% if doc.distributor_region %}, {{ doc.distributor_region }}{% endif %}).
     Contact: {{ doc.dealer_mobile or "" }}{% if doc.dealer_mobile and doc.dealer_email %} &middot; {% endif %}{{ doc.dealer_email or "" }}.&rdquo;

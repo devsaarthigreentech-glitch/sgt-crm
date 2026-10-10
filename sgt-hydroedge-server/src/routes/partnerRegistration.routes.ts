@@ -27,6 +27,7 @@ import { requireRole } from '../auth/guard.js'
 import { validateForSubmit, type RegistrationInput } from '../domain/partnerValidation.js'
 import { inspectGstin } from '../domain/gstin.js'
 import { allotCode } from '../domain/partnerCode.js'
+import { asProductLine, productCodeFor } from '../domain/greenDrive.js'
 import { decodeLogo, LOGO_MAX_BYTES } from '../domain/partnerLogo.js'
 import { readLogo, saveLogo, clearLogo } from '../services/partnerLogoStore.js'
 import { createAccount, brandedPassword } from '../services/userAccounts.js'
@@ -234,7 +235,7 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
     const [states, distributors] = await Promise.all([
       query(`select code, name from partner_service.state_code
               where is_active order by name`),
-      query(`select id, code, legal_name from quote_service.org
+      query(`select id, code, legal_name, product_line from quote_service.org
               where org_type = 'distributor' and is_active order by legal_name`),
     ])
     return reply.send({
@@ -255,14 +256,17 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
   // registrations are applications, orgs are partners who actually exist.
   // EDINGX001 was seeded by migrate_quote_01 and never had an application,
   // so it appears here and nowhere in the registration list.
-  app.get('/orgs', { preHandler: director }, async (_req, reply) => {
+  // ?product=GreenDrive lists that network only; no parameter means GreenX,
+  // which is what every client that predates GreenDrive expects.
+  app.get('/orgs', { preHandler: director }, async (req, reply) => {
+    const line = asProductLine((req.query as { product?: string } | undefined)?.product)
     const { rows } = await query(/* sql */ `
       select o.id, o.code, o.legal_name, o.trade_name, o.org_type, o.dealer_type,
-             o.territory, o.gstin, o.is_active, o.created_at,
+             o.territory, o.gstin, o.is_active, o.created_at, o.product_line,
              p.code as parent_code, p.legal_name as parent_name
         from quote_service.org o
         left join quote_service.org p on p.id = o.parent_id
-       where o.org_type <> 'sgt'
+       where o.org_type <> 'sgt' and o.product_line = $1
        -- Group each distributor with its own dealers. The grouping key must
        -- be the DISTRIBUTOR's code: for a distributor that is its own code,
        -- for a dealer it is the parent's. Using coalesce(p.code, o.code) for
@@ -274,7 +278,7 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
                 case o.org_type when 'distributor' then 0
                                 when 'dealer' then 1 else 2 end,
                 o.code
-    `)
+    `, [line])
     return reply.send({ data: rows })
   })
 
@@ -586,6 +590,9 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
       })
     }
     const partnerType = body.partner_type === 'dealer' ? 'dealer' : 'distributor'
+    // Fixed at creation: which network they are applying to decides their
+    // code series, so it is not an editable field on the draft.
+    const productLine = asProductLine(body.product_line)
     const who = actor(req)
 
     const client = await pool.connect()
@@ -593,10 +600,10 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
       await client.query('begin')
       const { rows: [reg] } = await client.query(
         `insert into partner_service.registration
-           (partner_type, legal_name, status, created_by, created_by_name)
-         values ($1, $2, 'draft', $3, $4)
+           (partner_type, legal_name, status, created_by, created_by_name, product_line)
+         values ($1, $2, 'draft', $3, $4, $5)
          returning *`,
-        [partnerType, legalName, who.id, who.name],
+        [partnerType, legalName, who.id, who.name, productLine],
       )
       await client.query(
         `insert into partner_service.registration_event
@@ -616,19 +623,21 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
 
   // ---- List -------------------------------------------------------------
   app.get('/registrations', { preHandler: director }, async (req, reply) => {
-    const { status } = (req.query ?? {}) as { status?: string }
+    const { status, product } = (req.query ?? {}) as { status?: string; product?: string }
+    const line = asProductLine(product)
     const rows = status
       ? await query(
           `select id, partner_type, dealer_type, legal_name, trade_name, status,
-                  gstin, city, state, allotted_code, created_at, updated_at
+                  gstin, city, state, allotted_code, created_at, updated_at, product_line
              from partner_service.registration
-            where status = $1
-            order by updated_at desc`, [status])
+            where status = $1 and product_line = $2
+            order by updated_at desc`, [status, line])
       : await query(
           `select id, partner_type, dealer_type, legal_name, trade_name, status,
-                  gstin, city, state, allotted_code, created_at, updated_at
+                  gstin, city, state, allotted_code, created_at, updated_at, product_line
              from partner_service.registration
-            order by updated_at desc`)
+            where product_line = $1
+            order by updated_at desc`, [line])
     return reply.send({ data: rows.rows })
   })
 
@@ -717,7 +726,7 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
       // the whole point.
       if (body.attach_org_id) {
         const { rows: orgs } = await client.query(
-          `select id, code, legal_name from quote_service.org where id = $1 for update`,
+          `select id, code, legal_name, product_line from quote_service.org where id = $1 for update`,
           [body.attach_org_id])
         if (!orgs.length) {
           await client.query('rollback')
@@ -726,6 +735,16 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
           })
         }
         const org = orgs[0]
+        if (org.product_line !== reg.product_line) {
+          await client.query('rollback')
+          return reply.code(400).send({
+            error: {
+              code: 'wrong_product_line',
+              message: `${org.legal_name} (${org.code}) is a ${org.product_line} partner; ` +
+                       `this is a ${reg.product_line} application.`,
+            },
+          })
+        }
 
         // Fill BLANKS only. The existing org is the older, curated record;
         // an application attached to it may still be the only place a
@@ -790,12 +809,15 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
 
       // ---- Path B: mint a new code and create the org --------------------
 
-      // Refuse to create a second partner for a GSTIN that already exists.
-      // Mirrors the GSTIN-first dedup ensureErpCustomer() already uses.
+      // Refuse to create a second partner for a GSTIN that already exists
+      // IN THIS NETWORK. Mirrors the GSTIN-first dedup ensureErpCustomer()
+      // uses. Per product line, because a firm in both networks is a
+      // separate partner in each — the owner's choice, 2026-10-07.
       if (reg.gstin && String(reg.gstin).trim()) {
         const { rows: dupe } = await client.query(
           `select id, code, legal_name from quote_service.org
-            where upper(gstin) = upper($1) limit 1`, [String(reg.gstin).trim()])
+            where upper(gstin) = upper($1) and product_line = $2 limit 1`,
+          [String(reg.gstin).trim(), reg.product_line])
         if (dupe.length) {
           await client.query('rollback')
           return reply.code(409).send({
@@ -818,11 +840,23 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
           })
         }
         const { rows: p } = await client.query(
-          `select id, code from quote_service.org where id = $1`, [reg.parent_org_id])
+          `select id, code, product_line from quote_service.org where id = $1`, [reg.parent_org_id])
         if (!p.length) {
           await client.query('rollback')
           return reply.code(400).send({
             error: { code: 'bad_request', message: 'The distributor on this registration no longer exists' },
+          })
+        }
+        // A dealer's code is built from its distributor's, so a GreenDrive
+        // dealer under a GreenX distributor would get a GX code.
+        if (p[0].product_line !== reg.product_line) {
+          await client.query('rollback')
+          return reply.code(400).send({
+            error: {
+              code: 'wrong_product_line',
+              message: `${p[0].code} is a ${p[0].product_line} distributor; ` +
+                       `this is a ${reg.product_line} dealer. Pick a ${reg.product_line} distributor.`,
+            },
           })
         }
         parentId = p[0].id
@@ -838,6 +872,9 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
         partnerType: reg.partner_type,
         dealerType: reg.dealer_type,
         parentCode,
+        // Only a distributor's code takes it directly (EDINGD001); a
+        // dealer's inherits it through the parent code.
+        product: productCodeFor(asProductLine(reg.product_line)),
       })
 
       // The org carries the partner's master data from here on — the
@@ -851,12 +888,12 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
             address_line1, address_line2, city, state, state_code, pincode, country,
             contact_name, contact_designation, contact_mobile, contact_email,
             bank_account_name, bank_account_number, bank_ifsc, bank_name, bank_branch,
-            logo_filename, logo_mime, logo_bytes)
+            logo_filename, logo_mime, logo_bytes, product_line)
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, coalesce($26, 'company'),
                  $10, $11, $12, $13, $14, $15, coalesce($16, 'India'),
                  $17, $18, $19, $20,
                  $21, $22, $23, $24, $25,
-                 $27, $28, $29)
+                 $27, $28, $29, $30)
          returning id, code, legal_name`,
         [code, reg.legal_name, reg.trade_name, reg.partner_type, reg.dealer_type,
          parentId, reg.proposed_territory, reg.gstin, reg.pan,
@@ -865,7 +902,7 @@ export default async function partnerRegistrationRoutes(app: FastifyInstance) {
          reg.contact_name, reg.contact_designation, reg.contact_mobile, reg.contact_email,
          reg.bank_account_name, reg.bank_account_number, reg.bank_ifsc,
          reg.bank_name, reg.bank_branch, reg.entity_type,
-         reg.logo_filename, reg.logo_mime, reg.logo_bytes])
+         reg.logo_filename, reg.logo_mime, reg.logo_bytes, asProductLine(reg.product_line)])
 
       const { rows: [updated] } = await client.query(
         `update partner_service.registration

@@ -21,6 +21,7 @@
 // staff by role, portal by quote_service.visible_org_ids().
 // =====================================================================
 
+import { asProductLine, type ProductLine } from '../domain/greenDrive.js';
 import { query, pool } from '../db/pool.js';
 import { localStorage, storage } from './storage.js';
 import {
@@ -103,6 +104,7 @@ interface PartyRow {
   sign_designation: string | null;
   signature_url: string | null;
   parent_id: number | null;
+  product_line: string | null;
 }
 
 const PARTY_COLS = `
@@ -111,7 +113,7 @@ const PARTY_COLS = `
   o.address_line1, o.address_line2, o.city, o.state, o.pincode, o.country,
   o.contact_name, o.contact_designation, o.contact_mobile, o.contact_email,
   o.signatory_name, o.signatory_designation, o.sign_name, o.sign_designation,
-  o.signature_url, o.parent_id`;
+  o.signature_url, o.parent_id, o.product_line`;
 
 /**
  * One line, the way it reads on a contract.
@@ -227,12 +229,25 @@ export async function resolveForDealer(dealerOrgId: number): Promise<ResolvedAgr
   }
 
   const dealerType = dealer.dealer_type ?? 'SS';
+  const productLine = asProductLine(dealer.product_line);
+  if (distributor && asProductLine(distributor.product_line) !== productLine) {
+    warnings.push(
+      `${dealer.code} is a ${productLine} dealer but ${distributor.code} is a ` +
+      `${asProductLine(distributor.product_line)} distributor — the agreement would link two networks.`);
+  }
+  if (productLine === 'GreenDrive') {
+    warnings.push(
+      'The GreenDrive agreement text is a DRAFT. Clauses marked [REVIEW] print as they are ' +
+      'until edited — have SGT or legal settle them before this is sent.');
+  }
 
   const fields: AgreementFields = {
     // Today, in ERPNext's date format. The screen may change it before
     // creating; it is not editable afterwards without editing the doc.
     effective_date: new Date().toISOString().slice(0, 10),
     agreement_status: 'Draft',
+    // Which product the print format names — GreenX or GreenDrive.
+    product_line: productLine,
 
     distributor_name: distributor?.legal_name ?? null,
     distributor_code: distributor?.code ?? null,
@@ -269,7 +284,7 @@ export async function resolveForDealer(dealerOrgId: number): Promise<ResolvedAgr
       distributorCode: distributor?.code ?? '',
       dealerCode: dealer.code,
       dealerType,
-    }),
+    }, productLine),
   };
 
   return {
@@ -401,15 +416,23 @@ export async function createAgreement(
  * List agreements. `orgIds` bounds it; pass null for "everything", which
  * ONLY a staff route may do.
  */
-export async function listAgreements(orgIds: number[] | null): Promise<AgreementRow[]> {
+export async function listAgreements(
+  orgIds: number[] | null, productLine: ProductLine = 'GreenX',
+): Promise<AgreementRow[]> {
+  // An agreement's product line is its dealer's — there is no column on
+  // agreement_ref for it to disagree with.
+  const lineFilter = `exists (select 1 from quote_service.org d
+                               where d.id = agreement_ref.dealer_org_id and d.product_line = $LINE)`;
   const { rows } = orgIds
     ? await query(
         `select ${ROW_COLS} from quote_service.agreement_ref
-          where dealer_org_id = any($1::int[]) or distributor_org_id = any($1::int[])
-          order by created_at desc limit 500`, [orgIds])
+          where (dealer_org_id = any($1::int[]) or distributor_org_id = any($1::int[]))
+            and ${lineFilter.replace('$LINE', '$2')}
+          order by created_at desc limit 500`, [orgIds, productLine])
     : await query(
         `select ${ROW_COLS} from quote_service.agreement_ref
-          order by created_at desc limit 500`);
+          where ${lineFilter.replace('$LINE', '$1')}
+          order by created_at desc limit 500`, [productLine]);
   return rows as AgreementRow[];
 }
 
@@ -547,6 +570,7 @@ export async function draftFor(row: AgreementRow, senderName: string | null) {
     dealerCode: row.dealer_code,
     distributorName: row.distributor_name,
     senderName,
+    productLine: asProductLine(dealer?.product_line),
   };
 
   const to = [dealer?.contact_email]
@@ -717,26 +741,28 @@ export async function readSignedCopy(
 }
 
 /** Dealers under `orgIds` that have no agreement yet. Drives the CRM prompt. */
-export async function dealersWithoutAgreement(orgIds: number[] | null) {
+export async function dealersWithoutAgreement(
+  orgIds: number[] | null, productLine: ProductLine = 'GreenX',
+) {
   const { rows } = orgIds
     ? await query(
         `select o.id, o.code, o.legal_name, o.dealer_type, o.territory,
                 p.code as distributor_code, p.legal_name as distributor_name
            from quote_service.org o
            left join quote_service.org p on p.id = o.parent_id
-          where o.org_type = 'dealer' and o.is_active
+          where o.org_type = 'dealer' and o.is_active and o.product_line = $2
             and o.id = any($1::int[])
             and not exists (select 1 from quote_service.agreement_ref a
                              where a.dealer_org_id = o.id and a.status <> 'cancelled')
-          order by o.code`, [orgIds])
+          order by o.code`, [orgIds, productLine])
     : await query(
         `select o.id, o.code, o.legal_name, o.dealer_type, o.territory,
                 p.code as distributor_code, p.legal_name as distributor_name
            from quote_service.org o
            left join quote_service.org p on p.id = o.parent_id
-          where o.org_type = 'dealer' and o.is_active
+          where o.org_type = 'dealer' and o.is_active and o.product_line = $1
             and not exists (select 1 from quote_service.agreement_ref a
                              where a.dealer_org_id = o.id and a.status <> 'cancelled')
-          order by o.code`);
+          order by o.code`, [productLine]);
   return rows;
 }

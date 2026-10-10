@@ -33,6 +33,8 @@ export const AGREEMENT_FORMAT =
 export interface AgreementFields {
   effective_date?: string | null;
   agreement_status?: string;
+  /** GreenX or GreenDrive — picks the product wording in the print format. */
+  product_line?: string | null;
 
   /**
    * Feeds the document name via the series, so it MUST be set on create.

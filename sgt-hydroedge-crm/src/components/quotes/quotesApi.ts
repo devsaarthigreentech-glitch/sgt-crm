@@ -262,8 +262,8 @@ export function makeQuoteApi(prefix: string, withPartners: boolean, poPrefix: st
 
     ...(withPartners
       ? {
-          partners: () =>
-            request<{ data: any[] }>('/partners/orgs').then(r =>
+          partners: (product: 'GreenX' | 'GreenDrive' = 'GreenX') =>
+            request<{ data: any[] }>(`/partners/orgs?product=${product}`).then(r =>
               r.data.map(o => ({ id: o.id, code: o.code, legal_name: o.legal_name }))),
         }
       : {}),

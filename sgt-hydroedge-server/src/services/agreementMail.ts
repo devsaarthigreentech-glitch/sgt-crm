@@ -199,6 +199,8 @@ export interface AgreementMessageContext {
   distributorName?: string | null;
   /** Who is sending — SGT, or the distributor. Signs the note. */
   senderName?: string | null;
+  /** Names the product the dealer is appointed for. Absent means GreenX. */
+  productLine?: string | null;
 }
 
 export function defaultAgreementSubject(ctx: AgreementMessageContext): string {
@@ -222,7 +224,8 @@ export function defaultAgreementMessageText(ctx: AgreementMessageContext): strin
   return [
     `Dear ${dealer || 'Sir/Madam'},`,
     ``,
-    `We are pleased to confirm your appointment as an authorised GreenX™ Dealer` +
+    `We are pleased to confirm your appointment as an authorised ` +
+    `${ctx.productLine === 'GreenDrive' ? 'GreenDrive' : 'GreenX'}™ Dealer` +
     (distributor ? ` under ${distributor}` : '') +
     (code ? `, with Dealer Code **${code}**` : '') + `.`,
     ``,

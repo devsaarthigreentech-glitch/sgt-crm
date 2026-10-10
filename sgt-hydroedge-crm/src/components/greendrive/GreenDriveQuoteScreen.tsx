@@ -2,10 +2,11 @@
 //
 // Differs from the GreenX screen in the ways the owner set:
 //   - pick a model (One / Neo / Pro) instead of typing a DG kVA rating
-//   - the price is FIXED: it already includes the dealer's 30% markup on
+//   - the price is FIXED: it already includes the dealer's 40% markup on
 //     SGT's price, so there is neither a discount nor a markup to enter
-//   - raised by SGT STAFF ONLY for now (2026-10-09). On the partner portal
-//     this screen is a calculator; Create is off and the server refuses.
+//   - raised by SGT staff (SGT-direct, or under a GreenDrive partner they
+//     pick) and by GreenDrive partners on the portal. A GreenX partner's
+//     portal never shows this screen; the server refuses them anyway.
 //   - export (USD) is shown but not yet quotable: ERPNext has no USD price
 //     list or exchange rate set up.
 //
@@ -51,11 +52,15 @@ function maths(l: Line, cur: GdCurrency) {
   return { qty, unit, lineTotal: unit * qty, dealerTotal: dealerShare(unit) * qty }
 }
 
-export default function GreenDriveQuoteScreen({ api, surface }: {
+export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }: {
   api: QuoteApi
   surface: 'staff' | 'portal'
+  /** False makes this a price calculator: no Create, no list. */
+  canRaise?: boolean
 }) {
-  const canRaise = surface === 'staff'
+  const showPartnerPicker = surface === 'staff' && !!api.partners
+  const [partners, setPartners] = useState<{ id: number; code: string; legal_name: string }[]>([])
+  const [orgId, setOrgId] = useState<number | null>(null)
 
   const [currency, setCurrency] = useState<GdCurrency>('INR')
   const [lines, setLines] = useState<Line[]>([blank()])
@@ -77,6 +82,9 @@ export default function GreenDriveQuoteScreen({ api, surface }: {
       .catch((e: any) => setListError(e.message))
   }
   useEffect(refresh, [])
+  useEffect(() => {
+    if (showPartnerPicker) api.partners!('GreenDrive').then(setPartners).catch(() => {})
+  }, [])
 
   const patch = (id: number, p: Partial<Line>) =>
     setLines(ls => ls.map(l => (l.id === id ? { ...l, ...p } : l)))
@@ -99,6 +107,7 @@ export default function GreenDriveQuoteScreen({ api, surface }: {
         lines: filled.map(({ l, m }) => ({ model: l.model, qty: m.qty })),
         customerErpName: picked!.name,
         taxMode,
+        ...(showPartnerPicker ? { orgId } : {}),
       })
       setMade(r.data ?? r)
       setLines([blank()]); setPicked(null); setTaxMode('auto')
@@ -119,7 +128,7 @@ export default function GreenDriveQuoteScreen({ api, surface }: {
   }
 
   const createHint = !canRaise
-    ? 'GreenDrive quotations are raised by SGT for now.'
+    ? 'This account cannot raise GreenDrive quotations.'
     : currency === 'USD'
       ? 'Export quotations open once USD pricing is set up in ERPNext.'
       : !picked
@@ -143,7 +152,7 @@ export default function GreenDriveQuoteScreen({ api, surface }: {
       </p>
 
       {!canRaise && (
-        <Note>GreenDrive quotations are raised by SGT for now. Use this to work out a price.</Note>
+        <Note>This account cannot raise GreenDrive quotations. Use this to work out a price.</Note>
       )}
 
       {sent && (
@@ -248,6 +257,23 @@ export default function GreenDriveQuoteScreen({ api, surface }: {
           </div>
         ))}
       </div>
+
+      {showPartnerPicker && (
+        <div style={card}>
+          <h2 style={{ margin: '0 0 12px', fontSize: 15.5, fontWeight: 700, color: INK }}>Raised through</h2>
+          <label style={labelStyle}>GreenDrive partner</label>
+          <select value={orgId ?? ''} onChange={e => setOrgId(e.target.value ? Number(e.target.value) : null)}
+            style={{ ...inputStyle(), appearance: 'auto' }}>
+            <option value="">SGT direct — no partner</option>
+            {partners.map(o => <option key={o.id} value={o.id}>{o.legal_name} ({o.code})</option>)}
+          </select>
+          <div style={{ fontSize: 11, color: FAINT, marginTop: 3 }}>
+            {partners.length
+              ? `The partner's logo and signature print on the quotation, and they earn the ${DEALER_MARKUP_PCT}% markup as commission.`
+              : 'No GreenDrive partners yet — onboard one under Partner onboarding.'}
+          </div>
+        </div>
+      )}
 
       {/* Customer */}
       <div style={card}>

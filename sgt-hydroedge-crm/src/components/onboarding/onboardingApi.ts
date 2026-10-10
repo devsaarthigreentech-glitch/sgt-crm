@@ -60,7 +60,7 @@ export interface Reference {
   dealerTypes: { value: string; label: string; canSell: boolean; canService: boolean }[]
   docTypes: { value: string; label: string }[]
   states: { code: string; name: string }[]
-  distributors: { id: number; code: string; legal_name: string }[]
+  distributors: { id: number; code: string; legal_name: string; product_line?: string }[]
 }
 
 export interface Registration {
@@ -136,7 +136,8 @@ export const onboardingApi = {
     }),
 
   /** The live partner network. Distinct from registrations. */
-  orgs: () => request<{ data: PartnerOrg[] }>('/partners/orgs').then(r => r.data),
+  orgs: (product: 'GreenX' | 'GreenDrive' = 'GreenX') =>
+    request<{ data: PartnerOrg[] }>(`/partners/orgs?product=${product}`).then(r => r.data),
 
   org: (id: number) => request<{ data: OrgDetail }>(`/partners/orgs/${id}`).then(r => r.data),
 
@@ -168,15 +169,15 @@ export const onboardingApi = {
   reference: () =>
     request<{ data: Reference }>('/partners/reference').then(r => r.data),
 
-  list: (status?: string) =>
+  list: (status?: string, product: 'GreenX' | 'GreenDrive' = 'GreenX') =>
     request<{ data: Registration[] }>(
-      `/partners/registrations${status ? `?status=${encodeURIComponent(status)}` : ''}`,
+      `/partners/registrations?product=${product}${status ? `&status=${encodeURIComponent(status)}` : ''}`,
     ).then(r => r.data),
 
   get: (id: number) =>
     request<{ data: Registration }>(`/partners/registrations/${id}`).then(r => r.data),
 
-  create: (body: { legal_name: string; partner_type: string }) =>
+  create: (body: { legal_name: string; partner_type: string; product_line?: 'GreenX' | 'GreenDrive' }) =>
     request<{ data: Registration }>('/partners/registrations', {
       method: 'POST',
       body: JSON.stringify(body),

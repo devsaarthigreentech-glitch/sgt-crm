@@ -61,6 +61,8 @@ export interface PortalMe {
     territory: string | null
     gstin: string | null
     created_at: string
+    /** Which network this partner belongs to. Absent on an old server means GreenX. */
+    product_line?: 'GreenX' | 'GreenDrive'
   }
   counts: { dealers: string; sub_dealers: string }
 }

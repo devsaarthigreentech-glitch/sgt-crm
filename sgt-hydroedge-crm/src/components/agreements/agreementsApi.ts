@@ -144,10 +144,10 @@ export interface AgreementEvent {
 
 export interface AgreementApi {
   meta(): Promise<{ provider: string; doctype: string; signedMaxMb: number; surface: string }>
-  dealers(all?: boolean): Promise<DealerOption[]>
+  dealers(all?: boolean, product?: 'GreenX' | 'GreenDrive'): Promise<DealerOption[]>
   resolve(dealerOrgId: number): Promise<Resolved>
   create(dealerOrgId: number, overrides?: Partial<AgreementFields>): Promise<Agreement>
-  list(): Promise<Agreement[]>
+  list(product?: 'GreenX' | 'GreenDrive'): Promise<Agreement[]>
   history(id: number): Promise<AgreementEvent[]>
   draft(id: number): Promise<Draft>
   send(id: number, body: { to?: string[]; cc?: string[]; subject?: string; messageText?: string }):
@@ -187,8 +187,8 @@ export function makeAgreementApi(prefix: string): AgreementApi {
   return {
     meta: () => request<{ data: any }>(`${prefix}/meta`).then(r => r.data),
 
-    dealers: (all = false) =>
-      request<{ data: DealerOption[] }>(`${prefix}/dealers${all ? '?all=1' : ''}`)
+    dealers: (all = false, product = 'GreenX') =>
+      request<{ data: DealerOption[] }>(`${prefix}/dealers?product=${product}${all ? '&all=1' : ''}`)
         .then(r => r.data),
 
     resolve: (dealerOrgId) =>
@@ -200,7 +200,8 @@ export function makeAgreementApi(prefix: string): AgreementApi {
         body: JSON.stringify({ dealerOrgId, overrides: overrides ?? {} }),
       }).then(r => r.data),
 
-    list: () => request<{ data: Agreement[] }>(prefix).then(r => r.data),
+    list: (product = 'GreenX') =>
+      request<{ data: Agreement[] }>(`${prefix}?product=${product}`).then(r => r.data),
 
     history: (id) =>
       request<{ data: AgreementEvent[] }>(`${prefix}/${id}/history`).then(r => r.data),

@@ -20,6 +20,7 @@
 // the visible set before it is used.
 // =====================================================================
 
+import { asProductLine } from '../domain/greenDrive.js';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { query } from '../db/pool.js';
 import { requireAuth, requireRole } from '../auth/guard.js';
@@ -149,10 +150,13 @@ export default function agreementRoutes(opts: AgreementRoutesOptions) {
     app.get('/dealers', { preHandler: guard }, async (req, reply) => {
       const me = await resolveCaller(req, reply, opts.surface);
       if (!me) return;
-      const all = String((req.query as { all?: string })?.all ?? '') === '1';
+      const q = (req.query ?? {}) as { all?: string; product?: string };
+      const all = String(q.all ?? '') === '1';
+      // No parameter means GreenX, as before GreenDrive existed.
+      const line = asProductLine(q.product);
 
       if (!all) {
-        return reply.send({ data: await dealersWithoutAgreement(me.orgIds) });
+        return reply.send({ data: await dealersWithoutAgreement(me.orgIds, line) });
       }
       const { rows } = me.orgIds
         ? await query(
@@ -163,7 +167,8 @@ export default function agreementRoutes(opts: AgreementRoutesOptions) {
                from quote_service.org o
                left join quote_service.org p on p.id = o.parent_id
               where o.org_type = 'dealer' and o.is_active and o.id = any($1::int[])
-              order by o.code`, [me.orgIds])
+                and o.product_line = $2
+              order by o.code`, [me.orgIds, line])
         : await query(
             `select o.id, o.code, o.legal_name, o.dealer_type, o.territory,
                     p.code as distributor_code, p.legal_name as distributor_name,
@@ -171,8 +176,8 @@ export default function agreementRoutes(opts: AgreementRoutesOptions) {
                       where a.dealer_org_id = o.id and a.status <> 'cancelled') as agreements
                from quote_service.org o
                left join quote_service.org p on p.id = o.parent_id
-              where o.org_type = 'dealer' and o.is_active
-              order by o.code`);
+              where o.org_type = 'dealer' and o.is_active and o.product_line = $1
+              order by o.code`, [line]);
       return reply.send({ data: rows });
     });
 
@@ -225,7 +230,8 @@ export default function agreementRoutes(opts: AgreementRoutesOptions) {
     app.get('/', { preHandler: guard }, async (req, reply) => {
       const me = await resolveCaller(req, reply, opts.surface);
       if (!me) return;
-      return reply.send({ data: await listAgreements(me.orgIds) });
+      const line = asProductLine((req.query as { product?: string } | undefined)?.product);
+      return reply.send({ data: await listAgreements(me.orgIds, line) });
     });
 
     app.get('/:id', { preHandler: guard }, async (req, reply) => {

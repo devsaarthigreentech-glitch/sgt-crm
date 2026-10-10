@@ -308,7 +308,10 @@ Password: ${cred.password}`
   )
 }
 
-export default function PartnerOnboarding() {
+export default function PartnerOnboarding({ productLine = 'GreenX' }: {
+  /** Which network this screen manages. Each has its own codes and lists. */
+  productLine?: 'GreenX' | 'GreenDrive'
+} = {}) {
   // The partner's login, shown ONCE after approval. Never fetched again —
   // there is no endpoint that can return a password. Dismissing this
   // without copying means resetting it from the Logins screen.
@@ -338,7 +341,7 @@ export default function PartnerOnboarding() {
   const gstinTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
-    Promise.all([onboardingApi.reference(), onboardingApi.list(), onboardingApi.orgs()])
+    Promise.all([onboardingApi.reference(), onboardingApi.list(undefined, productLine), onboardingApi.orgs(productLine)])
       .then(([r, l, o]) => { setRef(r); setList(l); setOrgs(o) })
       .catch(e => setBanner(e.message))
       .finally(() => setLoading(false))
@@ -454,7 +457,9 @@ export default function PartnerOnboarding() {
     )
     if (!name?.trim()) return
     try {
-      const r = await onboardingApi.create({ legal_name: name.trim(), partner_type: partnerType })
+      const r = await onboardingApi.create({
+        legal_name: name.trim(), partner_type: partnerType, product_line: productLine,
+      })
       setList(l => [r, ...l])
       dirty.current = false
       setForm({ ...r, profile: {} })
@@ -476,7 +481,7 @@ export default function PartnerOnboarding() {
       const r = await onboardingApi.submit(openId)
       setErrors({})
       setForm({ ...r, profile: r.profile ?? {} })
-      setList(await onboardingApi.list())
+      setList(await onboardingApi.list(undefined, productLine))
       setBanner(null)
     } catch (e: any) {
       if (e instanceof ValidationError) {
@@ -515,7 +520,7 @@ export default function PartnerOnboarding() {
         orgId={openOrgId}
         onBack={() => {
           setOpenOrgId(null)
-          onboardingApi.orgs().then(setOrgs).catch(() => {})
+          onboardingApi.orgs(productLine).then(setOrgs).catch(() => {})
         }}
       />
     )
@@ -532,9 +537,12 @@ export default function PartnerOnboarding() {
             onClose={() => { setCredentials(null); setCopied(false) }}
           />
         )}
-        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 700, color: INK }}>Partner onboarding</h1>
+        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 700, color: INK }}>
+          {productLine === 'GreenDrive' ? 'GreenDrive partner onboarding' : 'Partner onboarding'}
+        </h1>
         <p style={{ margin: '0 0 18px', fontSize: 12.5, color: MUTED }}>
-          Register a distributor or a dealer. Drafts save as you type.
+          Register a {productLine} distributor or dealer. Drafts save as you type.
+          {productLine === 'GreenDrive' && ' Codes are EDINGD001 for a distributor, EDINGD001-SS01 / -SM01 for a dealer.'}
         </p>
 
         {banner && (
@@ -724,8 +732,8 @@ export default function PartnerOnboarding() {
                                   `This cannot be undone.`)) return
                                 try {
                                   const res = await onboardingApi.approve(r.id)
-                                  setList(await onboardingApi.list())
-                                  setOrgs(await onboardingApi.orgs())
+                                  setList(await onboardingApi.list(undefined, productLine))
+                                  setOrgs(await onboardingApi.orgs(productLine))
                                   if (res.login?.created) {
                                     setCopied(false)
                                     setCredentials({
@@ -761,7 +769,7 @@ export default function PartnerOnboarding() {
                                 if (!reason?.trim()) return
                                 try {
                                   await onboardingApi.reject(r.id, reason.trim())
-                                  setList(await onboardingApi.list())
+                                  setList(await onboardingApi.list(undefined, productLine))
                                   setBanner(`${r.legal_name} rejected.`)
                                 } catch (e: any) { setBanner(e.message) }
                               }}
@@ -786,7 +794,7 @@ export default function PartnerOnboarding() {
                                   'then submitted again.\n\nReason (optional):') ?? ''
                                 try {
                                   await onboardingApi.reopen(r.id, reason.trim() || undefined)
-                                  setList(await onboardingApi.list())
+                                  setList(await onboardingApi.list(undefined, productLine))
                                   setBanner(`${r.legal_name} is a draft again — open it to edit.`)
                                 } catch (e: any) { setBanner(e.message) }
                               }}
@@ -812,7 +820,7 @@ export default function PartnerOnboarding() {
                               : '\n\nThis permanently removes the draft.'))) return
                           try {
                             await onboardingApi.removeRegistration(r.id)
-                            setList(await onboardingApi.list())
+                            setList(await onboardingApi.list(undefined, productLine))
                             setBanner(null)
                           } catch (e: any) { setBanner(e.message) }
                         }}
@@ -854,8 +862,8 @@ export default function PartnerOnboarding() {
         <button
           onClick={() => {
             setOpenId(null)
-            onboardingApi.list().then(setList).catch(() => {})
-            onboardingApi.orgs().then(setOrgs).catch(() => {})
+            onboardingApi.list(undefined, productLine).then(setList).catch(() => {})
+            onboardingApi.orgs(productLine).then(setOrgs).catch(() => {})
           }}
           style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'none', border: 'none', cursor: 'pointer', color: MUTED, fontSize: 13, fontFamily: 'inherit', padding: 0 }}
         >
@@ -908,7 +916,11 @@ export default function PartnerOnboarding() {
                   label="Applies under distributor" required value={form.parent_org_id}
                   onChange={v => set('parent_org_id', v ? Number(v) : null)}
                   error={errors.parent_org_id}
-                  options={(ref?.distributors ?? []).map(d => ({ value: String(d.id), label: `${d.legal_name} (${d.code})` }))}
+                  options={(ref?.distributors ?? [])
+                    // A dealer's code is built from its distributor's, so only
+                    // distributors in this network can take it.
+                    .filter(d => (d.product_line ?? 'GreenX') === productLine)
+                    .map(d => ({ value: String(d.id), label: `${d.legal_name} (${d.code})` }))}
                 />
               </>
             )}
@@ -1216,8 +1228,8 @@ export default function PartnerOnboarding() {
                       try {
                         const r = await onboardingApi.approve(openId, dupe.id)
                         setForm({ ...r.data, profile: r.data.profile ?? {} })
-                        setList(await onboardingApi.list())
-                        setOrgs(await onboardingApi.orgs())
+                        setList(await onboardingApi.list(undefined, productLine))
+                        setOrgs(await onboardingApi.orgs(productLine))
                         setBanner(null)
                       } catch (e: any) { setBanner(e.message) }
                     }}
@@ -1241,8 +1253,8 @@ export default function PartnerOnboarding() {
                   try {
                     const r = await onboardingApi.approve(openId)
                     setForm({ ...r.data, profile: r.data.profile ?? {} })
-                    setList(await onboardingApi.list())
-                    setOrgs(await onboardingApi.orgs())
+                    setList(await onboardingApi.list(undefined, productLine))
+                    setOrgs(await onboardingApi.orgs(productLine))
                     setBanner(null)
                     if (r.login?.created) {
                       setCopied(false)
@@ -1273,7 +1285,7 @@ export default function PartnerOnboarding() {
                   try {
                     const r = await onboardingApi.reject(openId, reason.trim())
                     setForm({ ...r.data, profile: r.data.profile ?? {} })
-                    setList(await onboardingApi.list())
+                    setList(await onboardingApi.list(undefined, productLine))
                     setBanner(null)
                   } catch (e: any) { setBanner(e.message) }
                 }}

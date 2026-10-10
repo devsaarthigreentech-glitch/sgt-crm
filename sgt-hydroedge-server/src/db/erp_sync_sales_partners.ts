@@ -32,11 +32,17 @@
 
 import 'dotenv/config';
 import { Pool } from 'pg';
+import { GD_DEALER_SHARE_OF_PRICE_PCT } from '../domain/greenDrive.js';
 
 const BASE = process.env.ERPNEXT_URL?.replace(/\/+$/, '');
 const KEY = process.env.ERPNEXT_API_KEY;
 const SECRET = process.env.ERPNEXT_API_SECRET;
 const DEFAULT_COMMISSION = Number(process.env.ERP_PARTNER_COMMISSION ?? '40.48');
+// GreenDrive partners earn their markup: 40% on SGT's price is 28.57% of
+// the price ERPNext computes commission on. Not overridable by the GreenX
+// variable, which would silently pay GreenX's 40.48 on GreenDrive.
+const commissionFor = (line: string) =>
+  line === 'GreenDrive' ? GD_DEALER_SHARE_OF_PRICE_PCT : DEFAULT_COMMISSION;
 const FALLBACK_TERRITORY = process.env.ERP_TERRITORY ?? 'India';
 const CONFIRMED = process.env.CONFIRM_CREATE === '1';
 
@@ -83,8 +89,10 @@ async function main() {
   const { rows: orgs } = await pool.query<{
     id: number; code: string; legal_name: string; org_type: string;
     dealer_type: string | null; territory: string | null; status: string;
+    product_line: string;
   }>(`
     select id, code, legal_name, org_type, dealer_type, territory,
+           coalesce(product_line, 'GreenX') as product_line,
            coalesce(status, case when is_active then 'active' else 'suspended' end) as status
       from quote_service.org
      where org_type in ('distributor','dealer','sub_dealer')
@@ -162,11 +170,11 @@ async function main() {
     return;
   }
 
-  console.log(`  ${toCreate.length} to create at ${DEFAULT_COMMISSION}% commission:`);
+  console.log(`  ${toCreate.length} to create (GreenX ${DEFAULT_COMMISSION}%, GreenDrive ${GD_DEALER_SHARE_OF_PRICE_PCT}% commission):`);
   for (const o of toCreate) {
     const t = resolveTerritory(o.territory);
     console.log(`    · ${o.code.padEnd(18)} ${o.legal_name}` +
-                `  [${o.org_type}${o.dealer_type ? '/' + o.dealer_type : ''}]`);
+                `  [${o.org_type}${o.dealer_type ? '/' + o.dealer_type : ''}, ${o.product_line} ${commissionFor(o.product_line)}%]`);
     console.log(`      territory: ${t.name}${t.exact ? '' : `  (fallback — "${o.territory ?? 'none'}" is not an ERPNext Territory)`}`);
   }
 
@@ -184,7 +192,7 @@ async function main() {
       await erpPost('Sales Partner', {
         doctype: 'Sales Partner',
         partner_name: o.code,
-        commission_rate: DEFAULT_COMMISSION,
+        commission_rate: commissionFor(o.product_line),
         territory: resolveTerritory(o.territory).name,
         // Kept in the description so anyone reading the ERPNext record can
         // tell which CRM partner it is without cross-referencing codes.

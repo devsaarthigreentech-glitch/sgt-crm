@@ -64,6 +64,8 @@ interface Caller {
   orgCode: string
   orgType: string
   legalName: string
+  /** GreenX or GreenDrive. A partner works in exactly one network. */
+  productLine: 'GreenX' | 'GreenDrive'
 }
 
 /**
@@ -80,7 +82,8 @@ async function resolveCaller(
   }
   const { rows } = await query(
     `select u.id, u.org_id, u.active,
-            o.code, o.org_type, o.legal_name, o.is_active as org_active
+            o.code, o.org_type, o.legal_name, o.is_active as org_active,
+            o.product_line
        from lead_service.app_user u
        left join quote_service.org o on o.id = u.org_id
       where u.id = $1`, [sub])
@@ -102,6 +105,7 @@ async function resolveCaller(
     orgCode: row.code,
     orgType: row.org_type,
     legalName: row.legal_name,
+    productLine: row.product_line === 'GreenDrive' ? 'GreenDrive' : 'GreenX',
   }
 }
 
@@ -113,7 +117,7 @@ export default async function portalRoutes(app: FastifyInstance) {
 
     const { rows } = await query(
       `select code, legal_name, trade_name, org_type, dealer_type,
-              territory, gstin, created_at
+              territory, gstin, created_at, product_line
          from quote_service.org
         where id = $1`, [me.orgId])
 
@@ -471,8 +475,9 @@ export default async function portalRoutes(app: FastifyInstance) {
   app.post('/quotes', { preHandler: requireAuth }, async (req, reply) => {
     const me = await resolveCaller(req, reply)
     if (!me) return
-    const body = (req.body ?? {}) as QuoteBody
     // forcedOrgId — the partner cannot choose whose quotation this is.
+    // Nor which product: their network decides it, whatever the body says.
+    const body = { ...((req.body ?? {}) as QuoteBody), productLine: me.productLine }
     const result = await performQuotation(req, body, { forcedOrgId: me.orgId, via: 'portal' })
     if (!result.ok) return reply.code(result.code).send(result.payload)
     return reply.code(201).send(result.payload)
@@ -499,7 +504,7 @@ export default async function portalRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } })
     }
     const result = await performQuotation(
-      req, (req.body ?? {}) as QuoteBody,
+      req, { ...((req.body ?? {}) as QuoteBody), productLine: me.productLine },
       { forcedOrgId: me.orgId, via: 'portal', updating: erpName })
     if (!result.ok) return reply.code(result.code).send(result.payload)
     return reply.send(result.payload)
@@ -902,7 +907,7 @@ export default async function portalRoutes(app: FastifyInstance) {
         ],
         // Echoed back so the form can show who the dealer will sit under,
         // rather than offering a choice.
-        parent: { code: me.orgCode, legal_name: me.legalName },
+        parent: { code: me.orgCode, legal_name: me.legalName, product_line: me.productLine },
       },
     })
   })
@@ -951,10 +956,11 @@ export default async function portalRoutes(app: FastifyInstance) {
       await client.query('begin')
       const { rows: [reg] } = await client.query(
         `insert into partner_service.registration
-           (partner_type, parent_org_id, legal_name, status, created_by, created_by_name)
-         values ('dealer', $1, $2, 'draft', $3, $4)
+           (partner_type, parent_org_id, legal_name, status, created_by, created_by_name,
+            product_line)
+         values ('dealer', $1, $2, 'draft', $3, $4, $5)
          returning *`,
-        [me.orgId, legalName, me.userId, (req.user as any)?.name ?? null])
+        [me.orgId, legalName, me.userId, (req.user as any)?.name ?? null, me.productLine])
       await client.query(
         `insert into partner_service.registration_event
            (registration_id, event_type, from_status, to_status, actor, actor_name, payload)

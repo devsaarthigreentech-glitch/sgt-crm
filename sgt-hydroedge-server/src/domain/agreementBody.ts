@@ -264,7 +264,126 @@ export function bodyToText(html: string | null | undefined): string {
     .trim();
 }
 
-/** The default body, as HTML, with this agreement's tokens resolved. */
-export function defaultAgreementBody(t: BodyTokens): string {
-  return textToBody(fillBodyTokens(DEFAULT_AGREEMENT_BODY_TEXT, t));
+/**
+ * Sections 1–13 for a GREENDRIVE dealer — a DRAFT, written 2026-10-10 from
+ * the GreenX text above at the owner's request ("I draft, you review").
+ *
+ * Same structure and numbering as GreenX, so the print format, the
+ * cross-references and anyone comparing the two find things in the same
+ * place. What changed, and why:
+ *
+ *   4    Pricing is FIXED: the price list already includes the dealer's
+ *        40% markup on SGT's price. No discount authority to describe.
+ *   5    SGT-direct billing is the rule, not the exception — the owner's
+ *        decision for both product lines (see sgt-partner-tier-and-billing).
+ *   6    The DG-specific install protocol (emission report, NABL, fuel
+ *        measurement) is gone; what replaces it is unknown.
+ *   7    The warranty no longer names CHFA™ components; terms unknown.
+ *   9    No kVA signage.
+ *   10   No CHFA™ / Patent 582824; GreenDrive's IP and the competing-
+ *        product definition are unknown.
+ *
+ * Every clause whose substance is a guess carries the literal "[REVIEW]".
+ * It is left IN the text on purpose: it prints, so an agreement cannot go
+ * out with a guessed clause unless someone has deliberately deleted the
+ * marker after settling the wording.
+ */
+export const GREENDRIVE_AGREEMENT_BODY_TEXT = `1.  What this Agreement does
+
+1.1  **Appointment.**  SGT, with the Distributor, appoints the Dealer to promote, sell, install and service the GreenDrive™ Products under the Distributor's ecosystem. The Dealer is an independent business — not an agent, employee, partner or joint-venture of SGT or the Distributor — and shall not hold itself out as such.
+
+1.2  **Non-exclusive.**  The Dealer's appointment is non-exclusive and carries no exclusive territory or customer. The Distributor alone is exclusive for its Region; the Dealer must never act in a way that harms another Distributor's exclusivity (Clause 8.2).
+
+1.3  **SGT's role.**  SGT is a Party to register the Dealer, allot its Dealer Code, provide CRM access, deliver training, warranty and platform support, run the settlement in Section 5, and hold the Dealer directly to SGT's brand, safety, IP and confidentiality standards.
+
+1.4  **Back-to-back.**  This Agreement sits under the SGT–Distributor Distribution Agreement for GreenDrive. Where a term here is silent, that agreement applies; on the Products, brand, safety or IP, SGT's written terms prevail.
+
+2.  Dealer Code and Type
+
+2.1  **Code and linkage.**  The Dealer Code has the format {DISTRIBUTOR_CODE}-TTNN — the Distributor Code, a two-letter type (SM = Sales & Marketing / sales only; SS = Sales & Service / sells, installs and services), and a two-digit serial. This Dealer is {DEALER_CODE} ({DEALER_TYPE}). The Code links the Dealer to the Distributor for every lead, quotation, deployment, warranty, settlement and report, and must be quoted on all CRM entries and SGT correspondence.
+
+2.2  **Who does what.**  All dealers may generate leads, quote and sell through the CRM. Only SS dealers install, service, and deliver AMC and warranty work. Where an SM dealer books a sale, a linked SS dealer (assigned by the Distributor) performs the installation, AMC and service and is recorded against the deployment in the CRM.
+
+3.  Selling — everything through the CRM
+
+3.1  **One system of record.**  SGT provides CRM access to the Distributor and every Dealer. The CRM is the single system of record for all leads, customers, quotations, deployments and service.
+
+3.2  **Capture and quote.**  Every lead — however sourced — is captured in the CRM under the Dealer Code. To book an order, the Dealer creates the customer and generates the quotation from its own CRM login. The Dealer keeps all records current; CRM data is SGT's confidential information, used for orders, settlement, warranty and generating further leads for the channel.
+
+4.  Pricing
+
+4.1  **Fixed prices set by SGT.**  SGT publishes the GreenDrive price list. Each listed price is the price to the customer and already includes the Dealer's markup of forty percent (40%) on SGT's price. The Dealer quotes the listed price and may neither discount below it nor add to it, save with SGT's written approval recorded in the CRM. [REVIEW]
+
+5.  Payment, Delivery and Settlement
+
+5.1  **Billing by SGT.**  SGT bills the customer directly at the quoted price and collects the customer's payment, per the advance and payment schedule on the quotation. [REVIEW]
+
+5.2  **Dealer's share.**  For every order billed under the Dealer Code, SGT pays the Dealer its markup — the difference between the quoted price and SGT's price — after SGT has received the customer's payment in full. Any share due to the Distributor is settled as SGT and the Distributor have agreed. [REVIEW]
+
+5.3  **Delivery.**  SGT delivers the Product to the installation site against completion of the agreed payment schedule.
+
+5.4  **Settlement.**  SGT settles strictly per the shares recorded in the CRM / approved price list, and takes no share of, and is not a party to, any separate arrangement between the Distributor and the Dealer beyond making the recorded payment.
+
+6.  Installation and Support (SS Dealer)
+
+6.1  **Install to protocol.**  The Dealer installs and commissions every Product strictly per SGT's GreenDrive installation protocol, confirms correct operation before handover, and records it in the CRM. A non-compliant installation is corrected within thirty (30) days; until corrected, that unit's warranty is suspended. [REVIEW]
+
+6.2  **Site report.**  Within seven (7) days of every installation the Dealer uploads to the CRM: (a) installation photographs; (b) the commissioning checklist SGT specifies; and (c) the customer's signed acceptance — quoting the Dealer Code. [REVIEW]
+
+6.3  **Certified people, approved parts.**  Only SGT-certified personnel install, operate, maintain or service the Products. The Dealer uses only SGT-approved marketing materials and SGT-qualified fitments, and registers every deployment in the CRM under its Dealer Code.
+
+7.  Warranty, AMC and Machine Swap
+
+7.1  **Warranty.**  Each Product carries SGT's standard one (1) year manufacturer warranty on GreenDrive™ components only — not the host equipment or third-party parts. It is void on unauthorised opening, modification, non-approved parts, or a non-compliant installation. [REVIEW]
+
+7.2  **AMC / extended warranty.**  After the first year, AMC or extended warranty is offered on a case-to-case quotation basis, delivered only through SS (Service) Dealers, on terms SGT publishes. [REVIEW]
+
+7.3  **Machine swap.**  Where a defective unit cannot be repaired in the field, SGT will, wherever possible, swap it for a new one; the defective unit is returned to SGT under the applicable warranty terms.
+
+8.  Training, SGT Support and Territory Discipline
+
+8.1  **Enablement and support.**  SGT, with the Distributor, trains and certifies the Dealer's team, provides escalation support, and supplies brand assets and product updates — standard modules at no charge.
+
+8.2  **Stay in the Region.**  The Dealer works within the Distributor's Region and shall not solicit or close customers in another Distributor's exclusive Region except by arrangement with that Distributor. Conduct that harms another Distributor's exclusivity is a material breach and may lead to withdrawal of the appointment.
+
+9.  Branding and Deployment Tracking
+
+9.1  **Marking.**  Every unit carries SGT branding and the Dealer identification (Annexure B). The "Manufactured by SGT HydroEdge" marking and all patent / certification markings shall not be altered, obscured or removed. Each deployment is registered in the CRM under the Dealer Code before handover.
+
+10.  Confidentiality, IP, Non-Compete and Non-Circumvention
+
+10.1  **Confidentiality.**  Pricing, SGT's price, margins and CRM / customer data are confidential and shall not be disclosed to any customer, competitor or third party. These obligations continue for five (5) years after termination; obligations for SGT's technology and know-how continue in perpetuity. SGT may enforce this directly against the Dealer.
+
+10.2  **Intellectual property.**  All IP in the GreenDrive™ Products and their technology remains with SGT. The Dealer shall not reverse engineer or replicate the Products, or assist any third party to do so, and acquires no IP rights. [REVIEW]
+
+10.3  **Non-compete and non-circumvention.**  During the term and for twelve (12) months after termination, the Dealer shall not market, sell, install or service any product competing with GreenDrive™, nor migrate any SGT or AMC customer to such a product. The Dealer shall not bypass the Distributor or SGT — via the CRM or customer relationships — to deal directly or avoid any settlement or AMC obligation. [REVIEW]
+
+11.  Liability
+
+11.1  **Indemnity and limitation.**  The Dealer shall indemnify SGT and the Distributor against any third-party claim, loss or damage — including fire, injury, death or property damage — arising from the Dealer's installation, commissioning, service or handling of the Products, or from a non-compliant installation or its negligence. Save for SGT's warranty and replacement obligations, SGT has no further liability. Neither SGT nor the Distributor is liable for indirect or consequential loss; nothing limits any liability that cannot be limited under Applicable Law.
+
+12.  Term and Termination
+
+12.1  **Term.**  This Agreement takes effect on the Effective Date and continues co-terminously with the Distribution Agreement, subject to earlier termination.
+
+12.2  **Termination.**  Any Party may terminate for material breach not remedied within thirty (30) days of written notice. SGT may direct suspension or termination of the Dealer on withdrawal of approval (Clause 2.2) or breach of territory discipline (Clause 8.2). If the Distribution Agreement ends or the Distributor's exclusivity is withdrawn, this appointment ends automatically, unless SGT agrees in writing to re-link the Dealer to another Distributor.
+
+12.3  **Survival.**  Accrued rights, in-warranty support, confidentiality, IP, non-compete, indemnity and dispute resolution survive termination.
+
+13.  General
+
+13.1  **Assignment.**  This Agreement and the Dealer's rights are personal to the Dealer and may not be assigned or transferred, nor may control of the Dealer change, without the prior written consent of both SGT and the Distributor.
+
+13.2  **Governing law and disputes.**  This Agreement is governed by the laws of India. The Parties shall first attempt good-faith mediation for thirty (30) days; failing resolution, the dispute is finally resolved by a sole arbitrator under the Arbitration and Conciliation Act, 1996, seat and venue Pune, Maharashtra, in English. The courts at Pune have exclusive jurisdiction for interim relief and supervision of the arbitration.
+
+13.3  **Notices, amendment, entirety.**  Notices shall be in writing to the addresses above. This Agreement, with its Annexures and the back-to-back terms of the Distribution Agreement, is the entire agreement for the Dealer appointment and may be amended only in writing signed by all three Parties. If any provision is unenforceable, the rest continues. It may be executed in counterparts.`;
+
+/**
+ * The default body, as HTML, with this agreement's tokens resolved.
+ * GreenDrive dealers start from the GreenDrive draft; everyone else from
+ * the executed GreenX template.
+ */
+export function defaultAgreementBody(t: BodyTokens, productLine: string = 'GreenX'): string {
+  const text = productLine === 'GreenDrive' ? GREENDRIVE_AGREEMENT_BODY_TEXT : DEFAULT_AGREEMENT_BODY_TEXT;
+  return textToBody(fillBodyTokens(text, t));
 }

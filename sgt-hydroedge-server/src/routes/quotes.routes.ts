@@ -19,7 +19,9 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { query, pool } from '../db/pool.js'
 import { requireRole } from '../auth/guard.js'
 import { resolveForKva } from '../domain/quotePricing.js'
-import { gdRow, resolveGreenDrive, GREENDRIVE_TERMS, GD_CATALOGUE } from '../domain/greenDrive.js'
+import {
+  gdRow, resolveGreenDrive, GREENDRIVE_TERMS, GD_CATALOGUE, GD_DEALER_SHARE_OF_PRICE_PCT,
+} from '../domain/greenDrive.js'
 import { inspectGstin } from '../domain/gstin.js'
 import {
   checkDiscount, checkDiscountAmount, actorFor, DISCOUNT_CAPS,
@@ -165,6 +167,87 @@ function snapshotPartner(o: Record<string, any>): CreateQuotationInput['partner'
 }
 
 /**
+ * The partner a quotation is raised under, as the print format needs them:
+ * code (the ERPNext sales_partner), type, product line, and the snapshot
+ * with logo and signature published to ERPNext. Null when the org is
+ * unknown or inactive.
+ *
+ * Shared by the GreenX and GreenDrive paths, so a partner's letter head
+ * and signature print the same on both.
+ */
+async function loadQuotePartner(req: FastifyRequest, orgId: number): Promise<{
+  code: string
+  orgType: string
+  productLine: string
+  snapshot: NonNullable<CreateQuotationInput['partner']>
+} | null> {
+  const { rows } = await query(
+    `select id, code, org_type, legal_name, trade_name, gstin,
+            address_line1, address_line2, city, state, pincode,
+            branch_address_line1, branch_address_line2, branch_city,
+            branch_state, branch_pincode, branch_phone, branch_email,
+            contact_name, contact_mobile, contact_email,
+            bank_account_name, bank_account_number, bank_ifsc,
+            bank_name, bank_branch,
+            logo_filename, logo_mime, logo_bytes, erp_logo_url,
+            sign_filename, sign_mime, sign_bytes, erp_sign_url, signature_url,
+            product_line
+       from quote_service.org where id = $1 and is_active`, [orgId])
+  if (!rows.length) return null
+  const partnerSnapshot = snapshotPartner(rows[0])
+
+  // The logo lives in our database; ERPNext needs its own copy to print
+  // it. Upload once, remember the URL, reuse it on every later quote.
+  //
+  // Best effort throughout: a partner without a logo, or an upload that
+  // fails, must never stop a quotation being raised. The document just
+  // prints with SGT's mark alone, which is what happened before this
+  // existed.
+  //
+  // The signature works the same way and is resolved alongside it. One
+  // difference: a partner may have a hand-typed `signature_url` from
+  // the agreement module instead of an uploaded file. The UPLOAD wins
+  // where both exist, because that is the one they can change
+  // themselves; the typed path is the fallback so the two partners
+  // seeded by migrate_agreement_01 keep working untouched.
+  const publish = async (
+    kind: 'logo' | 'sign', cache: string | null, bytes: Buffer | null,
+    fileName: string | null, mime: string | null,
+  ): Promise<string | null> => {
+    if (cache) return cache
+    if (!bytes) return null
+    try {
+      const url = await uploadPublicImage(
+        fileName ?? `${rows[0].code}-${kind}.png`, mime ?? 'image/png', bytes)
+      await query(
+        `update quote_service.org
+            set ${kind === 'logo' ? 'erp_logo_url' : 'erp_sign_url'} = $2, updated_at = now()
+          where id = $1`, [rows[0].id, url])
+      return url
+    } catch (err) {
+      req.log.warn({ err, org: rows[0].code, kind },
+        `partner ${kind} could not be published to ERPNext`)
+      return null
+    }
+  }
+
+  partnerSnapshot!.logo = await publish(
+    'logo', rows[0].erp_logo_url ?? null, rows[0].logo_bytes ?? null,
+    rows[0].logo_filename ?? null, rows[0].logo_mime ?? null)
+
+  partnerSnapshot!.sign = await publish(
+    'sign', rows[0].erp_sign_url ?? null, rows[0].sign_bytes ?? null,
+    rows[0].sign_filename ?? null, rows[0].sign_mime ?? null)
+    ?? (String(rows[0].signature_url ?? '').trim() || null)
+  return {
+    code: rows[0].code,
+    orgType: rows[0].org_type,
+    productLine: rows[0].product_line ?? 'GreenX',
+    snapshot: partnerSnapshot!,
+  }
+}
+
+/**
  * Turn the request into lines, whatever shape it arrived in.
  *
  * Blank rows are dropped rather than rejected: the form starts a new line
@@ -290,71 +373,31 @@ export async function performQuotation(
   let orgType: string | null = null
   let partnerSnapshot: CreateQuotationInput['partner'] = null
   if (orgId) {
-    const { rows } = await query(
-      `select id, code, org_type, legal_name, trade_name, gstin,
-              address_line1, address_line2, city, state, pincode,
-              branch_address_line1, branch_address_line2, branch_city,
-              branch_state, branch_pincode, branch_phone, branch_email,
-              contact_name, contact_mobile, contact_email,
-              bank_account_name, bank_account_number, bank_ifsc,
-              bank_name, bank_branch,
-              logo_filename, logo_mime, logo_bytes, erp_logo_url,
-              sign_filename, sign_mime, sign_bytes, erp_sign_url, signature_url
-         from quote_service.org where id = $1 and is_active`, [orgId])
-    if (!rows.length) {
+    const partner = await loadQuotePartner(req, orgId)
+    if (!partner) {
       return {
         ok: false as const, code: 400,
         payload: { error: { code: 'bad_request', message: 'Unknown or inactive partner' } },
       }
     }
-    salesPartner = rows[0].code
-    orgType = rows[0].org_type
-    partnerSnapshot = snapshotPartner(rows[0])
-    commissionRate = Number(process.env.ERP_PARTNER_COMMISSION ?? '40.48')
-
-    // The logo lives in our database; ERPNext needs its own copy to print
-    // it. Upload once, remember the URL, reuse it on every later quote.
-    //
-    // Best effort throughout: a partner without a logo, or an upload that
-    // fails, must never stop a quotation being raised. The document just
-    // prints with SGT's mark alone, which is what happened before this
-    // existed.
-    //
-    // The signature works the same way and is resolved alongside it. One
-    // difference: a partner may have a hand-typed `signature_url` from
-    // the agreement module instead of an uploaded file. The UPLOAD wins
-    // where both exist, because that is the one they can change
-    // themselves; the typed path is the fallback so the two partners
-    // seeded by migrate_agreement_01 keep working untouched.
-    const publish = async (
-      kind: 'logo' | 'sign', cache: string | null, bytes: Buffer | null,
-      fileName: string | null, mime: string | null,
-    ): Promise<string | null> => {
-      if (cache) return cache
-      if (!bytes) return null
-      try {
-        const url = await uploadPublicImage(
-          fileName ?? `${rows[0].code}-${kind}.png`, mime ?? 'image/png', bytes)
-        await query(
-          `update quote_service.org
-              set ${kind === 'logo' ? 'erp_logo_url' : 'erp_sign_url'} = $2, updated_at = now()
-            where id = $1`, [rows[0].id, url])
-        return url
-      } catch (err) {
-        req.log.warn({ err, org: rows[0].code, kind },
-          `partner ${kind} could not be published to ERPNext`)
-        return null
+    // A GreenDrive partner sells GreenDrive only. Their commission, code
+    // series and terms are all GreenDrive's; a GreenX quotation under
+    // them would pay the wrong rate on the wrong product.
+    if (partner.productLine === 'GreenDrive') {
+      return {
+        ok: false as const, code: 409,
+        payload: {
+          error: {
+            code: 'wrong_product_line',
+            message: `${partner.code} is a GreenDrive partner and can only raise GreenDrive quotations.`,
+          },
+        },
       }
     }
-
-    partnerSnapshot!.logo = await publish(
-      'logo', rows[0].erp_logo_url ?? null, rows[0].logo_bytes ?? null,
-      rows[0].logo_filename ?? null, rows[0].logo_mime ?? null)
-
-    partnerSnapshot!.sign = await publish(
-      'sign', rows[0].erp_sign_url ?? null, rows[0].sign_bytes ?? null,
-      rows[0].sign_filename ?? null, rows[0].sign_mime ?? null)
-      ?? (String(rows[0].signature_url ?? '').trim() || null)
+    salesPartner = partner.code
+    orgType = partner.orgType
+    partnerSnapshot = partner.snapshot
+    commissionRate = Number(process.env.ERP_PARTNER_COMMISSION ?? '40.48')
   }
 
   // Discount authority follows the ORG raising the quote, not the login's
@@ -552,14 +595,15 @@ export async function performQuotation(
 /**
  * A GreenDrive quotation. Kept apart from performQuotation rather than
  * threaded through it, because almost nothing there applies: no kVA, no
- * discount, no AMC, no specification, no partner. What IS shared — the
- * ERPNext document builder, tax derivation, the mirror table — is called,
- * not copied.
+ * discount, no AMC, no specification. What IS shared — the partner
+ * snapshot, the ERPNext document builder, tax derivation, the mirror
+ * table — is called, not copied.
  *
- * Staff only (owner, 2026-10-09): no GreenDrive partner exists yet, so a
- * portal request is refused and the quotation carries no sales partner.
- * The price is fixed and already includes the dealer's 30%, so any rate
- * or discount in the body is ignored rather than trusted.
+ * Raised by SGT staff (SGT-direct, or under a GreenDrive partner they
+ * pick) and by GreenDrive partners on the portal, whose org is forced.
+ * The price is fixed and already includes the partner's markup, so any
+ * rate or discount in the body is ignored rather than trusted. The
+ * partner's commission is that markup as a share of the price.
  */
 async function performGreenDriveQuotation(
   req: FastifyRequest,
@@ -570,10 +614,6 @@ async function performGreenDriveQuotation(
   const fail = (code: number, errCode: string, message: string, extra: Record<string, unknown> = {}) => ({
     ok: false as const, code, payload: { error: { code: errCode, message }, ...extra },
   })
-
-  if (opts.via === 'portal') {
-    return fail(403, 'greendrive_staff_only', 'GreenDrive quotations are raised by SGT for now.')
-  }
 
   const customerErpName = String(body.customerErpName ?? '').trim()
   if (!customerErpName) {
@@ -604,6 +644,41 @@ async function performGreenDriveQuotation(
     }
   }
 
+  // Whose quotation. The portal forces the caller's own org; staff may
+  // pick one. On an edit with none supplied, keep the original partner.
+  let orgId = opts.forcedOrgId !== undefined ? opts.forcedOrgId : (body.orgId ?? null)
+  if (opts.updating && opts.forcedOrgId === undefined && body.orgId === undefined) {
+    const { rows: was } = await query(
+      `select org_id from quote_service.quotation_ref where erp_name = $1`, [opts.updating])
+    orgId = was[0]?.org_id ?? null
+  }
+  if (opts.via === 'portal' && !orgId) {
+    return fail(403, 'forbidden', 'This account is not linked to a partner.')
+  }
+
+  let partner: Awaited<ReturnType<typeof loadQuotePartner>> = null
+  if (orgId) {
+    partner = await loadQuotePartner(req, orgId)
+    if (!partner) return fail(400, 'bad_request', 'Unknown or inactive partner')
+    if (partner.productLine !== 'GreenDrive') {
+      return fail(409, 'wrong_product_line',
+        `${partner.code} is a GreenX partner and cannot raise GreenDrive quotations.`)
+    }
+  }
+
+  // Customer ownership — the same rule, in the same place, as GreenX:
+  // portal only, the write a hand-made request cannot go around.
+  if (opts.via === 'portal' && orgId) {
+    if (!await mayApproach(customerErpName, orgId)) {
+      return { ok: false as const, code: 409, payload: claimBlockedPayload() }
+    }
+    await claimCustomer({
+      erpCustomer: customerErpName, orgId,
+      claimedBy: who.id, claimedByName: who.name,
+      via: 'portal',
+    })
+  }
+
   const resolved = await Promise.all(rows.map(r => resolveGreenDrive(r!, itemPrice)))
 
   const lines: CreateQuotationLine[] = []
@@ -621,16 +696,16 @@ async function performGreenDriveQuotation(
   const input: CreateQuotationInput = {
     customerErpName,
     lines,
-    salesPartner: null,
-    commissionRate: null,
+    salesPartner: partner?.code ?? null,
+    commissionRate: partner ? GD_DEALER_SHARE_OF_PRICE_PCT : null,
     validDays: body.validDays,
     taxMode: body.taxMode ?? 'auto',
     termsTemplate: body.termsTemplate ?? GREENDRIVE_TERMS,
     termsHtml: body.termsText?.trim() ? textToTerms(body.termsText) : (body.termsHtml ?? null),
     raisedBy: who.name ? `${who.name}${who.id ? ` (user ${who.id})` : ''}` : null,
-    raisedByOrg: null,
-    raisedVia: 'SGT CRM',
-    partner: null,
+    raisedByOrg: partner?.code ?? null,
+    raisedVia: opts.via === 'portal' ? 'Partner portal' : 'SGT CRM',
+    partner: partner?.snapshot ?? null,
   }
 
   let created: Awaited<ReturnType<typeof createQuotation>>
@@ -654,13 +729,13 @@ async function performGreenDriveQuotation(
           net_total, grand_total, commission_rate, erp_customer, customer_name,
           status, raised_by, raised_by_name, raised_via,
           line_count, lines, tax_mode, product_line)
-       values ($1, null, null, null, $2, $3, $4, $5, $6, null, $7, $7,
-               'draft', $8, $9, 'crm', $10, $11, $12, 'GreenDrive')
+       values ($1, $13, null, null, $2, $3, $4, $5, $6, $14, $7, $7,
+               'draft', $8, $9, $15, $10, $11, $12, 'GreenDrive')
        on conflict (erp_name) do update set
-          org_id = null, input_kva = null, model_id = null,
+          org_id = excluded.org_id, input_kva = null, model_id = null,
           model_code = excluded.model_code, qty = excluded.qty, unit_rate = excluded.unit_rate,
           net_total = excluded.net_total, grand_total = excluded.grand_total,
-          commission_rate = null,
+          commission_rate = excluded.commission_rate,
           erp_customer = excluded.erp_customer, customer_name = excluded.customer_name,
           status = excluded.status, raised_by = excluded.raised_by,
           raised_by_name = excluded.raised_by_name, raised_via = excluded.raised_via,
@@ -669,7 +744,8 @@ async function performGreenDriveQuotation(
           updated_at = now()`,
       [created.erpName, first.modelCode, first.qty, first.unitRate,
        created.netTotal, created.grandTotal, created.customer.erpName, who.id, who.name,
-       lineSnapshots.length, JSON.stringify(lineSnapshots), created.taxMode],
+       lineSnapshots.length, JSON.stringify(lineSnapshots), created.taxMode,
+       orgId, input.commissionRate ?? null, opts.via],
     )
   } catch (err) {
     mirrored = false
@@ -697,8 +773,10 @@ async function performGreenDriveQuotation(
         termsWarning: created.termsWarning,
         totalTax: created.totalTax,
         taxWarning: created.taxWarning,
+        commissionRate: created.commissionRate,
+        totalCommission: created.totalCommission,
         customer: created.customer,
-        salesPartner: null,
+        salesPartner: partner?.code ?? null,
         mirrored,
         updated: !!opts.updating,
       },

@@ -205,6 +205,8 @@ export interface QuoteApi {
   createGreenDrive(body: {
     lines: { model: string; qty: number }[]
     customerErpName: string
+    /** Staff only: raise it under this GreenDrive partner. Ignored on the portal. */
+    orgId?: number | null
     taxMode?: 'auto' | 'in_state' | 'out_state'
   }): Promise<any>
   loadForEdit(erpName: string): Promise<{
@@ -234,7 +236,7 @@ export interface QuoteApi {
   /** By mirror id, not by ERPNext name — POs are scoped on our side. */
   poPdfUrl(id: number): Promise<string>
   /** Partner pickers only make sense for SGT staff. */
-  partners?: () => Promise<{ id: number; code: string; legal_name: string }[]>
+  partners?: (product?: 'GreenX' | 'GreenDrive') => Promise<{ id: number; code: string; legal_name: string }[]>
 }
 
 

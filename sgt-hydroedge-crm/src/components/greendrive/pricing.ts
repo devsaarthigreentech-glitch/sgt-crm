@@ -6,14 +6,15 @@
 // keep them equal to that file.
 //
 // The listed price IS the customer price. It already includes the dealer's
-// 30% markup — nothing is added on top (an earlier reading of "MRP + 40%"
-// was withdrawn by the owner). SGT invoices the customer at this price
-// (SGT-direct, same as GreenX) and settles the dealer's share afterwards:
+// markup on SGT's price — nothing is added on top. SGT invoices the
+// customer at this price (SGT-direct, same as GreenX) and settles the
+// dealer's share afterwards:
 //
-//   SGT's price   = price / 1.30        e.g. ₹1,04,000 / 1.3 = ₹80,000
-//   dealer earns  = price − SGT's price e.g. ₹24,000
+//   SGT's price   = price / 1.40        e.g. ₹1,04,000 / 1.4 = ₹74,286
+//   dealer earns  = price − SGT's price e.g. ₹29,714
 //
-// "30% on top" of SGT's price — confirmed by the owner 2026-10-09.
+// 30% on top until 2026-10-10, when the owner raised it to 40% with the
+// prices unchanged.
 
 export type GdModel = 'One' | 'Neo' | 'Pro'
 export type GdCurrency = 'INR' | 'USD'
@@ -28,7 +29,7 @@ export const GD_MODELS: { code: GdModel; label: string; inr: number; usd: number
 export const USD_INR = 95
 
 /** Dealer markup already included in the listed price. */
-export const DEALER_MARKUP_PCT = 30
+export const DEALER_MARKUP_PCT = 40
 
 /** The dealer's share of a price that already includes their markup. */
 export const dealerShare = (price: number) => price - price / (1 + DEALER_MARKUP_PCT / 100)
