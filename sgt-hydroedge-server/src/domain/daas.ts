@@ -8,6 +8,11 @@
 //   rent      the other 70% repaid over 1, 2 or 3 years as a reducing-
 //             balance EMI at 12% a year (1% a month) ...
 //           + AMC on top: 15% of MRP a year, i.e. 1.25% of MRP a month
+//   discount  up to 40% off MRP per machine (2026-10-12). The upfront and
+//             the instalment are computed on the DISCOUNTED price; AMC stays
+//             on the full MRP, as on a sale, where the discount never
+//             touches the AMC. The default buyout follows the discounted
+//             price (it equals the upfront).
 //   after     buyout, post-buyout AMC and continuation rent are typed per
 //             quotation; buyout defaults to 30% of MRP, AMC to 15%/year
 //   who       SGT staff only — SGT owns the equipment and bills monthly
@@ -35,6 +40,11 @@ export const DAAS_RATE_PCT = 12
 export const DAAS_AMC_PCT = 15
 export const DAAS_TENURES = [1, 2, 3] as const
 export const DAAS_LOCK_IN_MONTHS = 3
+/** Most a DaaS line may be discounted off MRP. Override with DAAS_MAX_DISCOUNT. */
+export const DAAS_MAX_DISCOUNT_PCT = (() => {
+  const n = Number(process.env.DAAS_MAX_DISCOUNT)
+  return Number.isFinite(n) && n >= 0 && n <= 100 ? n : 40
+})()
 
 /** ERPNext items the two lines are raised on. Created by erp_create_daas_items.ts. */
 export const DAAS_UPFRONT_ITEM = process.env.ERP_DAAS_UPFRONT_ITEM ?? 'DaaS-Upfront'
@@ -44,6 +54,9 @@ export const DAAS_SAC = process.env.ERP_DAAS_SAC ?? '997319'
 
 export interface DaasFigures {
   mrp: number
+  discountPct: number
+  /** MRP less the discount — what upfront and instalment are computed on. */
+  price: number
   months: number
   /** Per machine, whole rupees. */
   upfront: number
@@ -58,15 +71,17 @@ export interface DaasFigures {
 }
 
 /** One machine's DaaS figures. Pure; rounds to whole rupees. */
-export function daasFigures(mrp: number, years: number): DaasFigures {
+export function daasFigures(mrp: number, years: number, discountPct = 0): DaasFigures {
   const months = years * 12
-  const upfront = Math.round(mrp * DAAS_DOWN_PCT / 100)
-  const financed = mrp - upfront
+  // The discount comes off MRP first; upfront and instalment are on what is left.
+  const price = Math.round(mrp * (1 - discountPct / 100))
+  const upfront = Math.round(price * DAAS_DOWN_PCT / 100)
+  const financed = price - upfront
   const r = DAAS_RATE_PCT / 1200
   const emi = Math.round(financed * r / (1 - Math.pow(1 + r, -months)))
   const amcMonthly = Math.round(mrp * DAAS_AMC_PCT / 100 / 12)
   return {
-    mrp, months, upfront, financed, emi, amcMonthly,
+    mrp, discountPct, price, months, upfront, financed, emi, amcMonthly,
     rent: emi + amcMonthly,
     buyoutDefault: upfront,
     postAmcDefault: Math.round(mrp * DAAS_AMC_PCT / 100),

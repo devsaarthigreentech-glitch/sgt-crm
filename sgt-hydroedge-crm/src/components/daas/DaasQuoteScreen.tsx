@@ -26,6 +26,7 @@ import {
 import { GD_MODELS, GD_GST_PCT, type GdModel } from '../greendrive/pricing'
 import {
   daasFigures, DAAS_TENURES, DAAS_LOCK_IN_MONTHS, DAAS_DOWN_PCT, DAAS_RATE_PCT, DAAS_AMC_PCT,
+  DAAS_MAX_DISCOUNT_PCT,
 } from './daasMath'
 
 interface Line {
@@ -33,6 +34,8 @@ interface Line {
   kva: string
   model: GdModel
   qty: string
+  /** % off MRP, 0-40. */
+  discount: string
   /** GreenX: what the kVA resolved to. */
   res: Resolution | null
   buyout: string
@@ -42,7 +45,7 @@ interface Line {
 
 let nextId = 1
 const blank = (): Line => ({
-  id: nextId++, kva: '', model: 'One', qty: '1', res: null, buyout: '', postAmc: '', continuation: '',
+  id: nextId++, kva: '', model: 'One', qty: '1', discount: '', res: null, buyout: '', postAmc: '', continuation: '',
 })
 
 const card: React.CSSProperties = {
@@ -107,7 +110,9 @@ export default function DaasQuoteScreen({ api, productLine }: {
   const rows = lines.map(l => {
     const mrp = mrpOf(l)
     const qty = Math.max(0, Math.floor(Number(l.qty) || 0))
-    return { l, qty, mrp, fig: mrp !== null ? daasFigures(mrp, years) : null }
+    const d = l.discount.trim() === '' ? 0 : Number(l.discount)
+    const badDisc = !Number.isFinite(d) || d < 0 || d > DAAS_MAX_DISCOUNT_PCT
+    return { l, qty, mrp, badDisc, fig: mrp !== null && !badDisc ? daasFigures(mrp, years, d) : null }
   })
   const ready = rows.filter(r => r.fig && r.qty > 0)
   const upfront = ready.reduce((s, r) => s + r.fig!.upfront * r.qty, 0)
@@ -115,9 +120,10 @@ export default function DaasQuoteScreen({ api, productLine }: {
   const dueNow = upfront + rent
   const gst = dueNow * GD_GST_PCT / 100
   const overTenure = upfront + rent * years * 12
-  const unresolved = rows.some(r => (gd ? false : r.l.kva.trim() !== '' && !r.fig))
+  const unresolved = rows.some(r => (gd ? false : r.l.kva.trim() !== '' && !r.fig && !r.badDisc))
+  const anyBadDisc = rows.some(r => r.badDisc)
 
-  const canCreate = !!picked && ready.length > 0 && !unresolved && !busy
+  const canCreate = !!picked && ready.length > 0 && !unresolved && !anyBadDisc && !busy
 
   const num = (v: string): number | null => (v.trim() === '' ? null : Number(v))
 
@@ -136,6 +142,7 @@ export default function DaasQuoteScreen({ api, productLine }: {
         lines: ready.map(({ l, qty }) => ({
           ...(gd ? { model: l.model } : { kva: l.kva }),
           qty,
+          discountPct: num(l.discount),
           buyout: num(l.buyout), postAmc: num(l.postAmc), continuationRent: num(l.continuation),
         })),
       })
@@ -226,7 +233,7 @@ export default function DaasQuoteScreen({ api, productLine }: {
           </button>
         </div>
 
-        {rows.map(({ l, fig }, i) => (
+        {rows.map(({ l, fig, badDisc }, i) => (
           <div key={l.id} style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: 16, marginBottom: 12, backgroundColor: '#FCFBF7' }}>
             <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
               <span style={{ flex: 1, fontSize: 11.5, fontWeight: 700, color: FAINT, letterSpacing: '0.05em' }}>MACHINE {i + 1}</span>
@@ -260,10 +267,19 @@ export default function DaasQuoteScreen({ api, productLine }: {
                 <label style={labelStyle}>Quantity</label>
                 <input type="number" min={1} value={l.qty} onChange={e => patch(l.id, { qty: e.target.value })} style={inputStyle()} />
               </div>
+              <div>
+                <label style={labelStyle}>Discount on MRP (%)</label>
+                <input type="number" min={0} max={DAAS_MAX_DISCOUNT_PCT} value={l.discount} placeholder="0"
+                  onChange={e => patch(l.id, { discount: e.target.value })} style={inputStyle(badDisc)} />
+                <div style={{ fontSize: 11, color: badDisc ? DANGER : FAINT, marginTop: 3 }}>
+                  {badDisc ? `Between 0 and ${DAAS_MAX_DISCOUNT_PCT}%.` : `Up to ${DAAS_MAX_DISCOUNT_PCT}%. Lowers the upfront and the instalment; AMC stays on full MRP.`}
+                </div>
+              </div>
             </div>
 
             {fig && (
               <div style={{ fontSize: 12, color: MUTED, marginTop: 10, lineHeight: 1.6 }}>
+                {fig.discountPct > 0 && <>Price {rupees(fig.price)} (MRP {rupees(fig.mrp)} less {fig.discountPct}%) · </>}
                 Per machine: upfront <strong style={{ color: INK }}>{rupees(fig.upfront)}</strong> · rent{' '}
                 <strong style={{ color: INK }}>{rupees(fig.rent)}</strong>/month ({rupees(fig.emi)} instalment on{' '}
                 {rupees(fig.financed)} + {rupees(fig.amcMonthly)} AMC) for {fig.months} months
@@ -328,7 +344,8 @@ export default function DaasQuoteScreen({ api, productLine }: {
             {busy ? 'Creating…' : 'Create DaaS quotation'}
           </button>
           <span style={{ fontSize: 12, color: FAINT }}>
-            {!picked ? 'Pick or add a customer first.'
+            {anyBadDisc ? `Discounts must be between 0 and ${DAAS_MAX_DISCOUNT_PCT}%.`
+              : !picked ? 'Pick or add a customer first.'
               : unresolved ? 'Every kVA must resolve to a model first.'
               : !ready.length ? 'Add a machine.'
               : `For ${picked.customer_name || picked.name}.`}

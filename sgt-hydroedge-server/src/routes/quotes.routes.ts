@@ -36,6 +36,7 @@ import { termsToText, textToTerms } from '../domain/quoteTerms.js'
 import { clausesToHtml } from '../domain/dealerTerms.js'
 import {
   daasFigures, daasTerms, DAAS_TENURES, DAAS_LOCK_IN_MONTHS, DAAS_DOWN_PCT, DAAS_RATE_PCT,
+  DAAS_MAX_DISCOUNT_PCT,
   DAAS_UPFRONT_ITEM, DAAS_RENT_ITEM, type DaasTermsLine,
 } from '../domain/daas.js'
 import { mayApproach, claimCustomer, claimBlockedPayload } from '../domain/customerClaim.js'
@@ -892,7 +893,12 @@ async function performDaasQuotation(
     }
 
     const qty = Math.max(1, Math.floor(Number(l.qty ?? 1)))
-    const fig = daasFigures(mrp, years)
+    const disc = l.discountPct == null || String(l.discountPct).trim() === '' ? 0 : Number(l.discountPct)
+    if (!Number.isFinite(disc) || disc < 0 || disc > DAAS_MAX_DISCOUNT_PCT) {
+      return fail(422, 'discount_too_high',
+        `Line ${i + 1}: the DaaS discount must be between 0 and ${DAAS_MAX_DISCOUNT_PCT}%.`, { lineIndex: i })
+    }
+    const fig = daasFigures(mrp, years, disc)
     const buyout = money(l.buyout), postAmc = money(l.postAmc), cont = money(l.continuationRent)
     if (buyout === 'bad' || postAmc === 'bad' || cont === 'bad') {
       return fail(400, 'bad_amount', `Line ${i + 1}: amounts must be positive numbers.`, { lineIndex: i })
@@ -908,7 +914,10 @@ async function performDaasQuotation(
     lines.push(
       {
         itemCode: DAAS_UPFRONT_ITEM, qty, rate: fig.upfront, exactRate: true,
-        description: `${label} — non-refundable upfront payment, ${DAAS_DOWN_PCT}% of MRP ${rs(mrp)}.`,
+        description: fig.discountPct
+          ? `${label} — non-refundable upfront payment, ${DAAS_DOWN_PCT}% of ${rs(fig.price)} ` +
+            `(MRP ${rs(mrp)} less ${fig.discountPct}%).`
+          : `${label} — non-refundable upfront payment, ${DAAS_DOWN_PCT}% of MRP ${rs(mrp)}.`,
       },
       {
         itemCode: DAAS_RENT_ITEM, qty, rate: fig.rent, exactRate: true,
@@ -920,7 +929,7 @@ async function performDaasQuotation(
     snaps.push({
       kva: productLine === 'GreenX' ? Number(l.kva) : null,
       model: productLine === 'GreenDrive' ? l.model : null,
-      modelCode: label, qty, mrp, months: fig.months,
+      modelCode: label, qty, mrp, discountPct: fig.discountPct, price: fig.price, months: fig.months,
       upfront: fig.upfront, financed: fig.financed, emi: fig.emi, amcMonthly: fig.amcMonthly,
       rent: fig.rent, buyout: buyout ?? fig.buyoutDefault, postAmc: postAmc ?? fig.postAmcDefault,
       continuationRent: cont,

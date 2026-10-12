@@ -178,6 +178,8 @@ export interface DaasBody {
   taxMode?: 'auto' | 'in_state' | 'out_state'
   lines: {
     kva?: string; model?: string; qty: number
+    /** Off MRP, 0-40. Upfront and instalment are computed on the result. */
+    discountPct?: number | null
     buyout?: number | null; postAmc?: number | null; continuationRent?: number | null
   }[]
 }
