@@ -2,3 +2,5 @@ node_modules/
 dist/
 .envx
 .env
+# preview_agreement.ts output
+agreement-preview*.pdf
