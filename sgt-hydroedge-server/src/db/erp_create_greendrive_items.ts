@@ -127,6 +127,26 @@ async function main() {
     const what = [p.item ? 'create item' : 'item exists', p.price ? `set price ₹${p.row.inr.toLocaleString('en-IN')}` : 'price exists']
     console.log(`  · ${p.row.itemCode.padEnd(22)} ${what.join(' · ')}`);
   }
+
+  // AMC is a service, so ERPNext (India Compliance) demands a SAC code on
+  // it and rejects a blank one. ERP_AMC_SAC wins; otherwise take the code
+  // the GreenX AMC items already carry — ERPNext accepted those, and the
+  // same service on a different product should not be coded differently.
+  let amcSac = AMC_SAC.trim();
+  if (!amcSac && plan.some(p => p.item && p.row.amc)) {
+    const gx = await erpGet('Item', {
+      filters: [['item_code', 'like', 'GreenX-%-AMC-%']],
+      fields: ['item_code', 'gst_hsn_code'], limit_page_length: 100,
+    });
+    const hit = gx.find(i => String(i.gst_hsn_code ?? '').trim());
+    if (!hit) {
+      throw new Error(
+        'AMC items need a SAC code and none could be found on the GreenX AMC items. ' +
+        'Re-run with ERP_AMC_SAC=<code> set — your accountant will know it.');
+    }
+    amcSac = String(hit.gst_hsn_code).trim();
+    console.log(`\n  AMC SAC ${amcSac} — copied from ${hit.item_code} (set ERP_AMC_SAC to override)`);
+  }
   if (!plan.some(p => p.item || p.price)) {
     console.log('\n✔ Nothing to do — every item and price exists.');
     return;
