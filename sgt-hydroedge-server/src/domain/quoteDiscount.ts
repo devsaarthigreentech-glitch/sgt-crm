@@ -212,7 +212,8 @@ export function checkDiscountAmount(
 // rate equal to the charge instead of a phantom discount off zero. The
 // code is built in exactly one place; the rate comes from ERPNext.
 
-export const AMC_PCT = num(process.env.QUOTE_AMC_PCT, 10);
+// 15% of MRP per year — the owner's figure, 2026-10-12 (was 10).
+export const AMC_PCT = num(process.env.QUOTE_AMC_PCT, 15);
 export const AMC_TERMS = [1, 2, 3];
 
 /** e.g. GreenX-100 + 2 -> "GreenX-100-AMC-2Y". */

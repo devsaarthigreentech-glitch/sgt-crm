@@ -9,7 +9,7 @@
 //   CONFIRM_CREATE=1 npx tsx src/db/erp_create_amc_item.ts
 //
 // A service, not a machine: is_stock_item = 0 and is_purchase_item = 0.
-// It carries no fixed price — the rate is 10% of whichever GreenX unit it
+// It carries no fixed price — the rate is 15% of whichever GreenX unit it
 // accompanies, so it is set per quotation line rather than in Item Price.
 //
 // ── One thing you must set yourself ─────────────────────────────────
@@ -105,7 +105,7 @@ async function main() {
   console.log(`  Would create "${CODE}":`);
   console.log(`    group=${ITEM_GROUP} · non-stock service · sales only`);
   console.log(`    SAC=${SAC}`);
-  console.log(`    no Item Price: the rate is 10% of the machine it accompanies,`);
+  console.log(`    no Item Price: the rate is 15% of the machine it accompanies,`);
   console.log(`    so it is set per quotation line.`);
 
   if (!CONFIRMED) {

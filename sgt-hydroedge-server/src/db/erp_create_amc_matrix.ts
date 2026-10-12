@@ -19,7 +19,7 @@
 // rate that equals the charge, the discount column stays empty, and the
 // AMC catalogue is visible in ERPNext rather than computed in our code.
 //
-// Pricing is 10% of the model's MRP per year, so a 3-year AMC is three
+// Pricing is 15% of the model's MRP per year (10% until 2026-10-12), so a 3-year AMC is three
 // times the 1-year figure. Taken from quote_service, same as the machines,
 // so the two cannot drift.
 //
@@ -39,7 +39,7 @@ const INCOME_ACCOUNT = process.env.ERP_INCOME_ACCOUNT ?? 'Sales - SGT';
 const ITEM_GROUP = process.env.ERP_AMC_ITEM_GROUP ?? 'Services';
 const PRICE_LIST = process.env.ERP_SELLING_PRICE_LIST ?? 'Standard Selling';
 const SAC = process.env.ERP_AMC_SAC ?? '';
-const AMC_PCT = Number(process.env.QUOTE_AMC_PCT ?? '10');
+const AMC_PCT = Number(process.env.QUOTE_AMC_PCT ?? '15');
 const TERMS = [1, 2, 3];
 const CONFIRMED = process.env.CONFIRM_CREATE === '1';
 

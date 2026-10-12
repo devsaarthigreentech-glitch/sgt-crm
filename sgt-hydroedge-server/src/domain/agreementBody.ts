@@ -116,7 +116,7 @@ export const DEFAULT_AGREEMENT_BODY_TEXT = `1.  What this Agreement does
 
 7.1  **Warranty.**  Each Product carries SGT's standard one (1) year manufacturer warranty on CHFA™ Licensed Product components only — not the engine, alternator, ECU/ECM, panels, batteries or third-party parts. It is void on unauthorised opening, modification, non-approved parts or water, or a non-compliant installation.
 
-7.2  **AMC / extended warranty.**  After the first year, AMC or extended warranty is offered on a case-to-case quotation basis at ten to twenty percent (10%–20%) of the Product's MRP per year. The AMC value is shared fifty percent (50%) to SGT and fifty percent (50%) to the channel (Distributor / Dealer as they agree), and is delivered only through SS (Service) Dealers.
+7.2  **AMC / extended warranty.**  After the first year, AMC or extended warranty is offered on a case-to-case quotation basis at fifteen percent (15%) of the Product's MRP per year. The AMC value is shared fifty percent (50%) to SGT and fifty percent (50%) to the channel (Distributor / Dealer as they agree), and is delivered only through SS (Service) Dealers.
 
 7.3  **Machine swap.**  Where a defective unit cannot be repaired in the field, SGT will, wherever possible, swap it for a new one; the defective unit is returned to SGT under the applicable warranty terms.
 
@@ -320,7 +320,7 @@ export const GREENDRIVE_AGREEMENT_BODY_TEXT = `1.  What this Agreement does
 
 5.2  **Dealer's share.**  For every order billed under the Dealer Code, SGT pays the Dealer its markup — the difference between the quoted price and SGT's price — after SGT has received the customer's payment in full. Any share due to the Distributor is settled as SGT and the Distributor have agreed. [REVIEW]
 
-5.3  **Delivery.**  SGT delivers the Product to the installation site against completion of the agreed payment schedule.
+5.3  **Delivery.**  Prices are ex-factory. SGT despatches the Product against completion of the agreed payment schedule; freight is charged additionally where SGT arranges transport, or the customer may collect from SGT's works.
 
 5.4  **Settlement.**  SGT settles strictly per the shares recorded in the CRM / approved price list, and takes no share of, and is not a party to, any separate arrangement between the Distributor and the Dealer beyond making the recorded payment.
 
@@ -336,7 +336,7 @@ export const GREENDRIVE_AGREEMENT_BODY_TEXT = `1.  What this Agreement does
 
 7.1  **Warranty.**  Each Product carries SGT's standard one (1) year manufacturer warranty on GreenDrive™ components only — not the host equipment or third-party parts. It is void on unauthorised opening, modification, non-approved parts, or a non-compliant installation. [REVIEW]
 
-7.2  **AMC / extended warranty.**  After the first year, AMC or extended warranty is offered on a case-to-case quotation basis, delivered only through SS (Service) Dealers, on terms SGT publishes. [REVIEW]
+7.2  **AMC / extended warranty.**  After the first year, AMC or extended warranty is offered on a case-to-case quotation basis at fifteen percent (15%) of the Product's price per year, delivered only through SS (Service) Dealers.
 
 7.3  **Machine swap.**  Where a defective unit cannot be repaired in the field, SGT will, wherever possible, swap it for a new one; the defective unit is returned to SGT under the applicable warranty terms.
 

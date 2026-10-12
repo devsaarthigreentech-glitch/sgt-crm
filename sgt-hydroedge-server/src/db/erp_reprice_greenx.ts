@@ -43,7 +43,7 @@ const KEY = process.env.ERPNEXT_API_KEY;
 const SECRET = process.env.ERPNEXT_API_SECRET;
 const PRICE_LIST = process.env.ERP_SELLING_PRICE_LIST ?? 'Standard Selling';
 const MRP_BOOK = process.env.GREENX_MRP_BOOK ?? 'GREENX_MRP_V1_1';
-const AMC_PCT = Number(process.env.QUOTE_AMC_PCT ?? '10');
+const AMC_PCT = Number(process.env.QUOTE_AMC_PCT ?? '15');
 const AMC_TERMS = [1, 2, 3];
 const CONFIRMED = process.env.CONFIRM_REPRICE === '1';
 

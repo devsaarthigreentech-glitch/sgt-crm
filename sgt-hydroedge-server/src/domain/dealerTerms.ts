@@ -54,6 +54,19 @@
 //                     the quotation, not to SGT — the partner collects.
 //   Arbitration       new. Arbitration and Conciliation Act 1996,
 //                     seated at Jaipur.
+//
+// REVISION, 2026-10-12 — the owner's instruction, for GreenX AND
+// GreenDrive (the GreenDrive template is a copy of this array):
+//
+//   Delivery          rewritten. Prices are EX-FACTORY again; freight is
+//                     extra when SGT arranges it, or the Buyer collects.
+//                     This reverses the 2026-07 "delivery included".
+//   Payment Terms     50% advance / 50% before despatch (was 30 / 70).
+//                     This too is the original schedule, now restored.
+//   Installation and  rewritten. Installation is NOT included. Remote
+//   Commissioning     support is free; an engineer at site is charged.
+//   Annual            unchanged at 15% — the owner confirmed 15 is the
+//   Maintenance       AMC figure everywhere (AMC_PCT moved 10 -> 15).
 // =====================================================================
 
 /** One clause: its heading, and its body. */
@@ -69,15 +82,15 @@ export const DEALER_QUOTATION_TERMS: Clause[] = [
   ['Exclusions',
    'Our scope does not include civil works, exhaust system, cabling, earthing pits and strips, cooling towers, piping, CEIG approvals, a higher size alternator, first fill of diesel for the inbuilt day oil tank, ventilation system, any other electrical panel (isolator, synchronisation), factory inspection charges, spare parts, other consumables, or annual maintenance — save where any of these appears as a priced line on this quotation.'],
   ['Delivery',
-   'Delivery to the Buyer’s designated location within India is included in the quoted price, together with transit insurance.'],
+   'Prices are ex-factory. Freight, transit insurance and handling are not included: where SGT arranges transport to the Buyer’s site, they are charged additionally at actuals; alternatively, the Buyer may arrange its own transport and collect the goods from our works.'],
   ['Taxes and Duties',
    'Prices quoted are exclusive of GST, which shall be charged additionally at the prevailing statutory rate. All other local taxes, duties and levies shall be borne and discharged by the Buyer directly.'],
   ['Payment Terms',
-   '30% of the order value is payable in advance against the purchase order. The balance 70% is payable against proforma invoice, prior to despatch. Payment is to be made only to the bank account named on this quotation, and to no other account; where any doubt arises, please confirm the account with us in writing before remitting.'],
+   '50% of the order value is payable in advance against the purchase order. The balance 50% is payable against proforma invoice, prior to despatch. Payment is to be made only to the bank account named on this quotation, and to no other account; where any doubt arises, please confirm the account with us in writing before remitting.'],
   ['Warranty',
    'The equipment carries a warranty of twelve (12) months from the date of installation against defects in materials and workmanship under normal operating conditions.'],
   ['Installation and Commissioning',
-   'Installation and testing services are provided at no additional charge, subject to the Buyer’s scope above being ready at site.'],
+   'Installation and commissioning are not included in the quoted price. Remote technical support is provided free of charge. Where an engineer is needed or requested at site — for installation, commissioning or service — the visit is charged additionally at SGT’s prevailing rates.'],
   ['Annual Maintenance',
    'Annual maintenance charges become applicable twelve (12) months after installation, at 15% of the sale price per annum, unless an annual maintenance contract is quoted as a line on this quotation.'],
   ['Data Capture and Reporting',
