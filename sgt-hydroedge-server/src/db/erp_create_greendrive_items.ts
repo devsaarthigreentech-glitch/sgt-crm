@@ -158,6 +158,7 @@ async function main() {
   }
 
   console.log('\n  creating…');
+  let failed = 0;
   for (const { row, item, price } of plan) {
     if (item) {
       try {
@@ -170,7 +171,7 @@ async function main() {
               `${row.amc.years > 1 ? 's' : ''}, commencing after the standard warranty period.`
             : row.label,
           item_group: row.amc ? AMC_ITEM_GROUP : ITEM_GROUP,
-          gst_hsn_code: row.amc ? AMC_SAC : GD_HSN,
+          gst_hsn_code: row.amc ? amcSac : GD_HSN,
           stock_uom: UOM,
           is_stock_item: 0,
           is_sales_item: 1,
@@ -188,6 +189,7 @@ async function main() {
         console.log(`    ✓ item ${row.itemCode}`);
       } catch (e: any) {
         console.log(`    ✗ item ${row.itemCode}: ${String(e.message).slice(0, 180)}`);
+        failed++;
         continue;
       }
     }
@@ -204,10 +206,16 @@ async function main() {
         console.log(`    ✓ price ${row.itemCode} ₹${row.inr.toLocaleString('en-IN')}`);
       } catch (e: any) {
         console.log(`    ⚠ price ${row.itemCode} not set: ${String(e.message).slice(0, 160)}`);
+        failed++;
       }
     }
   }
-  console.log('\n✔ done. Re-running skips whatever succeeded.');
+  if (failed) {
+    console.log(`\n✗ ${failed} step(s) failed — see above. Re-running skips whatever succeeded.`);
+    process.exitCode = 1;
+  } else {
+    console.log('\n✔ done — every item and price is in place.');
+  }
 }
 
 main().catch(e => { console.error('\n✗ failed —', e.message ?? e); process.exitCode = 1; });
