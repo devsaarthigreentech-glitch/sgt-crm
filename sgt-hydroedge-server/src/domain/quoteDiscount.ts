@@ -19,12 +19,14 @@
 //                       that stood for three days, where a dealer could
 //                       discount more than twice what the distributor
 //                       above them could.
-//   SGT staff   20%   — STILL BELOW BOTH PARTNER CAPS. It used to be the
-//                       ceiling everyone else sat under, and it is now
-//                       the floor: SGT's own people are the most
-//                       restricted party on their own document. Left at
-//                       20 because only the distributor figure was given.
-//                       One line below if that is not intended.
+//   SGT staff   40%   — the owner's figure, 2026-10-12 (was 20, which
+//                       had left SGT's own people the most restricted
+//                       party on their own document). Applies to a
+//                       quotation SGT raises DIRECTLY: the cap follows the
+//                       org on the quote (actorFor), so staff raising one
+//                       under a dealer still get the dealer's 25. 40 sits
+//                       just under the 40.48% rate-card margin — a GreenX
+//                       sale at the cap is almost exactly at dealer net.
 //
 // None of this is enforced as a hierarchy — the three caps are
 // independent numbers, so an inversion produces no error anywhere. It is
@@ -39,7 +41,7 @@
 // quotation goes out, and a cap that made sense for an opening offer
 // would block the deal it was meant to protect.
 //
-//   quote  dealer 25 · distributor 25 · staff 20
+//   quote  dealer 25 · distributor 25 · staff 40
 //   po     dealer 35 · distributor 35 · staff 40
 //
 // 35% is the owner's figure for a dealer raising a PO. Worth knowing what
@@ -86,7 +88,7 @@ export type DiscountStage = 'quote' | 'po';
 export const DISCOUNT_CAPS: Record<DiscountActor, number> = {
   dealer: num(process.env.QUOTE_MAX_DISCOUNT_DEALER, 25),
   distributor: num(process.env.QUOTE_MAX_DISCOUNT_DISTRIBUTOR, 25),
-  staff: num(process.env.QUOTE_MAX_DISCOUNT_STAFF, 20),
+  staff: num(process.env.QUOTE_MAX_DISCOUNT_STAFF, 40),
 };
 
 /**
