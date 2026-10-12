@@ -103,10 +103,10 @@ async function main() {
     console.log(`    ${i + 1}. ${h} — ${b.slice(0, 84)}${b.length > 84 ? '…' : ''}`));
 
   console.log('\n  Two clauses from "Quotation Terms and Conditions" are deliberately NOT');
-  console.log('  carried over, because the new terms contradict them:');
-  console.log('    · ex-factory, shipping excluded    → superseded by "Delivery included"');
-  console.log('    · 50% on order + 50% on dispatch   → superseded by 30% advance / 70% proforma');
-  console.log('  The signed price list supports the new wording in both cases.');
+  console.log('  carried over word for word, though their substance came back on 2026-10-12:');
+  console.log('    · ex-factory, shipping excluded    → restored as the "Delivery" clause');
+  console.log('    · 50% on order + 50% on dispatch   → restored as 50% advance / 50% before despatch');
+  console.log('  Installation is NOT included; remote support is free, site visits are charged.');
 
   if (!CONFIRMED) {
     console.log('\n  DRY RUN — nothing written.');
