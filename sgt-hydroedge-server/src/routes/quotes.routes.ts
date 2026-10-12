@@ -686,10 +686,17 @@ async function performGreenDriveQuotation(
   picked.forEach((l, i) => {
     const r = resolved[i]
     const qty = Math.max(1, Math.floor(Number(l.qty ?? 1)))
-    lines.push({ itemCode: r.row.itemCode, qty, rate: r.rate })
+    // AMC exactly as GreenX does it: its own priced item per model per
+    // term (GreenDrive-One-AMC-2Y), priced by ERPNext's Item Price.
+    const amcYears = l.amcYears && AMC_TERMS.includes(Number(l.amcYears))
+      ? Number(l.amcYears) : null
+    lines.push({
+      itemCode: r.row.itemCode, qty, rate: r.rate,
+      amc: amcYears ? { itemCode: amcItemCode(r.row.itemCode, amcYears), qty } : null,
+    })
     lineSnapshots.push({
       model: r.row.model, modelCode: r.row.itemCode, label: r.row.label,
-      qty, unitRate: r.rate, rateSource: r.rateSource,
+      qty, unitRate: r.rate, rateSource: r.rateSource, amcYears,
     })
   })
 

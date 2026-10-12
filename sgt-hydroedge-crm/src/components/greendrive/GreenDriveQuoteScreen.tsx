@@ -27,13 +27,14 @@ import {
 } from '../quotes/theme'
 import {
   GD_MODELS, DEALER_MARKUP_PCT, GD_GST_PCT, USD_INR,
-  money, listPrice, dealerShare, type GdModel, type GdCurrency,
+  money, listPrice, dealerShare, amcPrice, GD_AMC_PCT, GD_AMC_TERMS,
+  type GdModel, type GdCurrency,
 } from './pricing'
 
-interface Line { id: number; model: GdModel; qty: string }
+interface Line { id: number; model: GdModel; qty: string; amcYears: number }
 
 let nextId = 1
-const blank = (): Line => ({ id: nextId++, model: 'One', qty: '1' })
+const blank = (): Line => ({ id: nextId++, model: 'One', qty: '1', amcYears: 0 })
 
 const card: React.CSSProperties = {
   backgroundColor: '#fff', border: `1px solid ${LINE}`, borderRadius: 12,
@@ -49,7 +50,15 @@ const smallBtn: React.CSSProperties = {
 function maths(l: Line, cur: GdCurrency) {
   const qty = Math.max(0, Math.floor(Number(l.qty) || 0))
   const unit = listPrice(l.model, cur)
-  return { qty, unit, lineTotal: unit * qty, dealerTotal: dealerShare(unit) * qty }
+  const amcUnit = l.amcYears ? amcPrice(unit, l.amcYears) : 0
+  return {
+    qty, unit, amcUnit,
+    machineTotal: unit * qty,
+    amcTotal: amcUnit * qty,
+    lineTotal: (unit + amcUnit) * qty,
+    // The partner's markup is on the machine only; AMC carries none.
+    dealerTotal: dealerShare(unit) * qty,
+  }
 }
 
 export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }: {
@@ -90,7 +99,9 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
     setLines(ls => ls.map(l => (l.id === id ? { ...l, ...p } : l)))
 
   const rows = lines.map(l => ({ l, m: maths(l, currency) }))
-  const net = rows.reduce((s, r) => s + r.m.lineTotal, 0)
+  const machines = rows.reduce((s, r) => s + r.m.machineTotal, 0)
+  const amcTotal = rows.reduce((s, r) => s + r.m.amcTotal, 0)
+  const net = machines + amcTotal
   const dealerTotal = rows.reduce((s, r) => s + r.m.dealerTotal, 0)
   // Export is shown without GST — ASSUMED zero-rated under LUT, to confirm.
   const gst = currency === 'INR' ? net * GD_GST_PCT / 100 : 0
@@ -104,7 +115,7 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
     setBusy(true); setBanner(null); setMade(null); setSent(null)
     try {
       const r = await api.createGreenDrive({
-        lines: filled.map(({ l, m }) => ({ model: l.model, qty: m.qty })),
+        lines: filled.map(({ l, m }) => ({ model: l.model, qty: m.qty, amcYears: l.amcYears || null })),
         customerErpName: picked!.name,
         taxMode,
         ...(showPartnerPicker ? { orgId } : {}),
@@ -248,11 +259,27 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
                 <label style={labelStyle}>Quantity</label>
                 <input type="number" min={1} value={l.qty} onChange={e => patch(l.id, { qty: e.target.value })} style={inputStyle()} />
               </div>
+              <div>
+                <label style={labelStyle}>AMC</label>
+                <select value={l.amcYears} onChange={e => patch(l.id, { amcYears: Number(e.target.value) })}
+                  style={{ ...inputStyle(), appearance: 'auto' }}>
+                  <option value={0}>Not included</option>
+                  {GD_AMC_TERMS.map(y => (
+                    <option key={y} value={y}>
+                      {y} year{y > 1 ? 's' : ''} — {money(amcPrice(m.unit, y), currency)}
+                    </option>
+                  ))}
+                </select>
+                <div style={{ fontSize: 11, color: FAINT, marginTop: 3 }}>
+                  {GD_AMC_PCT}% of the price per year, per machine.
+                </div>
+              </div>
             </div>
 
             <div style={{ fontSize: 12, color: MUTED, marginTop: 10 }}>
               {money(m.unit, currency)} per unit, ex-GST
-              {m.qty > 1 && <> · line {money(m.lineTotal, currency)}</>}
+              {m.amcUnit > 0 && <> · AMC {money(m.amcUnit, currency)} per unit</>}
+              {(m.qty > 1 || m.amcUnit > 0) && <> · line {money(m.lineTotal, currency)}</>}
             </div>
           </div>
         ))}
@@ -295,6 +322,8 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
       {/* Summary */}
       <div style={card}>
         <h2 style={{ margin: '0 0 12px', fontSize: 15.5, fontWeight: 700, color: INK }}>Summary</h2>
+        {amcTotal > 0 && <Row k="Machines" v={money(machines, currency)} />}
+        {amcTotal > 0 && <Row k="AMC" v={money(amcTotal, currency)} />}
         <Row k="Net, before GST" v={money(net, currency)} strong />
         <Row k={currency === 'INR' ? `GST ${GD_GST_PCT}%` : 'GST (export, zero-rated)'} v={money(gst, currency)} />
         <div style={{ borderTop: `1px solid ${LINE}`, margin: '8px 0' }} />
@@ -307,7 +336,7 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
           <div style={{ fontSize: 11.5, fontWeight: 700, color: MUTED, marginBottom: 6 }}>
             {surface === 'portal' ? 'Your earning' : 'Partner earning'} — not shown to the customer
           </div>
-          <Row k="SGT's price" v={money(net - dealerTotal, currency)} />
+          <Row k="SGT's machine price" v={money(machines - dealerTotal, currency)} />
           <Row k={`Dealer markup (${DEALER_MARKUP_PCT}%, included in the price)`} v={money(dealerTotal, currency)} strong />
         </div>
 

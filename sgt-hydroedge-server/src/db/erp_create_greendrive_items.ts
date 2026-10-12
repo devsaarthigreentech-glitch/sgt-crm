@@ -22,10 +22,17 @@
 //
 // USD prices are NOT created. Export quotations need a USD price list and
 // exchange rate in ERPNext that do not exist yet.
+//
+// AMC items too (2026-10-12): GreenDrive-One-AMC-1Y/2Y/3Y and so on, at
+// AMC_PCT (15%) of the price per year, the same shape as the GreenX AMC
+// matrix. One difference, on purpose: grant_commission = 0. A GreenDrive
+// partner's commission is the 40% markup on the MACHINE; how AMC money is
+// shared on GreenDrive has not been decided, so it is not guessed here.
 // =====================================================================
 
 import 'dotenv/config';
 import { GD_CATALOGUE, GD_HSN } from '../domain/greenDrive.js';
+import { AMC_PCT, AMC_TERMS, amcItemCode } from '../domain/quoteDiscount.js';
 
 const BASE = process.env.ERPNEXT_URL?.replace(/\/+$/, '');
 const KEY = process.env.ERPNEXT_API_KEY;
@@ -36,6 +43,8 @@ const INCOME_ACCOUNT = process.env.ERP_INCOME_ACCOUNT ?? 'Sales - SGT';
 const ITEM_GROUP = process.env.ERP_ITEM_GROUP ?? 'Final Assembly';
 const UOM = 'Nos';
 const SELLING_PRICE_LIST = process.env.ERP_SELLING_PRICE_LIST ?? 'Standard Selling';
+const AMC_ITEM_GROUP = process.env.ERP_AMC_ITEM_GROUP ?? 'Services';
+const AMC_SAC = process.env.ERP_AMC_SAC ?? '';
 const CONFIRMED = process.env.CONFIRM_CREATE === '1';
 
 if (!BASE || !KEY || !SECRET) {
@@ -83,8 +92,23 @@ async function main() {
   if (!acct) console.log(`  ⚠ Income account "${INCOME_ACCOUNT}" not found — items will be created without it`);
   console.log(`  masters ok: ${COMPANY} · ${ITEM_GROUP} · ${SELLING_PRICE_LIST} · HSN ${GD_HSN}\n`);
 
-  const plan: { row: typeof GD_CATALOGUE[number]; item: boolean; price: boolean }[] = [];
-  for (const row of GD_CATALOGUE) {
+  // Machines first, then each machine's AMC terms, all through one plan.
+  type Row = { itemCode: string; label: string; inr: number; amc?: { model: string; years: number } };
+  const rows: Row[] = [];
+  for (const m of GD_CATALOGUE) {
+    rows.push({ itemCode: m.itemCode, label: m.label, inr: m.inr });
+    for (const y of AMC_TERMS) {
+      rows.push({
+        itemCode: amcItemCode(m.itemCode, y),
+        label: `${m.label} AMC ${y} Year${y > 1 ? 's' : ''}`,
+        inr: Math.round(m.inr * AMC_PCT / 100) * y,
+        amc: { model: m.label, years: y },
+      });
+    }
+  }
+
+  const plan: { row: Row; item: boolean; price: boolean }[] = [];
+  for (const row of rows) {
     const item = (await erpGet('Item', {
       filters: [['item_code', '=', row.itemCode]], fields: ['name'], limit_page_length: 1,
     })).length > 0;
@@ -101,10 +125,10 @@ async function main() {
 
   for (const p of plan) {
     const what = [p.item ? 'create item' : 'item exists', p.price ? `set price ₹${p.row.inr.toLocaleString('en-IN')}` : 'price exists']
-    console.log(`  · ${p.row.itemCode.padEnd(16)} ${what.join(' · ')}`);
+    console.log(`  · ${p.row.itemCode.padEnd(22)} ${what.join(' · ')}`);
   }
   if (!plan.some(p => p.item || p.price)) {
-    console.log('\n✔ Nothing to do — all three items and prices exist.');
+    console.log('\n✔ Nothing to do — every item and price exists.');
     return;
   }
   if (!CONFIRMED) {
@@ -121,16 +145,19 @@ async function main() {
           doctype: 'Item',
           item_code: row.itemCode,
           item_name: row.label,
-          description: `${row.label}`,
-          item_group: ITEM_GROUP,
-          gst_hsn_code: GD_HSN,
+          description: row.amc
+            ? `Annual maintenance contract for ${row.amc.model}, ${row.amc.years} year` +
+              `${row.amc.years > 1 ? 's' : ''}, commencing after the standard warranty period.`
+            : row.label,
+          item_group: row.amc ? AMC_ITEM_GROUP : ITEM_GROUP,
+          gst_hsn_code: row.amc ? AMC_SAC : GD_HSN,
           stock_uom: UOM,
           is_stock_item: 0,
           is_sales_item: 1,
           is_purchase_item: 0,
-          // Required for Sales Partner commission to compute on this line,
-          // once GreenDrive partners exist.
-          grant_commission: 1,
+          // Machines carry the partner's commission (their markup); AMC
+          // does not — see the header.
+          grant_commission: row.amc ? 0 : 1,
           include_item_in_manufacturing: 0,
           end_of_life: '2099-12-31',
           uoms: [{ uom: UOM, conversion_factor: 1 }],

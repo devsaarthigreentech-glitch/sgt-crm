@@ -98,7 +98,7 @@ export const DEFAULT_AGREEMENT_BODY_TEXT = `1.  What this Agreement does
 
 5.2  **Direct billing by SGT — by exception.**  On a case-to-case basis, where a customer specifically requires SGT to bill and supply it directly, SGT may do so. In that case SGT bills the customer directly and shares the Dealer's / Distributor's margin with them as per the approved rate chart. Installation, service and support for that customer continue to be driven by the Dealer.
 
-5.3  **Delivery.**  SGT delivers the Product directly to the installation site against completion of the agreed payment schedule (balance before final delivery).
+5.3  **Delivery.**  Prices are ex-factory. SGT despatches the Product against completion of the agreed payment schedule (balance before despatch); freight is charged additionally where SGT arranges transport, or the customer may collect from SGT's works.
 
 5.4  **Settlement.**  SGT settles strictly per the shares recorded or instructed in the CRM / approved rate chart, and takes no share of, and is not a party to, any separate arrangement between the Distributor and the Dealer beyond making the recorded payment.
 

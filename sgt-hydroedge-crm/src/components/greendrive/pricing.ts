@@ -34,7 +34,14 @@ export const DEALER_MARKUP_PCT = 40
 /** The dealer's share of a price that already includes their markup. */
 export const dealerShare = (price: number) => price - price / (1 + DEALER_MARKUP_PCT / 100)
 
-/** ASSUMED 18%, same as GreenX. HSN not yet given. */
+/** AMC per year, as a % of the machine price. Same 15% as GreenX (2026-10-12). */
+export const GD_AMC_PCT = 15
+export const GD_AMC_TERMS = [1, 2, 3] as const
+
+/** One machine's AMC for `years`, rounded per year as the ERPNext items are. */
+export const amcPrice = (price: number, years: number) => Math.round(price * GD_AMC_PCT / 100) * years
+
+/** 18%, same as GreenX. HSN 85433000. */
 export const GD_GST_PCT = 18
 
 export const money = (v: number, cur: GdCurrency) =>

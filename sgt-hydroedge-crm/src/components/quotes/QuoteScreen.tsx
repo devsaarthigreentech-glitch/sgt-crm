@@ -203,7 +203,7 @@ export interface QuoteApi {
   list(product?: 'GreenX' | 'GreenDrive'): Promise<any[]>
   /** A GreenDrive quotation: model + quantity, fixed price. Staff only. */
   createGreenDrive(body: {
-    lines: { model: string; qty: number }[]
+    lines: { model: string; qty: number; amcYears?: number | null }[]
     customerErpName: string
     /** Staff only: raise it under this GreenDrive partner. Ignored on the portal. */
     orgId?: number | null
