@@ -33,6 +33,11 @@ import {
 } from '../services/quoteMail.js'
 import { cleanSpec, SPEC_FIELDS } from '../domain/quoteSpec.js'
 import { termsToText, textToTerms } from '../domain/quoteTerms.js'
+import { clausesToHtml } from '../domain/dealerTerms.js'
+import {
+  daasFigures, daasTerms, DAAS_TENURES, DAAS_LOCK_IN_MONTHS, DAAS_DOWN_PCT, DAAS_RATE_PCT,
+  DAAS_UPFRONT_ITEM, DAAS_RENT_ITEM, type DaasTermsLine,
+} from '../domain/daas.js'
 import { mayApproach, claimCustomer, claimBlockedPayload } from '../domain/customerClaim.js'
 import {
   createQuotation, updateQuotation, quotationIsDraft,
@@ -71,6 +76,12 @@ export interface QuoteLineBody {
   amcYears?: number | null
   /** Optional make/model/dimensions, printed under the line. */
   spec?: Record<string, unknown> | null
+  /** DaaS, per machine: buyout price after the tenure. Defaults to 30% of MRP. */
+  buyout?: number | string | null
+  /** DaaS, per machine: AMC per year after a buyout. Defaults to 15% of MRP. */
+  postAmc?: number | string | null
+  /** DaaS, per machine: monthly rent if the rental continues. Blank omits the clause. */
+  continuationRent?: number | string | null
 }
 
 export interface QuoteBody extends QuoteLineBody {
@@ -102,6 +113,16 @@ export interface QuoteBody extends QuoteLineBody {
   taxMode?: 'auto' | 'in_state' | 'out_state'
   /** Absent means GreenX, which is every client that predates GreenDrive. */
   productLine?: 'GreenX' | 'GreenDrive'
+  /** 'daas' rents instead of selling. Absent means a sale. */
+  saleMode?: 'sale' | 'daas'
+  /** DaaS: 1, 2 or 3 years. */
+  tenureYears?: number
+  /** DaaS: minimum lock-in, months. Defaults to 3. */
+  lockInMonths?: number
+  /** DaaS: date of the signed rental agreement, as it should print. */
+  agreementDate?: string | null
+  /** DaaS: the customer's name as the terms should state it. */
+  customerName?: string | null
 }
 
 /**
@@ -281,6 +302,7 @@ export async function performQuotation(
     updating?: string
   },
 ) {
+  if (body.saleMode === 'daas') return performDaasQuotation(req, body, opts)
   if (body.productLine === 'GreenDrive') return performGreenDriveQuotation(req, body, opts)
 
   const who = actor(req)
@@ -786,6 +808,188 @@ async function performGreenDriveQuotation(
         salesPartner: partner?.code ?? null,
         mirrored,
         updated: !!opts.updating,
+      },
+    },
+  }
+}
+
+/**
+ * A DaaS (rental) quotation, for GreenX or GreenDrive. Rules and the
+ * reasoning behind them are in domain/daas.ts.
+ *
+ * Staff only, SGT-direct: SGT owns the equipment and bills the rent, so
+ * there is no partner, commission, discount or claim to apply. The MRP is
+ * resolved the same way a sale would resolve it — kVA for GreenX, model
+ * for GreenDrive, ERPNext's Item Price first — and everything else is
+ * derived from it here, never trusted from the screen.
+ *
+ * Each machine becomes two lines, as on the owner's proforma: the upfront
+ * and ONE month's rent, so the document total is what the customer pays
+ * before installation. The terms carry this quotation's figures and are
+ * built per quotation.
+ */
+async function performDaasQuotation(
+  req: FastifyRequest,
+  body: QuoteBody,
+  opts: { forcedOrgId?: number | null; via: 'crm' | 'portal'; updating?: string },
+) {
+  const who = actor(req)
+  const fail = (code: number, errCode: string, message: string, extra: Record<string, unknown> = {}) => ({
+    ok: false as const, code, payload: { error: { code: errCode, message }, ...extra },
+  })
+
+  if (opts.via === 'portal') return fail(403, 'daas_staff_only', 'DaaS quotations are raised by SGT.')
+  if (opts.updating) {
+    return fail(400, 'daas_not_editable', 'A DaaS quotation cannot be edited yet — raise a new one.')
+  }
+
+  const customerErpName = String(body.customerErpName ?? '').trim()
+  if (!customerErpName) {
+    return fail(400, 'customer_required',
+      'Select an existing customer, or add one first. Quoting does not create customers.')
+  }
+
+  const years = Number(body.tenureYears)
+  if (!(DAAS_TENURES as readonly number[]).includes(years)) {
+    return fail(400, 'bad_tenure', `Choose a tenure of ${DAAS_TENURES.join(', ')} years.`)
+  }
+  const lockIn = Math.max(0, Math.floor(Number(body.lockInMonths ?? DAAS_LOCK_IN_MONTHS)))
+  const productLine = body.productLine === 'GreenDrive' ? 'GreenDrive' : 'GreenX'
+
+  const raw = Array.isArray(body.lines) ? body.lines : []
+  const picked = productLine === 'GreenDrive'
+    ? raw.filter(l => String(l?.model ?? '').trim() !== '')
+    : raw.filter(l => String(l?.kva ?? '').trim() !== '')
+  if (!picked.length) {
+    return fail(400, 'no_lines', productLine === 'GreenDrive'
+      ? 'Add at least one GreenDrive model.' : 'Add at least one machine, with its kVA rating.')
+  }
+
+  // A money field the user may leave blank: blank means "use the default".
+  const money = (v: unknown): number | null | 'bad' => {
+    if (v === null || v === undefined || String(v).trim() === '') return null
+    const n = Number(v)
+    return Number.isFinite(n) && n >= 0 ? Math.round(n) : 'bad'
+  }
+
+  const termsLines: DaasTermsLine[] = []
+  const lines: CreateQuotationLine[] = []
+  const snaps: Record<string, unknown>[] = []
+  for (let i = 0; i < picked.length; i++) {
+    const l = picked[i]
+    let label: string
+    let mrp: number
+    if (productLine === 'GreenDrive') {
+      const row = gdRow(l.model)
+      if (!row) return fail(422, 'unknown_model', `Line ${i + 1}: "${l.model}" is not a GreenDrive model.`, { lineIndex: i })
+      const r = await resolveGreenDrive(row, itemPrice)
+      label = row.label; mrp = Number(r.rate)
+    } else {
+      const r = await resolveForKva(l.kva, { erpRate: itemPrice })
+      if (!r.resolved) return fail(422, r.reason, `Line ${i + 1}: ${r.message}`, { lineIndex: i })
+      if (r.rate === null) return fail(422, 'no_price', `Line ${i + 1}: ${r.modelCode} has no price in ERPNext.`, { lineIndex: i })
+      label = r.modelCode; mrp = Number(r.rate)
+    }
+
+    const qty = Math.max(1, Math.floor(Number(l.qty ?? 1)))
+    const fig = daasFigures(mrp, years)
+    const buyout = money(l.buyout), postAmc = money(l.postAmc), cont = money(l.continuationRent)
+    if (buyout === 'bad' || postAmc === 'bad' || cont === 'bad') {
+      return fail(400, 'bad_amount', `Line ${i + 1}: amounts must be positive numbers.`, { lineIndex: i })
+    }
+
+    termsLines.push({
+      label, qty, fig,
+      buyout: buyout ?? fig.buyoutDefault,
+      postAmc: postAmc ?? fig.postAmcDefault,
+      continuation: cont,
+    })
+    const rs = (n: number) => '₹' + n.toLocaleString('en-IN')
+    lines.push(
+      {
+        itemCode: DAAS_UPFRONT_ITEM, qty, rate: fig.upfront, exactRate: true,
+        description: `${label} — non-refundable upfront payment, ${DAAS_DOWN_PCT}% of MRP ${rs(mrp)}.`,
+      },
+      {
+        itemCode: DAAS_RENT_ITEM, qty, rate: fig.rent, exactRate: true,
+        description:
+          `${label} — monthly rent for ${fig.months} months (${rs(fig.emi)} instalment at ` +
+          `${DAAS_RATE_PCT}% p.a. + ${rs(fig.amcMonthly)} AMC). First month, payable in advance.`,
+      },
+    )
+    snaps.push({
+      kva: productLine === 'GreenX' ? Number(l.kva) : null,
+      model: productLine === 'GreenDrive' ? l.model : null,
+      modelCode: label, qty, mrp, months: fig.months,
+      upfront: fig.upfront, financed: fig.financed, emi: fig.emi, amcMonthly: fig.amcMonthly,
+      rent: fig.rent, buyout: buyout ?? fig.buyoutDefault, postAmc: postAmc ?? fig.postAmcDefault,
+      continuationRent: cont,
+    })
+  }
+
+  const customerName = String(body.customerName ?? '').trim() || customerErpName
+  const termsHtml = clausesToHtml(daasTerms({
+    productLine, customerName,
+    agreementDate: String(body.agreementDate ?? '').trim() || null,
+    lockInMonths: lockIn,
+    lines: termsLines,
+  }))
+
+  const input: CreateQuotationInput = {
+    customerErpName,
+    lines,
+    salesPartner: null,
+    commissionRate: null,
+    validDays: body.validDays,
+    taxMode: body.taxMode ?? 'auto',
+    // '' rather than null: null falls back to the GreenX sale template's
+    // name, which would then sit on a rental quotation as its tc_name.
+    termsTemplate: '',
+    termsHtml,
+    raisedBy: who.name ? `${who.name}${who.id ? ` (user ${who.id})` : ''}` : null,
+    raisedByOrg: null,
+    raisedVia: 'SGT CRM',
+    partner: null,
+  }
+  const created = await createQuotation(input)
+
+  let mirrored = true
+  const first = snaps[0]
+  try {
+    await pool.query(
+      `insert into quote_service.quotation_ref
+         (erp_name, org_id, input_kva, model_id, model_code, qty, unit_rate,
+          net_total, grand_total, commission_rate, erp_customer, customer_name,
+          status, raised_by, raised_by_name, raised_via,
+          line_count, lines, tax_mode, product_line, sale_mode)
+       values ($1, null, $2, null, $3, $4, $5, $6, $7, null, $8, $9,
+               'draft', $10, $11, 'crm', $12, $13, $14, $15, 'daas')
+       on conflict (erp_name) do nothing`,
+      [created.erpName, first.kva, first.modelCode, first.qty, first.rent,
+       created.netTotal, created.grandTotal, created.customer.erpName, customerName,
+       who.id, who.name, snaps.length, JSON.stringify(snaps), created.taxMode, productLine],
+    )
+  } catch (err) {
+    mirrored = false
+    req.log.error({ err, erpName: created.erpName },
+      'DaaS quotation created in ERPNext but not mirrored locally')
+  }
+
+  return {
+    ok: true as const,
+    payload: {
+      data: {
+        erpName: created.erpName,
+        productLine, saleMode: 'daas', tenureYears: years,
+        lines: snaps,
+        netTotal: created.netTotal,
+        grandTotal: created.grandTotal,
+        taxMode: created.taxMode,
+        addressWarning: created.addressWarning,
+        totalTax: created.totalTax,
+        taxWarning: created.taxWarning,
+        customer: created.customer,
+        mirrored,
       },
     },
   }
@@ -1517,23 +1721,24 @@ export default async function quotesRoutes(app: FastifyInstance) {
 
   // ---- List from the mirror --------------------------------------------
   app.get('/', { preHandler: staff }, async (req, reply) => {
-    const { orgId, product } = (req.query ?? {}) as { orgId?: string; product?: string }
-    // Each screen lists its own product line. No parameter means GreenX,
-    // which is what every client that predates GreenDrive expects.
+    const { orgId, product, mode } = (req.query ?? {}) as { orgId?: string; product?: string; mode?: string }
+    // Each screen lists its own product line and mode. No parameters mean
+    // GreenX sales, which is what every client that predates them expects.
     const line = product === 'GreenDrive' ? 'GreenDrive' : 'GreenX'
+    const saleMode = mode === 'daas' ? 'daas' : 'sale'
     const { rows } = orgId
       ? await query(
           `select q.*, o.code as org_code, o.legal_name as org_name
              from quote_service.quotation_ref q
              left join quote_service.org o on o.id = q.org_id
-            where q.org_id = $1 and q.product_line = $2
-            order by q.created_at desc limit 200`, [orgId, line])
+            where q.org_id = $1 and q.product_line = $2 and q.sale_mode = $3
+            order by q.created_at desc limit 200`, [orgId, line, saleMode])
       : await query(
           `select q.*, o.code as org_code, o.legal_name as org_name
              from quote_service.quotation_ref q
              left join quote_service.org o on o.id = q.org_id
-            where q.product_line = $1
-            order by q.created_at desc limit 200`, [line])
+            where q.product_line = $1 and q.sale_mode = $2
+            order by q.created_at desc limit 200`, [line, saleMode])
     return reply.send({ data: await reconcileQuotations(rows) })
   })
 

@@ -106,8 +106,15 @@ export function makeQuoteApi(prefix: string, withPartners: boolean, poPrefix: st
     create: (body) =>
       request<any>(`${prefix}`, { method: 'POST', body: JSON.stringify(body) }),
 
-    list: (product?: 'GreenX' | 'GreenDrive') =>
-      request<{ data: any[] }>(product ? `${prefix}?product=${product}` : `${prefix}`).then(r => r.data),
+    list: (product?: 'GreenX' | 'GreenDrive', mode?: 'sale' | 'daas') => {
+      const q = [product && `product=${product}`, mode && `mode=${mode}`].filter(Boolean).join('&')
+      return request<{ data: any[] }>(q ? `${prefix}?${q}` : `${prefix}`).then(r => r.data)
+    },
+
+    createDaas: (body) =>
+      request<any>(`${prefix}`, {
+        method: 'POST', body: JSON.stringify({ ...body, saleMode: 'daas' }),
+      }),
 
     createGreenDrive: (body) =>
       request<any>(`${prefix}`, {

@@ -845,6 +845,17 @@ export interface CreateQuotationLine {
   amc?: { itemCode: string; qty: number } | null;
   /** Optional specification, printed under the line. */
   spec?: ProductSpec | null;
+  /**
+   * Text printed under the item name when there is no specification —
+   * a DaaS line uses it to say which machine an upfront or rent is for.
+   */
+  description?: string | null;
+  /**
+   * Send `rate` as well as the list rate. For items with no Item Price
+   * (the DaaS upfront and rent vary per quote), so ERPNext keeps the
+   * figure rather than re-deriving it from a price list that has none.
+   */
+  exactRate?: boolean;
 }
 
 export interface CreateQuotationInput {
@@ -982,7 +993,10 @@ function itemRows(line: CreateQuotationLine): Record<string, unknown>[] {
       // The specification, printed under the item name. Sent only when
       // something was filled in — an empty description would replace the
       // Item master's own text with nothing.
-      ...(specHtml ? { description: specHtml } : {}),
+      ...(specHtml
+        ? { description: specHtml }
+        : line.description ? { description: line.description } : {}),
+      ...(line.exactRate && line.rate != null && line.rate !== '' ? { rate: Number(line.rate) } : {}),
       // india_compliance derives gst_treatment from the tax rows it finds.
       // With none present it settles on "Nil-Rated" and zeroes the GST —
       // which is how the first two quotations came out at 0% tax. GreenX is

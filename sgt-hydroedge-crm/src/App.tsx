@@ -22,6 +22,7 @@ import { staffAgreementApi } from './components/agreements/agreementsApi'
 import TimesheetScreen from './components/timesheet/TimesheetScreen'
 import { ProductLineFrame } from './components/greendrive/ProductLineFrame'
 import GreenDriveQuoteScreen from './components/greendrive/GreenDriveQuoteScreen'
+import DaasQuoteScreen from './components/daas/DaasQuoteScreen'
 
 // Roles belonging to partners rather than SGT staff. These get their own
 // shell entirely — see the branch below. Kept in sync with
@@ -118,7 +119,11 @@ export default function App() {
         ) : effectivePage === 'quotes' ? (
             <ProductLineFrame
               greenx={<QuoteScreen api={staffQuoteApi} showPartnerPicker />}
-              greendrive={<GreenDriveQuoteScreen api={staffQuoteApi} surface="staff" />} />
+              greendrive={<GreenDriveQuoteScreen api={staffQuoteApi} surface="staff" />}
+              daas={{
+                greenx: <DaasQuoteScreen api={staffQuoteApi} productLine="GreenX" />,
+                greendrive: <DaasQuoteScreen api={staffQuoteApi} productLine="GreenDrive" />,
+              }} />
         ) : effectivePage === 'agreements' ? (
             <ProductLineFrame
               greenx={<AgreementScreen api={staffAgreementApi} />}

@@ -167,6 +167,21 @@ export interface QuoteLinePayload {
   spec?: Record<string, string> | null
 }
 
+/** What the DaaS screen sends. Amounts left blank take the server's defaults. */
+export interface DaasBody {
+  productLine: 'GreenX' | 'GreenDrive'
+  tenureYears: number
+  lockInMonths: number
+  agreementDate: string | null
+  customerErpName: string
+  customerName: string | null
+  taxMode?: 'auto' | 'in_state' | 'out_state'
+  lines: {
+    kva?: string; model?: string; qty: number
+    buyout?: number | null; postAmc?: number | null; continuationRent?: number | null
+  }[]
+}
+
 export interface QuoteApi {
   resolve(kva: string): Promise<Resolution>
   create(body: {
@@ -200,7 +215,9 @@ export interface QuoteApi {
   termsList(): Promise<{ templates: string[]; default: string }>
   termsBody(name: string): Promise<string>
   /** Quotations of one product line. Omitted means GreenX. */
-  list(product?: 'GreenX' | 'GreenDrive'): Promise<any[]>
+  list(product?: 'GreenX' | 'GreenDrive', mode?: 'sale' | 'daas'): Promise<any[]>
+  /** A DaaS (rental) quotation. Staff only; the server derives every figure. */
+  createDaas(body: DaasBody): Promise<any>
   /** A GreenDrive quotation: model + quantity, fixed price. Staff only. */
   createGreenDrive(body: {
     lines: { model: string; qty: number; amcYears?: number | null }[]

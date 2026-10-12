@@ -36,3 +36,23 @@ export function useProductLine(): [ProductLine, (p: ProductLine) => void] {
 
   return [line, set]
 }
+
+/**
+ * Sale or DaaS, on the Quotations screen only. DaaS is a way of selling,
+ * not a partner network, so Agreements and Onboarding never see it.
+ */
+export type QuoteMode = 'sale' | 'daas'
+
+const MODE_KEY = 'sgt.quoteMode'
+
+export function useQuoteMode(): [QuoteMode, (m: QuoteMode) => void] {
+  const read = (): QuoteMode => {
+    try { return localStorage.getItem(MODE_KEY) === 'daas' ? 'daas' : 'sale' } catch { return 'sale' }
+  }
+  const [mode, setMode] = useState<QuoteMode>(read)
+  const set = (m: QuoteMode) => {
+    try { localStorage.setItem(MODE_KEY, m) } catch { /* in memory only */ }
+    setMode(m)
+  }
+  return [mode, set]
+}
