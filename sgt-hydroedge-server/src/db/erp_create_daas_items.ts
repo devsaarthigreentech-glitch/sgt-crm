@@ -3,7 +3,7 @@
 // erp_create_daas_items.ts
 // Creates the two ERPNext items every DaaS quotation is raised on:
 //
-//   DaaS-Upfront   "Upfront Payment"     non-refundable, 30% of MRP
+//   DaaS-Upfront   "Upfront Payment"     30% of the price after discount
 //   DaaS-Rent      "Rent on DaaS Model"  one month's rent, in advance
 //
 // The names match the owner's proforma SAL-QTN-2026-00021, and so does the
@@ -48,7 +48,7 @@ async function exists(doctype: string, name: string): Promise<boolean> {
 
 const ITEMS = [
   { code: DAAS_UPFRONT_ITEM, name: 'Upfront Payment',
-    description: 'Non-refundable upfront payment under the DaaS rental model.' },
+    description: 'Upfront payment under the DaaS rental model.' },
   { code: DAAS_RENT_ITEM, name: 'Rent on DaaS Model',
     description: 'Monthly rental under the DaaS model, payable in advance.' },
 ];

@@ -122,6 +122,8 @@ export interface QuoteBody extends QuoteLineBody {
   lockInMonths?: number
   /** DaaS: date of the signed rental agreement, as it should print. */
   agreementDate?: string | null
+  /** DaaS: add AMC to the rent from month 13. The first year is always included. */
+  amcFromYear2?: boolean
   /** DaaS: the customer's name as the terms should state it. */
   customerName?: string | null
 }
@@ -898,7 +900,7 @@ async function performDaasQuotation(
       return fail(422, 'discount_too_high',
         `Line ${i + 1}: the DaaS discount must be between 0 and ${DAAS_MAX_DISCOUNT_PCT}%.`, { lineIndex: i })
     }
-    const fig = daasFigures(mrp, years, disc)
+    const fig = daasFigures(mrp, years, disc, !!body.amcFromYear2)
     const buyout = money(l.buyout), postAmc = money(l.postAmc), cont = money(l.continuationRent)
     if (buyout === 'bad' || postAmc === 'bad' || cont === 'bad') {
       return fail(400, 'bad_amount', `Line ${i + 1}: amounts must be positive numbers.`, { lineIndex: i })
@@ -908,31 +910,38 @@ async function performDaasQuotation(
       label, qty, fig,
       buyout: buyout ?? fig.buyoutDefault,
       postAmc: postAmc ?? fig.postAmcDefault,
-      continuation: cont,
+      continuation: cont ?? fig.continuationDefault,
     })
     const rs = (n: number) => '₹' + n.toLocaleString('en-IN')
+    const priceNote = fig.discountPct
+      ? `${rs(fig.price)} (MRP ${rs(mrp)} less ${fig.discountPct}%)`
+      : `MRP ${rs(mrp)}`
     lines.push(
       {
         itemCode: DAAS_UPFRONT_ITEM, qty, rate: fig.upfront, exactRate: true,
-        description: fig.discountPct
-          ? `${label} — non-refundable upfront payment, ${DAAS_DOWN_PCT}% of ${rs(fig.price)} ` +
-            `(MRP ${rs(mrp)} less ${fig.discountPct}%).`
-          : `${label} — non-refundable upfront payment, ${DAAS_DOWN_PCT}% of MRP ${rs(mrp)}.`,
+        description: `${label} — upfront payment, ${DAAS_DOWN_PCT}% of ${priceNote}.`,
       },
       {
-        itemCode: DAAS_RENT_ITEM, qty, rate: fig.rent, exactRate: true,
+        // The first month is billed now, and it is a year-one month: AMC is
+        // included in the price for the first year, so this is the
+        // instalment alone. AMC (if opted) joins the rent from month 13.
+        itemCode: DAAS_RENT_ITEM, qty, rate: fig.rentYear1, exactRate: true,
         description:
-          `${label} — monthly rent for ${fig.months} months (${rs(fig.emi)} instalment at ` +
-          `${DAAS_RATE_PCT}% p.a. + ${rs(fig.amcMonthly)} AMC). First month, payable in advance.`,
+          `${label} — monthly rent, first month, payable in advance. ${rs(fig.rentYear1)} a month ` +
+          (fig.months > 12 ? `for months 1–12` : `for ${fig.months} months`) +
+          ` (instalment at ${DAAS_RATE_PCT}% p.a.; first-year AMC included)` +
+          (fig.amc ? `; ${rs(fig.rentLater)} from month 13 including AMC.` : '.'),
       },
     )
     snaps.push({
       kva: productLine === 'GreenX' ? Number(l.kva) : null,
       model: productLine === 'GreenDrive' ? l.model : null,
       modelCode: label, qty, mrp, discountPct: fig.discountPct, price: fig.price, months: fig.months,
-      upfront: fig.upfront, financed: fig.financed, emi: fig.emi, amcMonthly: fig.amcMonthly,
-      rent: fig.rent, buyout: buyout ?? fig.buyoutDefault, postAmc: postAmc ?? fig.postAmcDefault,
-      continuationRent: cont,
+      upfront: fig.upfront, financed: fig.financed, emi: fig.emi,
+      amc: fig.amc, amcMonthly: fig.amcMonthly, rentYear1: fig.rentYear1, rentLater: fig.rentLater,
+      totalOverTenure: fig.totalOverTenure,
+      buyout: buyout ?? fig.buyoutDefault, postAmc: postAmc ?? fig.postAmcDefault,
+      continuationRent: cont ?? fig.continuationDefault,
     })
   }
 
@@ -974,7 +983,7 @@ async function performDaasQuotation(
        values ($1, null, $2, null, $3, $4, $5, $6, $7, null, $8, $9,
                'draft', $10, $11, 'crm', $12, $13, $14, $15, 'daas')
        on conflict (erp_name) do nothing`,
-      [created.erpName, first.kva, first.modelCode, first.qty, first.rent,
+      [created.erpName, first.kva, first.modelCode, first.qty, first.rentYear1,
        created.netTotal, created.grandTotal, created.customer.erpName, customerName,
        who.id, who.name, snaps.length, JSON.stringify(snaps), created.taxMode, productLine],
     )
