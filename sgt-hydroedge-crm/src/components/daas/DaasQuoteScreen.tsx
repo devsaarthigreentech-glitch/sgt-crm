@@ -68,7 +68,7 @@ export default function DaasQuoteScreen({ api, productLine }: {
 
   const [years, setYears] = useState<number>(3)
   const [lockIn, setLockIn] = useState(String(DAAS_LOCK_IN_MONTHS))
-  const [amcFromYear2, setAmcFromYear2] = useState(false)
+  const [includeAmc, setIncludeAmc] = useState(true)
   const [agreementDate, setAgreementDate] = useState('')
   const [lines, setLines] = useState<Line[]>([blank()])
   const [picked, setPicked] = useState<ErpCustomer | null>(null)
@@ -114,13 +114,12 @@ export default function DaasQuoteScreen({ api, productLine }: {
     const qty = Math.max(0, Math.floor(Number(l.qty) || 0))
     const d = l.discount.trim() === '' ? 0 : Number(l.discount)
     const badDisc = !Number.isFinite(d) || d < 0 || d > DAAS_MAX_DISCOUNT_PCT
-    return { l, qty, mrp, badDisc, fig: mrp !== null && !badDisc ? daasFigures(mrp, years, d, amcFromYear2) : null }
+    return { l, qty, mrp, badDisc, fig: mrp !== null && !badDisc ? daasFigures(mrp, years, d, includeAmc) : null }
   })
   const ready = rows.filter(r => r.fig && r.qty > 0)
   const upfront = ready.reduce((s, r) => s + r.fig!.upfront * r.qty, 0)
-  const rentYear1 = ready.reduce((s, r) => s + r.fig!.rentYear1 * r.qty, 0)
-  const rentLater = ready.reduce((s, r) => s + r.fig!.rentLater * r.qty, 0)
-  const dueNow = upfront + rentYear1
+  const rent = ready.reduce((s, r) => s + r.fig!.rent * r.qty, 0)
+  const dueNow = upfront + rent
   const gst = dueNow * GD_GST_PCT / 100
   const overTenure = ready.reduce((s, r) => s + r.fig!.totalOverTenure * r.qty, 0)
   const unresolved = rows.some(r => (gd ? false : r.l.kva.trim() !== '' && !r.fig && !r.badDisc))
@@ -137,7 +136,7 @@ export default function DaasQuoteScreen({ api, productLine }: {
       const r = await api.createDaas({
         productLine,
         tenureYears: years,
-        amcFromYear2: years > 1 && amcFromYear2,
+        includeAmc,
         lockInMonths: Math.max(0, Math.floor(Number(lockIn) || 0)),
         agreementDate: agreementDate.trim() || null,
         customerErpName: picked!.name,
@@ -177,9 +176,9 @@ export default function DaasQuoteScreen({ api, productLine }: {
 
       <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 700, color: INK }}>{productLine} DaaS quotations</h1>
       <p style={{ margin: '0 0 16px', fontSize: 12.5, color: MUTED, maxWidth: 940 }}>
-        Rental: {DAAS_DOWN_PCT}% of the price upfront, then a monthly instalment on the rest at {DAAS_RATE_PCT}% a
-        year. AMC for the first year is included; from the second year it can be added at {DAAS_AMC_PCT}% of the
-        price a year. The quotation bills the upfront and the first month's rent.
+        Rental: {DAAS_DOWN_PCT}% of the price upfront, then one fixed monthly rent — an instalment on the rest at
+        {DAAS_RATE_PCT}% a year, plus AMC at {DAAS_AMC_PCT}% of the price a year with the first year free, spread
+        evenly over the tenure. The quotation bills the upfront and the first month's rent.
       </p>
 
       {sent && <Ok>{sent}</Ok>}
@@ -222,11 +221,11 @@ export default function DaasQuoteScreen({ api, productLine }: {
             <input type="number" min={0} value={lockIn} onChange={e => setLockIn(e.target.value)} style={inputStyle()} />
           </div>
           <div>
-            <label style={labelStyle}>AMC from the second year</label>
+            <label style={labelStyle}>AMC</label>
             <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, color: years > 1 ? INK : FAINT, padding: '9px 0' }}>
-              <input type="checkbox" disabled={years === 1} checked={years > 1 && amcFromYear2}
-                onChange={e => setAmcFromYear2(e.target.checked)} />
-              {years === 1 ? 'Not applicable — 1-year tenure' : `Add ${DAAS_AMC_PCT}% a year from month 13`}
+              <input type="checkbox" disabled={years === 1} checked={years === 1 || includeAmc}
+                onChange={e => setIncludeAmc(e.target.checked)} />
+              {years === 1 ? 'Included free for a 1-year tenure' : `Full tenure — first year free, the rest in the rent`}
             </label>
           </div>
           <div>
@@ -294,9 +293,11 @@ export default function DaasQuoteScreen({ api, productLine }: {
               <div style={{ fontSize: 12, color: MUTED, marginTop: 10, lineHeight: 1.6 }}>
                 {fig.discountPct > 0 && <>Price {rupees(fig.price)} (MRP {rupees(fig.mrp)} less {fig.discountPct}%) · </>}
                 Per machine: upfront <strong style={{ color: INK }}>{rupees(fig.upfront)}</strong> · rent{' '}
-                <strong style={{ color: INK }}>{rupees(fig.rentYear1)}</strong>/month
-                {fig.months > 12 ? ' for months 1–12' : ` for ${fig.months} months`} (instalment on {rupees(fig.financed)}, first-year AMC included)
-                {fig.amc && <> · <strong style={{ color: INK }}>{rupees(fig.rentLater)}</strong>/month from month 13 (+{rupees(fig.amcMonthly)} AMC)</>}
+                <strong style={{ color: INK }}>{rupees(fig.rent)}</strong>/month, fixed for {fig.months} months
+                {' '}({rupees(fig.emi)} instalment on {rupees(fig.financed)}
+                {fig.amcMonthly > 0
+                  ? <> + {rupees(fig.amcMonthly)} AMC — {rupees(fig.amcCharged)} for {fig.years - 1} year{fig.years > 2 ? 's' : ''} spread over {fig.months} months; first year free</>
+                  : <>; first-year AMC free{fig.years > 1 ? ', no AMC after' : ''}</>})
               </div>
             )}
 
@@ -316,7 +317,7 @@ export default function DaasQuoteScreen({ api, productLine }: {
                 <div>
                   <label style={labelStyle}>Rent if continued, per month</label>
                   <input type="number" min={0} value={l.continuation} onChange={e => patch(l.id, { continuation: e.target.value })}
-                    placeholder={fig ? `${fig.continuationDefault} (${DAAS_CONTINUATION_CUT_PCT}% below final-year rent)` : `${DAAS_CONTINUATION_CUT_PCT}% below final-year rent`}
+                    placeholder={fig ? `${fig.continuationDefault} (${DAAS_CONTINUATION_CUT_PCT}% below the rent)` : `${DAAS_CONTINUATION_CUT_PCT}% below the rent`}
                     style={inputStyle()} />
                 </div>
               </div>
@@ -341,8 +342,7 @@ export default function DaasQuoteScreen({ api, productLine }: {
       <div style={card}>
         <h2 style={h2}>Summary</h2>
         <Row k="Upfront" v={rupees(upfront)} />
-        <Row k={years > 1 ? 'Monthly rent, months 1–12' : `Monthly rent, ${years * 12} months`} v={rupees(rentYear1)} />
-        {years > 1 && <Row k={`Monthly rent, months 13–${years * 12}${amcFromYear2 ? ' (incl. AMC)' : ''}`} v={rupees(rentLater)} />}
+        <Row k={`Monthly rent, fixed for ${years * 12} months`} v={rupees(rent)} />
         <Row k="Due now — upfront + first month" v={rupees(dueNow)} strong />
         <Row k={`GST ${GD_GST_PCT}%`} v={rupees(gst)} />
         <div style={{ borderTop: `1px solid ${LINE}`, margin: '8px 0' }} />

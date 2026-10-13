@@ -171,8 +171,8 @@ export interface QuoteLinePayload {
 export interface DaasBody {
   productLine: 'GreenX' | 'GreenDrive'
   tenureYears: number
-  /** Add AMC to the rent from month 13. The first year is always included. */
-  amcFromYear2: boolean
+  /** AMC for the tenure: first year free, the rest spread evenly over the rent. */
+  includeAmc: boolean
   lockInMonths: number
   agreementDate: string | null
   customerErpName: string

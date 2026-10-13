@@ -2,30 +2,36 @@
 // domain/daas.ts — DaaS (rental) quotations: the maths and the terms.
 //
 // DaaS is a COMMERCIAL MODE, not a product line: GreenX and GreenDrive
-// can each be sold outright or rented. Owner's rules, 2026-10-12:
+// can each be sold outright or rented. Owner's rules (2026-10-12, AMC
+// revised 2026-10-13):
 //
 //   discount  up to 40% off MRP per machine. Everything below is computed
 //             on the PRICE after discount.
 //   upfront   30% of the price, before installation. Not refunded on
-//             termination — but worded neutrally on the document (owner:
-//             "non-refundable upfront" read as too aggressive).
+//             termination — worded neutrally on the document.
 //   rent      the other 70% repaid over 1, 2 or 3 years as a reducing-
 //             balance EMI at 12% a year (1% a month).
-//   AMC       the FIRST YEAR is included in the price. From month 13, AMC
-//             is OPTIONAL; if opted it adds 15% of the price a year to the
-//             monthly rent (1.25% of the price a month). Not applicable to a
-//             1-year tenure.
+//   AMC       15% of the price per year. The FIRST YEAR IS FREE, so a
+//             tenure of N years charges N−1 years of AMC, and that amount
+//             is spread EVENLY over all N×12 months — no interest on it —
+//             and folded into the rent. ONE rent for the whole tenure; it
+//             never steps up. Optional (on by default); without it the
+//             rent is the instalment alone and AMC after year 1 is extra.
 //   payment   rent due within the first 7 working days of each month.
 //   after     buyout (default = the upfront) and post-buyout AMC (default
 //             15% of the price a year) are typed per quotation. Continuing
-//             to rent instead of buying out costs 35% LESS than the rent in
-//             the last year of the tenure — the default, overridable.
+//             to rent instead of buying out is 35% BELOW the tenure rent —
+//             the default, overridable.
 //   who       SGT staff only — SGT owns the equipment and bills monthly.
 //
-// Worked example, GreenDrive One ₹1,04,000, no discount, 3 years, AMC opted:
-//   upfront ₹31,200 · financed ₹72,800 · EMI ₹2,418
-//   months 1–12 ₹2,418 · months 13–36 ₹2,418 + ₹1,300 AMC = ₹3,718
-//   continuation ₹2,417 (35% below ₹3,718)
+// The owner's own example: price ₹1,00,000, a year's AMC ₹15,000.
+//   1 year   AMC free                       → +₹0 a month
+//   2 years  ₹30,000 of AMC, ₹15,000 charged → +₹625 a month (÷24)
+//   3 years  ₹45,000 of AMC, ₹30,000 charged → +₹833 a month (÷36)
+//
+// Worked example, GreenDrive One ₹1,04,000, no discount, 3 years, AMC:
+//   upfront ₹31,200 · EMI ₹2,418 on ₹72,800 · AMC ₹31,200 ÷ 36 = ₹867
+//   → rent ₹3,285 a month for all 36 months; continuation ₹2,135.
 //
 // The quotation PRINTS like the owner's proforma SAL-QTN-2026-00021: an
 // "Upfront Payment" and a "Rent on DaaS Model" line per machine, and the
@@ -43,7 +49,7 @@ import type { Clause } from './dealerTerms.js'
 export const DAAS_DOWN_PCT = 30
 export const DAAS_RATE_PCT = 12
 export const DAAS_AMC_PCT = 15
-/** How much below the last tenure rent a continued rental is. Owner, 2026-10-12. */
+/** How much below the tenure rent a continued rental is. Owner, 2026-10-12. */
 export const DAAS_CONTINUATION_CUT_PCT = 35
 export const DAAS_TENURES = [1, 2, 3] as const
 export const DAAS_LOCK_IN_MONTHS = 3
@@ -64,19 +70,24 @@ export interface DaasFigures {
   discountPct: number
   /** MRP less the discount — what every other figure is computed on. */
   price: number
+  years: number
   months: number
   /** Per machine, whole rupees, ex-GST. */
   upfront: number
   financed: number
   emi: number
-  /** True when AMC from the second year was opted AND the tenure has one. */
+  /** True when AMC for the tenure is included. */
   amc: boolean
-  /** Added to the rent from month 13 when `amc`; otherwise 0. */
+  /** One year of AMC: 15% of the price. */
+  amcYearly: number
+  /** What AMC would cost over the tenure, the free first year included. */
+  amcFullValue: number
+  /** What is actually charged: the tenure less the free first year. */
+  amcCharged: number
+  /** amcCharged spread over every month of the tenure. */
   amcMonthly: number
-  /** Months 1–12. The first month is what the quotation bills. */
-  rentYear1: number
-  /** Month 13 onwards. Equals rentYear1 without AMC or on a 1-year tenure. */
-  rentLater: number
+  /** emi + amcMonthly — the ONE monthly rent for the whole tenure. */
+  rent: number
   /** Everything the customer pays over the tenure, upfront included. */
   totalOverTenure: number
   /** Defaults for the post-tenure clauses, per machine. */
@@ -87,7 +98,7 @@ export interface DaasFigures {
 
 /** One machine's DaaS figures. Pure; rounds to whole rupees. */
 export function daasFigures(
-  mrp: number, years: number, discountPct = 0, amcFromYear2 = false,
+  mrp: number, years: number, discountPct = 0, includeAmc = true,
 ): DaasFigures {
   const months = years * 12
   const price = Math.round(mrp * (1 - discountPct / 100))
@@ -95,17 +106,20 @@ export function daasFigures(
   const financed = price - upfront
   const r = DAAS_RATE_PCT / 1200
   const emi = Math.round(financed * r / (1 - Math.pow(1 + r, -months)))
-  const amc = amcFromYear2 && months > 12
-  const amcMonthly = amc ? Math.round(price * DAAS_AMC_PCT / 100 / 12) : 0
-  const rentLater = emi + amcMonthly
+  const amcYearly = Math.round(price * DAAS_AMC_PCT / 100)
+  const amcCharged = includeAmc ? amcYearly * (years - 1) : 0
+  const amcMonthly = Math.round(amcCharged / months)
+  const rent = emi + amcMonthly
   return {
-    mrp, discountPct, price, months, upfront, financed, emi, amc, amcMonthly,
-    rentYear1: emi,
-    rentLater,
-    totalOverTenure: upfront + emi * months + amcMonthly * Math.max(0, months - 12),
+    mrp, discountPct, price, years, months, upfront, financed, emi,
+    amc: includeAmc,
+    amcYearly,
+    amcFullValue: includeAmc ? amcYearly * years : amcYearly,
+    amcCharged, amcMonthly, rent,
+    totalOverTenure: upfront + rent * months,
     buyoutDefault: upfront,
-    postAmcDefault: Math.round(price * DAAS_AMC_PCT / 100),
-    continuationDefault: Math.round(rentLater * (1 - DAAS_CONTINUATION_CUT_PCT / 100)),
+    postAmcDefault: amcYearly,
+    continuationDefault: Math.round(rent * (1 - DAAS_CONTINUATION_CUT_PCT / 100)),
   }
 }
 
@@ -138,8 +152,8 @@ const points = (items: string[]) => items.map(p => `<br>&bull;&nbsp;${p}`).join(
 
 /**
  * The DaaS terms, with this quotation's figures written in — the sections
- * of the owner's proforma, revised 2026-10-12. Built per quotation because
- * the figures ARE the terms.
+ * of the owner's proforma, revised 2026-10-12/13. Built per quotation
+ * because the figures ARE the terms.
  */
 export function daasTerms(opts: {
   productLine: 'GreenX' | 'GreenDrive'
@@ -149,34 +163,42 @@ export function daasTerms(opts: {
   lines: DaasTermsLine[]
 }): Clause[] {
   const { lines } = opts
-  const months = lines[0].fig.months
+  const { months, years, amc } = lines[0].fig
   const sum = (pick: (f: DaasFigures) => number) => lines.reduce((s, l) => s + pick(l.fig) * l.qty, 0)
   const upfront = sum(f => f.upfront)
-  const year1 = sum(f => f.rentYear1)
-  const later = sum(f => f.rentLater)
+  const rent = sum(f => f.rent)
+  const amcYearly = sum(f => f.amcYearly)
+  const amcCharged = sum(f => f.amcCharged)
   const amcMonthly = sum(f => f.amcMonthly)
-  const amc = lines[0].fig.amc
   const host = opts.productLine === 'GreenX' ? 'generator performance' : 'equipment performance'
   const lockIn = `${opts.lockInMonths} month${opts.lockInMonths === 1 ? '' : 's'}`
+  const yrs = (n: number) => `${n} year${n === 1 ? '' : 's'}`
 
   // Point-wise and neutral, at the owner's request.
   const commercial = [
     `<strong>Upfront payment:</strong> ${inr(upfront)} + GST, payable against the Proforma Invoice ` +
       `before installation. This amount is adjusted towards the equipment and is not refunded on termination.`,
-    months > 12
-      ? `<strong>Monthly rental:</strong> ${inr(year1)} + GST per month for months 1 to 12.`
-      : `<strong>Monthly rental:</strong> ${inr(year1)} + GST per month for ${months} months.`,
-    `<strong>Annual maintenance:</strong> AMC for the first year is included in the price.`,
+    `<strong>Monthly rental:</strong> ${inr(rent)} + GST per month, fixed for all ${months} months of the tenure.`,
   ]
-  if (months > 12) {
-    commercial.push(amc
-      ? `<strong>AMC from the second year:</strong> opted. AMC of ${inr(amcMonthly)} per month (15% of the ` +
-        `equipment price a year) is added from the 13th month, making the monthly rental ${inr(later)} + GST ` +
-        `for months 13 to ${months}.`
-      : `<strong>AMC from the second year:</strong> not included. It can be added at any time at 15% of the ` +
-        `equipment price a year, charged with the monthly rental.`)
+  if (years === 1) {
+    commercial.push(`<strong>Annual maintenance:</strong> AMC for the tenure is included free of charge ` +
+      `(value ${inr(amcYearly)}).`)
+  } else if (amc) {
+    commercial.push(`<strong>Annual maintenance:</strong> AMC for the full ${yrs(years)} is included in the ` +
+      `monthly rental. The first year's AMC (${inr(amcYearly)}) is free of charge; the AMC for the remaining ` +
+      `${yrs(years - 1)}, ${inr(amcCharged)}, is spread evenly across the ${months} months at ${inr(amcMonthly)} ` +
+      `per month, with no interest.`)
+  } else {
+    commercial.push(`<strong>Annual maintenance:</strong> AMC for the first year is included free of charge ` +
+      `(value ${inr(amcYearly)}). AMC from the second year is not included; it can be added at ` +
+      `${DAAS_AMC_PCT}% of the equipment price a year.`)
   }
   commercial.push(`<strong>Tenure:</strong> ${months} months from the date of installation.`)
+
+  const serviceCover = years === 1 || amc
+    ? `AMC for the tenure covers routine service and maintenance. `
+    : `AMC for the first year covers routine service and maintenance; from the second year, service ` +
+      `visits are charged at SGT's prevailing rates unless AMC has been added. `
 
   return [
     ['Governing Agreement',
@@ -211,16 +233,12 @@ export function daasTerms(opts: {
      `Should the customer choose to continue the rental instead of the buyout, the rental from the ` +
      `${months + 1}${ordinal(months + 1)} month onwards shall be ` +
      `${perMachine(lines, l => l.continuation, 'per unit per month')} — ${DAAS_CONTINUATION_CUT_PCT}% below ` +
-     `the rental during the final year of the tenure.`],
+     `the monthly rental during the tenure.`],
     ['Ownership',
      `The equipment shall remain the property of SGT HydroEdge Pvt. Ltd. throughout the rental period unless ` +
      `purchased under the buyout option.`],
     ['Service &amp; Damage Handling',
-     `AMC for the first year is included and covers routine service and maintenance` +
-     (months > 12
-       ? (amc ? `, continuing for the rest of the tenure as opted above. ` : `. From the second year, service ` +
-          `is covered where AMC has been added; otherwise visits are charged at SGT's prevailing rates. `)
-       : '. ') +
+     serviceCover +
      `In the event of accidental damage attributable to the customer, SGT HydroEdge Pvt. Ltd. shall undertake ` +
      `the necessary repairs, and the actual cost of repair shall be borne by the customer.`],
   ]

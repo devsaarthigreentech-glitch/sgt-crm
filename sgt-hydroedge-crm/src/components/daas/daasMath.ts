@@ -8,9 +8,10 @@
 //   discount  up to 40% off MRP; everything uses the price after it
 //   upfront   30% of the price, per machine
 //   rent      EMI on the other 70% at 12% a year (reducing balance)
-//   AMC       first year included; from month 13, if opted, 15% of the
-//             price a year is added to the rent
-//   continue  rent after the tenure is 35% below the final-year rent
+//           + AMC: 15% of the price a year, FIRST YEAR FREE — the other
+//             N−1 years spread evenly over all N×12 months, no interest.
+//             ONE rent for the whole tenure.
+//   continue  rent after the tenure is 35% below the tenure rent
 
 export const DAAS_DOWN_PCT = 30
 export const DAAS_RATE_PCT = 12
@@ -21,29 +22,33 @@ export const DAAS_LOCK_IN_MONTHS = 3
 export const DAAS_MAX_DISCOUNT_PCT = 40
 
 export interface DaasFigures {
-  mrp: number; discountPct: number; price: number; months: number
+  mrp: number; discountPct: number; price: number; years: number; months: number
   upfront: number; financed: number; emi: number
-  amc: boolean; amcMonthly: number; rentYear1: number; rentLater: number; totalOverTenure: number
+  amc: boolean; amcYearly: number; amcFullValue: number; amcCharged: number; amcMonthly: number
+  rent: number; totalOverTenure: number
   buyoutDefault: number; postAmcDefault: number; continuationDefault: number
 }
 
-export function daasFigures(mrp: number, years: number, discountPct = 0, amcFromYear2 = false): DaasFigures {
+export function daasFigures(mrp: number, years: number, discountPct = 0, includeAmc = true): DaasFigures {
   const months = years * 12
   const price = Math.round(mrp * (1 - discountPct / 100))
   const upfront = Math.round(price * DAAS_DOWN_PCT / 100)
   const financed = price - upfront
   const r = DAAS_RATE_PCT / 1200
   const emi = Math.round(financed * r / (1 - Math.pow(1 + r, -months)))
-  const amc = amcFromYear2 && months > 12
-  const amcMonthly = amc ? Math.round(price * DAAS_AMC_PCT / 100 / 12) : 0
-  const rentLater = emi + amcMonthly
+  const amcYearly = Math.round(price * DAAS_AMC_PCT / 100)
+  const amcCharged = includeAmc ? amcYearly * (years - 1) : 0
+  const amcMonthly = Math.round(amcCharged / months)
+  const rent = emi + amcMonthly
   return {
-    mrp, discountPct, price, months, upfront, financed, emi, amc, amcMonthly,
-    rentYear1: emi,
-    rentLater,
-    totalOverTenure: upfront + emi * months + amcMonthly * Math.max(0, months - 12),
+    mrp, discountPct, price, years, months, upfront, financed, emi,
+    amc: includeAmc,
+    amcYearly,
+    amcFullValue: includeAmc ? amcYearly * years : amcYearly,
+    amcCharged, amcMonthly, rent,
+    totalOverTenure: upfront + rent * months,
     buyoutDefault: upfront,
-    postAmcDefault: Math.round(price * DAAS_AMC_PCT / 100),
-    continuationDefault: Math.round(rentLater * (1 - DAAS_CONTINUATION_CUT_PCT / 100)),
+    postAmcDefault: amcYearly,
+    continuationDefault: Math.round(rent * (1 - DAAS_CONTINUATION_CUT_PCT / 100)),
   }
 }
