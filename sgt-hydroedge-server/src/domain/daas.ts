@@ -157,51 +157,55 @@ export const daasItemNames = (label: string) => ({
   rent: `${label} – Monthly Rent (DaaS Model)`,
 })
 
+// Same shape as a GreenX specification (renderSpecHtml): one "Label: value"
+// row per fact, which the print format lays out as two aligned columns.
 const specLine = (label: string, value: string) => `<div><b>${label}</b> ${value}</div>`
-const specHead = (n: number, title: string) =>
-  `<div style="margin-top:6px;"><b>${n}. ${title}</b></div>`
 
 /**
- * The two descriptions for one machine. `n` is the number of its upfront
- * heading in the block (1 for the first machine, 3 for the second…), so
- * a multi-machine offer keeps one running sequence.
+ * The two descriptions for one machine.
+ *
+ * CONCISE on purpose (owner, 2026-10-14). The print format already prints
+ * a numbered heading per line from its item name ("1. GreenX-500 –
+ * Upfront Payment"), so the descriptions carry no headings and no prose —
+ * only short label/value rows. A first version repeated each heading and
+ * sentence and, with two machines, read as cluttered.
+ *
+ *   upfront line   Equipment · Price · Upfront
+ *   rent line      Rent · Billing  (+ Service, after the last machine only)
  */
 export function daasDescriptions(opts: {
   label: string
   qty: number
   fig: DaasFigures
-  n: number
-  /** Add the closing Service and maintenance note — the last machine only. */
+  /** Kept for callers; numbering is the print format's job now. */
+  n?: number
+  /** Add the Service row — the last machine only. */
   last: boolean
 }): { upfront: string; rent: string } {
-  const { label, qty, fig, n, last } = opts
+  const { label, qty, fig, last } = opts
   const each = qty > 1 ? ' per machine' : ''
   const l = esc(label)
-  const basis = fig.discountPct > 0
-    ? `The ${l} is offered at a ${fig.discountPct}% discount on the MRP of ${inr(fig.mrp)}.`
-    : `The ${l} is offered at its MRP of ${inr(fig.mrp)}.`
+
+  const price = fig.discountPct > 0
+    ? `${inr(fig.price)} (MRP ${inr(fig.mrp)} less ${fig.discountPct}%)`
+    : `${inr(fig.price)} (MRP)`
 
   const upfront =
     `<div class="sgt-spec">` +
     specLine('Equipment:', l + (qty > 1 ? ` × ${qty}` : '')) +
-    specLine('Pricing basis:', basis) +
-    specHead(n, `Upfront Payment – ${l}`) +
-    `<div>A one-time payment of ${inr(fig.upfront)} + GST${each}, payable against the Proforma Invoice ` +
-    `before installation.</div>` +
+    specLine('Price:', price) +
+    specLine('Upfront:', `${inr(fig.upfront)} + GST${each}, before installation`) +
     `</div>`
 
   const service = fig.amc || fig.years === 1
-    ? `During the rental period, SGT HydroEdge takes care of all routine service and maintenance at no ` +
-      `additional charge.`
-    : `SGT HydroEdge takes care of all routine service and maintenance for the first year at no additional ` +
-      `charge. From the second year, service and maintenance is charged separately.`
+    ? 'Routine service and maintenance included during the rental period'
+    : 'Routine service and maintenance included for the first year; charged separately after'
 
   const rent =
     `<div class="sgt-spec">` +
-    specHead(n + 1, `Monthly Rent under DaaS Model – ${l}`) +
-    `<div>A fixed rent of ${inr(fig.rent)} + GST${each} per month for ${fig.months} months, payable in ` +
-    `advance. The first month's rent is included in this offer.</div>` +
-    (last ? `<div style="margin-top:6px;"><b>Service and maintenance:</b> ${service}</div>` : '') +
+    specLine('Rent:', `${inr(fig.rent)} + GST${each} per month × ${fig.months} months`) +
+    specLine('Billing:', 'Monthly in advance; first month included in this offer') +
+    (last ? specLine('Service:', service) : '') +
     `</div>`
 
   return { upfront, rent }
