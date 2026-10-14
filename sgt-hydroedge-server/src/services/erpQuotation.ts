@@ -851,6 +851,12 @@ export interface CreateQuotationLine {
    */
   description?: string | null;
   /**
+   * The name printed in the item column, instead of the Item master's —
+   * a DaaS line reads "GreenX-500 – Upfront Payment" while its item code
+   * is the shared DaaS-Upfront.
+   */
+  itemName?: string | null;
+  /**
    * Send `rate` as well as the list rate. For items with no Item Price
    * (the DaaS upfront and rent vary per quote), so ERPNext keeps the
    * figure rather than re-deriving it from a price list that has none.
@@ -973,6 +979,7 @@ function itemRows(line: CreateQuotationLine): Record<string, unknown>[] {
   return [
     {
       item_code: line.itemCode,
+      ...(line.itemName ? { item_name: line.itemName } : {}),
       qty: line.qty,
       ...(line.rate != null && line.rate !== '' ? { price_list_rate: Number(line.rate) } : {}),
       // How ERPNext wants a line discount, established by probing a real

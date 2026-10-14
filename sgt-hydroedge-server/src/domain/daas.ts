@@ -124,6 +124,7 @@ export function daasFigures(
 }
 
 const inr = (n: number) => '₹' + Math.round(n).toLocaleString('en-IN')
+const num = (n: number) => Math.round(n).toLocaleString('en-IN')
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
 /** One machine line as the terms need it. */
@@ -136,24 +137,95 @@ export interface DaasTermsLine {
   continuation: number
 }
 
+// ---------------------------------------------------------------------
+// The document's wording — the owner's final offer, SAL-QTN-2026-00075
+// (Revised), 2026-10-14. Item names, the Equipment Specification block
+// and all eight clauses are reproduced from it; only the figures, the
+// model names, the customer and the tenure are filled in.
+//
+// The print format is the GreenX "Techno-Commercial Offer" (Quotation2),
+// which prints each line's description, in order, as the Equipment
+// Specification block. So the block is built here as the two lines'
+// descriptions: the upfront line carries Equipment, Pricing basis and its
+// numbered heading; the rent line carries its heading and, after the last
+// machine, the Service and maintenance note.
+// ---------------------------------------------------------------------
+
+/** The item-column names, e.g. "GreenX-500 – Upfront Payment". */
+export const daasItemNames = (label: string) => ({
+  upfront: `${label} – Upfront Payment`,
+  rent: `${label} – Monthly Rent (DaaS Model)`,
+})
+
+const specLine = (label: string, value: string) => `<div><b>${label}</b> ${value}</div>`
+const specHead = (n: number, title: string) =>
+  `<div style="margin-top:6px;"><b>${n}. ${title}</b></div>`
+
 /**
- * "₹88,457 + GST per machine" when every line agrees, otherwise one
- * figure per model — a mixed quotation must not print one model's price
- * as if it applied to all.
+ * The two descriptions for one machine. `n` is the number of its upfront
+ * heading in the block (1 for the first machine, 3 for the second…), so
+ * a multi-machine offer keeps one running sequence.
  */
-function perMachine(lines: DaasTermsLine[], pick: (l: DaasTermsLine) => number, unit: string): string {
-  const vals = lines.map(pick)
-  if (vals.every(v => v === vals[0])) return `${inr(vals[0])} + GST ${unit}`
-  return lines.map(l => `${inr(pick(l))} + GST ${unit} for ${esc(l.label)}`).join('; ')
+export function daasDescriptions(opts: {
+  label: string
+  qty: number
+  fig: DaasFigures
+  n: number
+  /** Add the closing Service and maintenance note — the last machine only. */
+  last: boolean
+}): { upfront: string; rent: string } {
+  const { label, qty, fig, n, last } = opts
+  const each = qty > 1 ? ' per machine' : ''
+  const l = esc(label)
+  const basis = fig.discountPct > 0
+    ? `The ${l} is offered at a ${fig.discountPct}% discount on the MRP of ${inr(fig.mrp)}.`
+    : `The ${l} is offered at its MRP of ${inr(fig.mrp)}.`
+
+  const upfront =
+    `<div class="sgt-spec">` +
+    specLine('Equipment:', l + (qty > 1 ? ` × ${qty}` : '')) +
+    specLine('Pricing basis:', basis) +
+    specHead(n, `Upfront Payment – ${l}`) +
+    `<div>A one-time payment of ${inr(fig.upfront)} + GST${each}, payable against the Proforma Invoice ` +
+    `before installation.</div>` +
+    `</div>`
+
+  const service = fig.amc || fig.years === 1
+    ? `During the rental period, SGT HydroEdge takes care of all routine service and maintenance at no ` +
+      `additional charge.`
+    : `SGT HydroEdge takes care of all routine service and maintenance for the first year at no additional ` +
+      `charge. From the second year, service and maintenance is charged separately.`
+
+  const rent =
+    `<div class="sgt-spec">` +
+    specHead(n + 1, `Monthly Rent under DaaS Model – ${l}`) +
+    `<div>A fixed rent of ${inr(fig.rent)} + GST${each} per month for ${fig.months} months, payable in ` +
+    `advance. The first month's rent is included in this offer.</div>` +
+    (last ? `<div style="margin-top:6px;"><b>Service and maintenance:</b> ${service}</div>` : '') +
+    `</div>`
+
+  return { upfront, rent }
 }
 
-/** Points under one heading. clausesToHtml inserts the body as markup. */
-const points = (items: string[]) => items.map(p => `<br>&bull;&nbsp;${p}`).join('')
+// Layout helpers for the terms. clausesToHtml inserts each body as markup.
+const pad = 'margin-left:18px;margin-top:3px;'
+const bullet = (label: string, text: string) =>
+  `<div style="${pad}">&bull;&nbsp;<b>${label}</b> ${text}</div>`
+const lettered = (k: string, label: string, text: string) =>
+  `<div style="${pad}">(${k})&nbsp;&nbsp;<b>${label}</b> ${text}</div>`
+const roman = (k: string, text: string) =>
+  `<div style="margin-left:36px;margin-top:2px;">${k}.&nbsp;&nbsp;${text}</div>`
+
+/** "the GreenX-500" / "the GreenX-500, ₹x; the GreenX-80, ₹y" — one per model. */
+function perModel(lines: DaasTermsLine[], pick: (l: DaasTermsLine) => number): string {
+  return lines.map(l => `the ${esc(l.label)}, the revised rent is ${inr(pick(l))} + GST per unit per month`)
+    .join('; for ')
+}
 
 /**
- * The DaaS terms, with this quotation's figures written in — the sections
- * of the owner's proforma, revised 2026-10-12/13. Built per quotation
- * because the figures ARE the terms.
+ * The eight clauses of the final offer, with this quotation's figures.
+ * Totals in clause 2 cover every machine on the offer; per-model figures
+ * (buyout, AMC after buyout, continuation) are stated per model.
  */
 export function daasTerms(opts: {
   productLine: 'GreenX' | 'GreenDrive'
@@ -165,82 +237,77 @@ export function daasTerms(opts: {
   const { lines } = opts
   const { months, years, amc } = lines[0].fig
   const sum = (pick: (f: DaasFigures) => number) => lines.reduce((s, l) => s + pick(l.fig) * l.qty, 0)
-  const upfront = sum(f => f.upfront)
-  const rent = sum(f => f.rent)
-  const amcYearly = sum(f => f.amcYearly)
-  const amcCharged = sum(f => f.amcCharged)
-  const amcMonthly = sum(f => f.amcMonthly)
   const host = opts.productLine === 'GreenX' ? 'generator performance' : 'equipment performance'
   const lockIn = `${opts.lockInMonths} month${opts.lockInMonths === 1 ? '' : 's'}`
-  const yrs = (n: number) => `${n} year${n === 1 ? '' : 's'}`
+  const next = `${months + 1}${ordinal(months + 1)}`
 
-  // Point-wise and neutral, at the owner's request.
-  const commercial = [
-    `<strong>Upfront payment:</strong> ${inr(upfront)} + GST, payable against the Proforma Invoice ` +
-      `before installation. This amount is adjusted towards the equipment and is not refunded on termination.`,
-    `<strong>Monthly rental:</strong> ${inr(rent)} + GST per month, fixed for all ${months} months of the tenure.`,
-  ]
-  if (years === 1) {
-    commercial.push(`<strong>Annual maintenance:</strong> AMC for the tenure is included free of charge ` +
-      `(value ${inr(amcYearly)}).`)
-  } else if (amc) {
-    commercial.push(`<strong>Annual maintenance:</strong> AMC for the full ${yrs(years)} is included in the ` +
-      `monthly rental. The first year's AMC (${inr(amcYearly)}) is free of charge; the AMC for the remaining ` +
-      `${yrs(years - 1)}, ${inr(amcCharged)}, is spread evenly across the ${months} months at ${inr(amcMonthly)} ` +
-      `per month, with no interest.`)
-  } else {
-    commercial.push(`<strong>Annual maintenance:</strong> AMC for the first year is included free of charge ` +
-      `(value ${inr(amcYearly)}). AMC from the second year is not included; it can be added at ` +
-      `${DAAS_AMC_PCT}% of the equipment price a year.`)
-  }
-  commercial.push(`<strong>Tenure:</strong> ${months} months from the date of installation.`)
+  const serviceTerm = amc || years === 1
+    ? `SGT HydroEdge maintains the system throughout the rental period. No separate AMC is payable during this time.`
+    : `SGT HydroEdge maintains the system for the first year at no charge. From the second year, AMC is not ` +
+      `included and is payable separately.`
 
-  const serviceCover = years === 1 || amc
-    ? `AMC for the tenure covers routine service and maintenance. `
-    : `AMC for the first year covers routine service and maintenance; from the second year, service ` +
-      `visits are charged at SGT's prevailing rates unless AMC has been added. `
+  const cell = 'border:1px solid #ddd;padding:5px 8px;'
+  const head = `${cell}background:#efefef;font-weight:bold;`
+  const buyoutTable =
+    `<table style="border-collapse:collapse;margin:6px 0 4px 18px;font-size:9pt;">` +
+    `<tr><td style="${head}">Model</td>` +
+    `<td style="${head}text-align:right;">Asset transfer fee (₹, per machine)</td>` +
+    `<td style="${head}text-align:right;">AMC after buyout (₹, per machine per annum)</td></tr>` +
+    lines.map(l =>
+      `<tr><td style="${cell}">${esc(l.label)}</td>` +
+      `<td style="${cell}text-align:right;">${num(l.buyout)}</td>` +
+      `<td style="${cell}text-align:right;">${num(l.postAmc)}</td></tr>`).join('') +
+    `</table>`
 
   return [
     ['Governing Agreement',
-     `These Terms &amp; Conditions are governed by and shall be read in conjunction with the DaaS Rental ` +
-     `Agreement signed between SGT HydroEdge Private Limited and ${esc(opts.customerName)}` +
+     `These Terms &amp; Conditions are to be read together with the DaaS Rental Agreement signed between ` +
+     `SGT HydroEdge Private Limited and ${esc(opts.customerName)}` +
      (opts.agreementDate ? ` dated ${esc(opts.agreementDate)}.` : '.')],
-    ['Commercial Structure', points(commercial)],
+    ['Commercial Structure',
+     bullet('Upfront payment:', `${inr(sum(f => f.upfront))} + GST, payable against the Proforma Invoice ` +
+       `before installation. It is adjusted towards the equipment cost and is non-refundable.`) +
+     bullet('Monthly rent:', `${inr(sum(f => f.rent))} + GST per month, fixed for the entire ${months}-month tenure.`) +
+     bullet('Service and maintenance:', serviceTerm) +
+     bullet('Tenure:', `${months} months from the date of installation.`)],
     ['Lock-in Period',
-     `A minimum lock-in period of ${lockIn} shall be applicable from the date of installation. The customer ` +
-     `shall not be permitted to cancel or return the product during this period. Notwithstanding the above, ` +
-     `the customer may terminate during the lock-in period with 15 days' written notice if the system ` +
-     `demonstrably and directly affects ${host} or core business operations, subject to the joint review ` +
-     `and remedy process outlined in the Agreement.`],
+     `A minimum lock-in period of ${lockIn} applies from the date of installation, during which the customer ` +
+     `cannot cancel or return the equipment. The only exception is a termination for adverse system impact, ` +
+     `as set out in clause 5(c).`],
     ['Rental Payment Terms',
-     `Advance rental payments shall commence from the date of unit installation. The monthly rental shall be ` +
-     `paid within the first 7 working days of each month.`],
+     `Rent is payable in advance from the date of installation. Each month's rent is to be paid within the ` +
+     `first 7 working days of that month.`],
     ['Return &amp; Cancellation Policy',
-     `Upon completion of the lock-in period, either party may terminate by providing 30 days' written notice. ` +
-     `Any termination claim on grounds of adverse system impact shall follow a structured process: written ` +
-     `notification, joint review within 7 working days, and a 15-day remedy period for SGT HydroEdge. ` +
-     `Termination shall be valid only where the adverse effect is substantiated through joint review and is ` +
-     `directly attributable to the SGT system. Upon valid termination, equipment shall be removed by SGT ` +
-     `HydroEdge within a mutually agreed timeframe; rental shall cease from the date of removal. The upfront ` +
-     `payment, having been adjusted towards the equipment, is not refunded. Equipment must be returned in ` +
-     `good working condition, subject to normal wear and tear.`],
+     lettered('a', 'After the lock-in period:', `Either party may terminate by giving 30 days' written notice.`) +
+     lettered('b', 'Equipment condition:', `The equipment must be returned in good working condition, normal ` +
+       `wear and tear excepted.`) +
+     lettered('c', 'Termination for adverse system impact:', `If the system adversely affects the customer's ` +
+       `operations, the customer may terminate with 15 days' written notice, including during the lock-in ` +
+       `period, provided the process below is followed:`) +
+     roman('i', 'The customer notifies SGT HydroEdge in writing.') +
+     roman('ii', 'A joint review is held within 7 working days.') +
+     roman('iii', 'SGT HydroEdge is given a 15-day period to remedy the issue.') +
+     roman('iv', `Termination is valid only if the joint review confirms that the adverse effect is directly ` +
+       `attributable to the SGT HydroEdge system. An adverse effect means the system demonstrably and ` +
+       `directly affects ${host} or core business operations.`) +
+     lettered('d', 'On valid termination:', `SGT HydroEdge removes the equipment within a mutually agreed ` +
+       `timeframe, and rent ceases from the date of removal.`) +
+     lettered('e', 'Upfront payment:', `The upfront payment is not refunded, as it is adjusted towards the ` +
+       `equipment cost.`)],
     [`Buyout Option (Post ${months} Months)`,
-     `Upon completion of ${months} months, the customer may opt to purchase the assets by paying ` +
-     `${perMachine(lines, l => l.buyout, 'per machine')} towards asset transfer. Upon purchase, an Annual ` +
-     `Maintenance Contract (AMC) fee of ${perMachine(lines, l => l.postAmc, 'per machine per annum')} shall ` +
-     `be applicable.`],
+     `On completion of the ${months}-month tenure, the customer may purchase the equipment by paying the asset ` +
+     `transfer fee applicable to that model. After purchase, an Annual Maintenance Contract (AMC) applies at the ` +
+     `annual rate for that model. Both amounts differ by model and are stated per machine below, plus GST.` +
+     buyoutTable +
+     `<div style="margin-left:18px;">For any other model, the amounts will be as stated in the offer for that model.</div>`],
     ['Rental Continuation Option',
-     `Should the customer choose to continue the rental instead of the buyout, the rental from the ` +
-     `${months + 1}${ordinal(months + 1)} month onwards shall be ` +
-     `${perMachine(lines, l => l.continuation, 'per unit per month')} — ${DAAS_CONTINUATION_CUT_PCT}% below ` +
-     `the monthly rental during the tenure.`],
-    ['Ownership',
-     `The equipment shall remain the property of SGT HydroEdge Pvt. Ltd. throughout the rental period unless ` +
-     `purchased under the buyout option.`],
-    ['Service &amp; Damage Handling',
-     serviceCover +
-     `In the event of accidental damage attributable to the customer, SGT HydroEdge Pvt. Ltd. shall undertake ` +
-     `the necessary repairs, and the actual cost of repair shall be borne by the customer.`],
+     `If the customer chooses to continue renting instead of buying out, the revised rent applies from the ` +
+     `${next} month onwards. For ${perModel(lines, l => l.continuation)}. For other models, the revised rent ` +
+     `will be as stated in the offer for that model.`],
+    ['Ownership and Damage Handling',
+     `The equipment remains the property of SGT HydroEdge unless purchased under the buyout option. If ` +
+     `accidental damage is attributable to the customer, SGT HydroEdge will carry out the necessary repairs and ` +
+     `the actual repair cost will be borne by the customer.`],
   ]
 }
 

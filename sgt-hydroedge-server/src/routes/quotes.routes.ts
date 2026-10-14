@@ -37,7 +37,7 @@ import { clausesToHtml } from '../domain/dealerTerms.js'
 import {
   daasFigures, daasTerms, DAAS_TENURES, DAAS_LOCK_IN_MONTHS, DAAS_DOWN_PCT, DAAS_RATE_PCT,
   DAAS_MAX_DISCOUNT_PCT,
-  DAAS_UPFRONT_ITEM, DAAS_RENT_ITEM, type DaasTermsLine,
+  DAAS_UPFRONT_ITEM, DAAS_RENT_ITEM, daasItemNames, daasDescriptions, type DaasTermsLine,
 } from '../domain/daas.js'
 import { mayApproach, claimCustomer, claimBlockedPayload } from '../domain/customerClaim.js'
 import {
@@ -912,25 +912,6 @@ async function performDaasQuotation(
       postAmc: postAmc ?? fig.postAmcDefault,
       continuation: cont ?? fig.continuationDefault,
     })
-    const rs = (n: number) => '₹' + n.toLocaleString('en-IN')
-    const priceNote = fig.discountPct
-      ? `${rs(fig.price)} (MRP ${rs(mrp)} less ${fig.discountPct}%)`
-      : `MRP ${rs(mrp)}`
-    lines.push(
-      {
-        itemCode: DAAS_UPFRONT_ITEM, qty, rate: fig.upfront, exactRate: true,
-        description: `${label} — upfront payment, ${DAAS_DOWN_PCT}% of ${priceNote}.`,
-      },
-      {
-        // One rent for the whole tenure; the first month is billed now.
-        itemCode: DAAS_RENT_ITEM, qty, rate: fig.rent, exactRate: true,
-        description:
-          `${label} — monthly rent, first month, payable in advance. ${rs(fig.rent)} a month, fixed for ` +
-          `${fig.months} months: instalment ${rs(fig.emi)} at ${DAAS_RATE_PCT}% p.a.` +
-          (fig.amcMonthly ? ` + AMC ${rs(fig.amcMonthly)}` : '') +
-          (fig.amc || fig.years === 1 ? ' (first-year AMC free).' : ' (first-year AMC free; AMC after year 1 not included).'),
-      },
-    )
     snaps.push({
       kva: productLine === 'GreenX' ? Number(l.kva) : null,
       model: productLine === 'GreenDrive' ? l.model : null,
@@ -942,6 +923,28 @@ async function performDaasQuotation(
       continuationRent: cont ?? fig.continuationDefault,
     })
   }
+
+  // Two lines per machine, named and described as on the owner's final
+  // offer. The descriptions ARE the Equipment Specification block the
+  // print format shows, so they are built together, in order, with one
+  // running heading number and the service note after the last machine.
+  termsLines.forEach((t, i) => {
+    const names = daasItemNames(t.label)
+    const desc = daasDescriptions({
+      label: t.label, qty: t.qty, fig: t.fig, n: i * 2 + 1, last: i === termsLines.length - 1,
+    })
+    lines.push(
+      {
+        itemCode: DAAS_UPFRONT_ITEM, itemName: names.upfront, qty: t.qty,
+        rate: t.fig.upfront, exactRate: true, description: desc.upfront,
+      },
+      {
+        // One rent for the whole tenure; the first month is billed now.
+        itemCode: DAAS_RENT_ITEM, itemName: names.rent, qty: t.qty,
+        rate: t.fig.rent, exactRate: true, description: desc.rent,
+      },
+    )
+  })
 
   const customerName = String(body.customerName ?? '').trim() || customerErpName
   const termsHtml = clausesToHtml(daasTerms({
