@@ -1,0 +1,43 @@
+<style>
+.sgt-specs { margin-top: 14px; }
+.sgt-specs-title {
+  font-size: 9pt; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.06em; color: #6a675f;
+  border-bottom: 1px solid #d1d8dd; padding-bottom: 4px; margin-bottom: 9px;
+}
+.sgt-item { margin-bottom: 11px; page-break-inside: avoid; }
+.sgt-item-name { font-size: 9.5pt; font-weight: 600; margin-bottom: 3px; }
+.sgt-spec div { font-size: 8.5pt; line-height: 1.6; }
+.sgt-spec div b {
+  display: inline-block; min-width: 132px;
+  font-weight: 600; color: #6a675f;
+}
+</style>
+
+{%- set spec_rows = [] %}
+{%- for row in doc.items %}
+{%- if row.description and row.description != row.item_name %}
+{%- set _ = spec_rows.append(row) %}
+{%- endif %}
+{%- endfor %}
+
+{%- if spec_rows %}
+<div class="sgt-specs">
+  <div class="sgt-specs-title">Equipment Specification</div>
+  {%- for row in spec_rows %}
+  <div class="sgt-item">
+    {%- if doc.items | length > 1 %}
+    <div class="sgt-item-name">
+      {#- DaaS: one heading per model. The upfront line carries the model's
+          whole block (marked sgt-daas) and is named "GreenX-500 – Upfront
+          Payment"; print just the model, the part before " – ". The rent
+          line drops out above (its description equals its item name).
+          Every other quotation is unaffected. -#}
+      {{ loop.index }}. {% if 'sgt-daas' in row.description %}{{ row.item_name.split(' – ')[0] }}{% else %}{{ row.item_name }}{% endif %}{% if row.qty > 1 %} &times; {{ row.qty | int }}{% endif %}
+    </div>
+    {%- endif %}
+    {{ row.description | safe }}
+  </div>
+  {%- endfor %}
+</div>
+{%- endif %}

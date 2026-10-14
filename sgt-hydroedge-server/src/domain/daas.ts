@@ -162,51 +162,51 @@ export const daasItemNames = (label: string) => ({
 const specLine = (label: string, value: string) => `<div><b>${label}</b> ${value}</div>`
 
 /**
- * The two descriptions for one machine.
+ * The descriptions for one machine: ONE block under ONE heading per model
+ * (owner, 2026-10-14) — the upfront and rent rows together.
  *
- * CONCISE on purpose (owner, 2026-10-14). The print format already prints
- * a numbered heading per line from its item name ("1. GreenX-500 –
- * Upfront Payment"), so the descriptions carry no headings and no prose —
- * only short label/value rows. A first version repeated each heading and
- * sentence and, with two machines, read as cluttered.
+ * How that works with the print format (Quotation2's spec loop):
+ *   - it lists only lines whose description differs from their item
+ *     name, so the RENT line's description is set to its item name and
+ *     the line drops out of the block. The table still shows it.
+ *   - the UPFRONT line carries every row, inside class "sgt-daas". The
+ *     format numbers the lines it lists, so the numbering runs 1, 2, …
+ *     per model, and a one-line edit there prints the model name
+ *     ("1. GreenX-500") as the heading for a line marked sgt-daas,
+ *     instead of "1. GreenX-500 – Upfront Payment".
  *
- *   upfront line   Equipment · MRP · Discount · Price · Upfront · Payable
- *   rent line      Rent · Tenure · Billing · First month
- *                  (+ Service, after the last machine only)
+ * Values kept SHORT: the format sets the label in a fixed column and a
+ * long value wraps back under it, which reads as broken.
+ *
+ *   Equipment · MRP · Discount · Price · Upfront · Payable ·
+ *   Rent · Tenure · Billing · First month  (+ Service, last machine only)
  */
 export function daasDescriptions(opts: {
   label: string
   qty: number
   fig: DaasFigures
-  /** Kept for callers; numbering is the print format's job now. */
+  /** Kept for callers; numbering is the print format's job. */
   n?: number
   /** Add the Service row — the last machine only. */
   last: boolean
 }): { upfront: string; rent: string } {
   const { label, qty, fig, last } = opts
   const each = qty > 1 ? ' per machine' : ''
-  const l = esc(label)
+  const names = daasItemNames(label)
 
+  const service = fig.amc || fig.years === 1
+    ? 'Included throughout the rental'
+    : 'Free for year 1; charged after'
 
-  // Values kept SHORT: the print format sets the label in a fixed column
-  // and a long value wraps back under it, which reads as broken.
   const upfront =
-    `<div class="sgt-spec">` +
-    specLine('Equipment:', l + (qty > 1 ? ` × ${qty}` : '')) +
+    `<div class="sgt-spec sgt-daas">` +
+    specLine('Equipment:', esc(label)) +
     specLine('MRP:', inr(fig.mrp)) +
     (fig.discountPct > 0
       ? specLine('Discount:', `${fig.discountPct}%`) + specLine('Price:', inr(fig.price))
       : '') +
     specLine('Upfront:', `${inr(fig.upfront)} + GST${each}`) +
     specLine('Payable:', 'Before installation') +
-    `</div>`
-
-  const service = fig.amc || fig.years === 1
-    ? 'Included throughout the rental'
-    : 'Free for year 1; charged after'
-
-  const rent =
-    `<div class="sgt-spec">` +
     specLine('Rent:', `${inr(fig.rent)} + GST / month${each}`) +
     specLine('Tenure:', `${fig.months} months, fixed rent`) +
     specLine('Billing:', 'Monthly, in advance') +
@@ -214,7 +214,10 @@ export function daasDescriptions(opts: {
     (last ? specLine('Service:', service) : '') +
     `</div>`
 
-  return { upfront, rent }
+  // EXACTLY the item name, plain text: the format's
+  // "row.description != row.item_name" test then leaves this line out of
+  // the specification block.
+  return { upfront, rent: names.rent }
 }
 
 // Layout helpers for the terms. clausesToHtml inserts each body as markup.
