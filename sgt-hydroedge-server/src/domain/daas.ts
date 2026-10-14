@@ -248,16 +248,22 @@ export function daasTerms(opts: {
 
   const cell = 'border:1px solid #ddd;padding:5px 8px;'
   const head = `${cell}background:#efefef;font-weight:bold;`
+  // Indented by a WRAPPER, never by a margin on the table: a table with a
+  // left margin and no width is as wide as its headers want, and in the
+  // print it ran past the right edge. Here the table is exactly the
+  // wrapper's width, the columns are fixed (34/33/33) and headers wrap.
+  // Widths are percentages, not calc(): wkhtmltopdf's WebKit is old.
   const buyoutTable =
-    `<table style="border-collapse:collapse;margin:6px 0 4px 18px;font-size:9pt;">` +
-    `<tr><td style="${head}">Model</td>` +
-    `<td style="${head}text-align:right;">Asset transfer fee (₹, per machine)</td>` +
-    `<td style="${head}text-align:right;">AMC after buyout (₹, per machine per annum)</td></tr>` +
+    `<div style="padding:6px 0 4px 18px;">` +
+    `<table style="width:100%;table-layout:fixed;border-collapse:collapse;font-size:9pt;">` +
+    `<tr><td style="${head}width:34%;">Model</td>` +
+    `<td style="${head}width:33%;text-align:right;">Asset transfer fee (₹, per machine)</td>` +
+    `<td style="${head}width:33%;text-align:right;">AMC after buyout (₹, per machine per annum)</td></tr>` +
     lines.map(l =>
-      `<tr><td style="${cell}">${esc(l.label)}</td>` +
+      `<tr><td style="${cell}word-wrap:break-word;">${esc(l.label)}</td>` +
       `<td style="${cell}text-align:right;">${num(l.buyout)}</td>` +
       `<td style="${cell}text-align:right;">${num(l.postAmc)}</td></tr>`).join('') +
-    `</table>`
+    `</table></div>`
 
   return [
     ['Governing Agreement',
