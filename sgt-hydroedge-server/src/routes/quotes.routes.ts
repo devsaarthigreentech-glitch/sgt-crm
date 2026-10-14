@@ -933,15 +933,22 @@ async function performDaasQuotation(
     const desc = daasDescriptions({
       label: t.label, qty: t.qty, fig: t.fig, n: i * 2 + 1, last: i === termsLines.length - 1,
     })
+    // The discount shows in the table the way a GreenX sale shows it
+    // (owner, 2026-10-14): list rate = the figure at full MRP, discount =
+    // the difference, net = what is charged. Same tenure and AMC choice,
+    // only the discount removed — so net is exactly t.fig's figure.
+    const list = daasFigures(t.fig.mrp, t.fig.years, 0, t.fig.amc)
     lines.push(
       {
         itemCode: DAAS_UPFRONT_ITEM, itemName: names.upfront, qty: t.qty,
-        rate: t.fig.upfront, exactRate: true, description: desc.upfront,
+        rate: list.upfront, discountAmountPerUnit: list.upfront - t.fig.upfront,
+        exactRate: true, description: desc.upfront,
       },
       {
         // One rent for the whole tenure; the first month is billed now.
         itemCode: DAAS_RENT_ITEM, itemName: names.rent, qty: t.qty,
-        rate: t.fig.rent, exactRate: true, description: desc.rent,
+        rate: list.rent, discountAmountPerUnit: list.rent - t.fig.rent,
+        exactRate: true, description: desc.rent,
       },
     )
   })

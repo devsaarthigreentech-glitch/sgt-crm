@@ -1003,7 +1003,11 @@ function itemRows(line: CreateQuotationLine): Record<string, unknown>[] {
       ...(specHtml
         ? { description: specHtml }
         : line.description ? { description: line.description } : {}),
-      ...(line.exactRate && line.rate != null && line.rate !== '' ? { rate: Number(line.rate) } : {}),
+      // Only when there is no amount discount: discountFields() then sends
+      // the discounted `rate` itself, and this must not overwrite it with
+      // the list rate.
+      ...(line.exactRate && !(Number(line.discountAmountPerUnit ?? 0) > 0) &&
+          line.rate != null && line.rate !== '' ? { rate: Number(line.rate) } : {}),
       // india_compliance derives gst_treatment from the tax rows it finds.
       // With none present it settles on "Nil-Rated" and zeroes the GST —
       // which is how the first two quotations came out at 0% tax. GreenX is

@@ -170,8 +170,9 @@ const specLine = (label: string, value: string) => `<div><b>${label}</b> ${value
  * only short label/value rows. A first version repeated each heading and
  * sentence and, with two machines, read as cluttered.
  *
- *   upfront line   Equipment · Price · Upfront
- *   rent line      Rent · Billing  (+ Service, after the last machine only)
+ *   upfront line   Equipment · MRP · Discount · Price · Upfront · Payable
+ *   rent line      Rent · Tenure · Billing · First month
+ *                  (+ Service, after the last machine only)
  */
 export function daasDescriptions(opts: {
   label: string
@@ -186,25 +187,30 @@ export function daasDescriptions(opts: {
   const each = qty > 1 ? ' per machine' : ''
   const l = esc(label)
 
-  const price = fig.discountPct > 0
-    ? `${inr(fig.price)} (MRP ${inr(fig.mrp)} less ${fig.discountPct}%)`
-    : `${inr(fig.price)} (MRP)`
 
+  // Values kept SHORT: the print format sets the label in a fixed column
+  // and a long value wraps back under it, which reads as broken.
   const upfront =
     `<div class="sgt-spec">` +
     specLine('Equipment:', l + (qty > 1 ? ` × ${qty}` : '')) +
-    specLine('Price:', price) +
-    specLine('Upfront:', `${inr(fig.upfront)} + GST${each}, before installation`) +
+    specLine('MRP:', inr(fig.mrp)) +
+    (fig.discountPct > 0
+      ? specLine('Discount:', `${fig.discountPct}%`) + specLine('Price:', inr(fig.price))
+      : '') +
+    specLine('Upfront:', `${inr(fig.upfront)} + GST${each}`) +
+    specLine('Payable:', 'Before installation') +
     `</div>`
 
   const service = fig.amc || fig.years === 1
-    ? 'Routine service and maintenance included during the rental period'
-    : 'Routine service and maintenance included for the first year; charged separately after'
+    ? 'Included throughout the rental'
+    : 'Free for year 1; charged after'
 
   const rent =
     `<div class="sgt-spec">` +
-    specLine('Rent:', `${inr(fig.rent)} + GST${each} per month × ${fig.months} months`) +
-    specLine('Billing:', 'Monthly in advance; first month included in this offer') +
+    specLine('Rent:', `${inr(fig.rent)} + GST / month${each}`) +
+    specLine('Tenure:', `${fig.months} months, fixed rent`) +
+    specLine('Billing:', 'Monthly, in advance') +
+    specLine('First month:', 'Included in this offer') +
     (last ? specLine('Service:', service) : '') +
     `</div>`
 
@@ -219,12 +225,6 @@ const lettered = (k: string, label: string, text: string) =>
   `<div style="${pad}">(${k})&nbsp;&nbsp;<b>${label}</b> ${text}</div>`
 const roman = (k: string, text: string) =>
   `<div style="margin-left:36px;margin-top:2px;">${k}.&nbsp;&nbsp;${text}</div>`
-
-/** "the GreenX-500" / "the GreenX-500, ₹x; the GreenX-80, ₹y" — one per model. */
-function perModel(lines: DaasTermsLine[], pick: (l: DaasTermsLine) => number): string {
-  return lines.map(l => `the ${esc(l.label)}, the revised rent is ${inr(pick(l))} + GST per unit per month`)
-    .join('; for ')
-}
 
 /**
  * The eight clauses of the final offer, with this quotation's figures.
@@ -269,6 +269,16 @@ export function daasTerms(opts: {
       `<td style="${cell}text-align:right;">${num(l.postAmc)}</td></tr>`).join('') +
     `</table></div>`
 
+  const continuationTable =
+    `<div style="padding:6px 0 4px 18px;">` +
+    `<table style="width:100%;table-layout:fixed;border-collapse:collapse;font-size:9pt;">` +
+    `<tr><td style="${head}width:50%;">Model</td>` +
+    `<td style="${head}width:50%;text-align:right;">Revised rent (₹, per unit per month)</td></tr>` +
+    lines.map(l =>
+      `<tr><td style="${cell}word-wrap:break-word;">${esc(l.label)}</td>` +
+      `<td style="${cell}text-align:right;">${num(l.continuation)}</td></tr>`).join('') +
+    `</table></div>`
+
   return [
     ['Governing Agreement',
      `These Terms &amp; Conditions are to be read together with the DaaS Rental Agreement signed between ` +
@@ -299,7 +309,7 @@ export function daasTerms(opts: {
      roman('iii', 'SGT HydroEdge is given a 15-day period to remedy the issue.') +
      roman('iv', `Termination is valid only if the joint review confirms that the adverse effect is directly ` +
        `attributable to the SGT HydroEdge system. An adverse effect means the system demonstrably and ` +
-       `directly affects ${host} or core business operations.`) +
+       `directly affects ${host}.`) +
      lettered('d', 'On valid termination:', `SGT HydroEdge removes the equipment within a mutually agreed ` +
        `timeframe, and rent ceases from the date of removal.`) +
      lettered('e', 'Upfront payment:', `The upfront payment is not refunded, as it is adjusted towards the ` +
@@ -311,9 +321,11 @@ export function daasTerms(opts: {
      buyoutTable +
      `<div style="margin-left:18px;">For any other model, the amounts will be as stated in the offer for that model.</div>`],
     ['Rental Continuation Option',
-     `If the customer chooses to continue renting instead of buying out, the revised rent applies from the ` +
-     `${next} month onwards. For ${perModel(lines, l => l.continuation)}. For other models, the revised rent ` +
-     `will be as stated in the offer for that model.`],
+     `If the customer chooses to continue renting instead of buying out, the revised rent below applies from ` +
+     `the ${next} month onwards, per unit per month, plus GST.` +
+     continuationTable +
+     `<div style="margin-left:18px;">For any other model, the revised rent will be as stated in the offer for ` +
+     `that model.</div>`],
     ['Ownership and Damage Handling',
      `The equipment remains the property of SGT HydroEdge unless purchased under the buyout option. If ` +
      `accidental damage is attributable to the customer, SGT HydroEdge will carry out the necessary repairs and ` +
