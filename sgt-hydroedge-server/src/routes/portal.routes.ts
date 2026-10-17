@@ -354,11 +354,13 @@ export default async function portalRoutes(app: FastifyInstance) {
   })
 
   // Sending is scoped exactly like the PDF: a partner may only send a
-  // quotation from their own org tree.
+  // quotation from their own org tree. Sales only — DaaS is SGT's own
+  // business and never reaches a partner, whoever the row names.
   async function ownsQuotation(erpName: string, orgId: number) {
     const { rows } = await query(
       `select 1 from quote_service.quotation_ref
         where erp_name = $1
+          and sale_mode = 'sale'
           and org_id in (select org_id from quote_service.visible_org_ids($2))`,
       [erpName, orgId])
     return rows.length > 0
@@ -450,12 +452,7 @@ export default async function portalRoutes(app: FastifyInstance) {
     const me = await resolveCaller(req, reply)
     if (!me) return
     const { erpName } = req.params as { erpName: string }
-    const { rows } = await query(
-      `select 1 from quote_service.quotation_ref
-        where erp_name = $1
-          and org_id in (select org_id from quote_service.visible_org_ids($2))`,
-      [erpName, me.orgId])
-    if (!rows.length) {
+    if (!await ownsQuotation(erpName, me.orgId)) {
       return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } })
     }
     try {
@@ -527,6 +524,7 @@ export default async function portalRoutes(app: FastifyInstance) {
          from quote_service.quotation_ref q
          left join quote_service.org o on o.id = q.org_id
         where q.org_id in (select org_id from quote_service.visible_org_ids($1))
+          and q.sale_mode = 'sale'
         order by q.created_at desc
         limit 200`, [me.orgId])
     // Same reconciliation as the CRM list: ERPNext is the system of record,
