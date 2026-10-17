@@ -14,15 +14,15 @@
 //   - Distributors only. A dealer needs a parent distributor, which a
 //     WhatsApp conversation cannot choose safely; dealers keep going
 //     through the portal.
-//   - Creates a DRAFT exactly like POST /partners/registrations, then runs
-//     the same submit as POST /partners/registrations/:id/submit. Submit-time
-//     validation is the canonical validateForSubmit — nothing is relaxed.
-//   - If validation fails the draft is kept and the field errors come back
-//     with 422, so the bot can ask for what is missing and resend.
+//   - Creates a DRAFT exactly like POST /partners/registrations, and stops
+//     there. It never submits: SGT reviews the draft in the CRM and submits
+//     it from the UI, where validateForSubmit runs as it always has.
+//   - The response carries `missing` — what validateForSubmit would flag
+//     today — purely as a hint, so the bot can ask for it and call again.
 //   - One open application per mobile number. A repeat call for a mobile
 //     that already has a draft fills the blanks in that draft; one that is
 //     already submitted or under review is returned as-is, never duplicated.
-//   - Approval stays where it is: a director, in the CRM.
+//   - Submission and approval stay where they are: SGT staff, in the CRM.
 // =============================================================================
 
 import type { FastifyInstance } from 'fastify'
@@ -67,8 +67,6 @@ const ApplicationSchema = z.object({
   expected_annual_units: z.coerce.number().int().min(0).max(1_000_000).optional().nullable(),
   // Free text from the conversation; stored in profile, never validated.
   conversation_summary: z.string().trim().max(4000).optional().nullable(),
-  // false = save the draft only. Defaults to submitting.
-  submit: z.boolean().optional(),
 })
 
 type Application = z.infer<typeof ApplicationSchema>
@@ -125,7 +123,6 @@ export default async function partnerInboundRoutes(app: FastifyInstance) {
       })
     }
     const a = parsed.data
-    const submit = a.submit !== false
     const productLine = asProductLine(a.product_line)
     const mobile = mobileKey(a.contact_mobile)
     const cols = columnsFrom(a)
@@ -203,40 +200,12 @@ export default async function partnerInboundRoutes(app: FastifyInstance) {
         )
       }
 
-      if (!submit) {
-        await client.query('commit')
-        return reply.code(201).send({
-          data: { id: reg.id, status: reg.status, legal_name: reg.legal_name },
-        })
-      }
-
-      const errors = validateForSubmit(reg as RegistrationInput)
-      if (Object.keys(errors).length) {
-        // Keep the draft — the bot asks for what is missing and calls again.
-        await client.query('commit')
-        return reply.code(422).send({
-          error: { code: 'validation_failed', message: 'Some fields need attention' },
-          data: { id: reg.id, status: reg.status, legal_name: reg.legal_name },
-          fields: errors,
-        })
-      }
-
-      const { rows: [updated] } = await client.query(
-        `update partner_service.registration
-            set status = 'submitted', submitted_at = now(), updated_at = now()
-          where id = $1
-          returning *`,
-        [reg.id],
-      )
-      await client.query(
-        `insert into partner_service.registration_event
-           (registration_id, event_type, from_status, to_status, actor, actor_name, payload)
-         values ($1, 'submitted', 'draft', 'submitted', $2, $3, $4::jsonb)`,
-        [reg.id, ACTOR_ID, ACTOR_NAME, JSON.stringify({ source: 'whatsapp' })],
-      )
       await client.query('commit')
       return reply.code(201).send({
-        data: { id: updated.id, status: updated.status, legal_name: updated.legal_name },
+        data: { id: reg.id, status: reg.status, legal_name: reg.legal_name },
+        // What the CRM's submit would still flag. A hint for the bot only;
+        // the draft is saved either way and SGT submits it from the UI.
+        missing: validateForSubmit(reg as RegistrationInput),
       })
     } catch (err) {
       await client.query('rollback')
