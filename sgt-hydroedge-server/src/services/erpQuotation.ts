@@ -1255,7 +1255,18 @@ function finishQuotation(
   // Verify against what ERPNext actually stored, not what we sent. A
   // document that looks complete but carries zero tax is worse than an
   // error, so surface it rather than let it reach a customer.
-  if (!taxWarning && Number(created.total_taxes_and_charges ?? 0) === 0) {
+  const storedTax = Number(created.total_taxes_and_charges ?? 0);
+  if (input.exportCurrency) {
+    // The reverse check for an export: it is sent with NO tax, so any tax
+    // on the stored document came from ERPNext itself — typically a Sales
+    // Taxes and Charges Template marked "Default", which ERPNext applies to
+    // any document that arrives without taxes.
+    if (storedTax !== 0) {
+      taxWarning =
+        `${created.name} is an export quotation but ERPNext added ${storedTax} of tax — ` +
+        `probably a default tax template. Remove the taxes in ERPNext before sending it.`;
+    }
+  } else if (!taxWarning && storedTax === 0) {
     taxWarning =
       `${created.name} carries zero tax despite template "${taxTemplate}". ` +
       `Check the item's GST treatment in ERPNext before sending it.`;
