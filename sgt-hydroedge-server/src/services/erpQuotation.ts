@@ -841,8 +841,12 @@ export interface CreateQuotationLine {
   discountPct?: number | null;
   /** PER UNIT, in rupees — ERPNext's `discount_amount` is per unit. */
   discountAmountPerUnit?: number | null;
-  /** An AMC line for this machine. Priced by ERPNext from its Item Price. */
-  amc?: { itemCode: string; qty: number } | null;
+  /**
+   * An AMC line for this machine. Priced by ERPNext from its Item Price,
+   * unless `rate` is given — an export quotation sets it, because the
+   * Item Price is in rupees and the quotation is not.
+   */
+  amc?: { itemCode: string; qty: number; rate?: number | null } | null;
   /** Optional specification, printed under the line. */
   spec?: ProductSpec | null;
   /**
@@ -923,6 +927,14 @@ export interface CreateQuotationInput {
   termsTemplate?: string | null;
   /** Overrides the template's text for this quotation only. */
   termsHtml?: string | null;
+  /**
+   * An EXPORT quotation: priced in a foreign currency and carrying no GST
+   * (zero-rated). `rate` is how many rupees one unit is worth — ERPNext
+   * needs it to keep the company's books in INR. Line rates are then in
+   * that currency and must be sent with exactRate, because the selling
+   * price list is in INR.
+   */
+  exportCurrency?: { code: string; rate: number } | null;
 }
 
 export interface CreateQuotationResult {
@@ -1021,6 +1033,9 @@ function itemRows(line: CreateQuotationLine): Record<string, unknown>[] {
       ? [{
           item_code: line.amc.itemCode,
           qty: line.amc.qty,
+          ...(line.amc.rate != null
+            ? { price_list_rate: line.amc.rate, rate: line.amc.rate }
+            : {}),
           gst_treatment: 'Taxable',
         }]
       : []),
@@ -1101,10 +1116,13 @@ async function buildQuotationDoc(input: CreateQuotationInput): Promise<BuiltQuot
   // there is no form field to fall back on any more. A caller who chose the
   // tax by hand skips the lookup entirely.
   const taxMode = input.taxMode ?? 'auto';
-  const custState = taxMode === 'auto'
+  const exporting = !!input.exportCurrency;
+  // An export carries no GST, so there is no state to look up and no
+  // template to pick.
+  const custState = taxMode === 'auto' && !exporting
     ? await customerStateCode(customer.erpName, null)
     : null;
-  const taxTemplate = await pickTaxTemplate(custState, taxMode);
+  const taxTemplate = exporting ? null : await pickTaxTemplate(custState, taxMode);
 
   const today = new Date().toISOString().slice(0, 10);
   const validDays = input.validDays ?? DEFAULT_VALID_DAYS;
@@ -1133,7 +1151,16 @@ async function buildQuotationDoc(input: CreateQuotationInput): Promise<BuiltQuot
         }
       : {}),
     company: COMPANY,
-    currency: 'INR',
+    currency: input.exportCurrency?.code ?? 'INR',
+    ...(input.exportCurrency
+      ? {
+          // Rupees per unit of the quotation's currency, for the INR books.
+          conversion_rate: input.exportCurrency.rate,
+          // The price list stays INR; its rate to the company currency is 1.
+          price_list_currency: 'INR',
+          plc_conversion_rate: 1,
+        }
+      : {}),
     selling_price_list: SELLING_PRICE_LIST,
     transaction_date: today,
     valid_till: validTill,

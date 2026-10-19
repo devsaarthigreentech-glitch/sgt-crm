@@ -108,7 +108,7 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
   const grand = net + gst
 
   const filled = rows.filter(r => r.m.qty > 0)
-  const canCreate = canRaise && currency === 'INR' && !!picked && filled.length > 0 && !busy
+  const canCreate = canRaise && !!picked && filled.length > 0 && !busy
 
   const create = async () => {
     if (!canCreate) return
@@ -118,6 +118,7 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
         lines: filled.map(({ l, m }) => ({ model: l.model, qty: m.qty, amcYears: l.amcYears || null })),
         customerErpName: picked!.name,
         taxMode,
+        currency,
         ...(showPartnerPicker ? { orgId } : {}),
       })
       setMade(r.data ?? r)
@@ -140,9 +141,7 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
 
   const createHint = !canRaise
     ? 'This account cannot raise GreenDrive quotations.'
-    : currency === 'USD'
-      ? 'Export quotations open once USD pricing is set up in ERPNext.'
-      : !picked
+    : !picked
         ? 'Pick or add a customer first.'
         : `For ${picked.customer_name || picked.name}.`
 
@@ -175,7 +174,10 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
       {made && (
         <div style={{ maxWidth: 940, padding: '11px 13px', marginBottom: 13, borderRadius: 8, backgroundColor: '#DCEBE1', color: OK, fontSize: 12.5 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontWeight: 600 }}>
-            <Check size={15} /> {made.erpName} created in ERPNext · {rupees(made.grandTotal)} incl. GST
+            <Check size={15} /> {made.erpName} created in ERPNext ·{' '}
+            {made.lines?.[0]?.currency === 'USD'
+              ? `${money(Number(made.grandTotal), 'USD')} (export, no GST)`
+              : `${rupees(made.grandTotal)} incl. GST`}
           </div>
           {[made.taxWarning, made.termsWarning, made.addressWarning, made.mirrored === false
             ? 'Saved in ERPNext, but not in the CRM list — the database migration may not have been run.' : null]
@@ -210,8 +212,8 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
         </div>
         {currency === 'USD' && (
           <div style={{ fontSize: 11.5, color: FAINT, marginTop: 6 }}>
-            Export list prices are set in USD (reference rate ₹{USD_INR} = $1), not converted
-            from the India price. Price check only for now.
+            Export list prices are set in USD, not converted from the India price. Quoted in
+            USD with no GST (zero-rated export); ERPNext books it at ₹{USD_INR} = $1.
           </div>
         )}
       </div>
@@ -376,7 +378,9 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
                     </div>
                   </div>
                   <div style={{ fontSize: 13, fontWeight: 600, color: INK }}>
-                    {rupees(q.grand_total)} <span style={{ fontSize: 11, fontWeight: 400, color: FAINT }}>incl. GST</span>
+                    {Array.isArray(q.lines) && q.lines[0]?.currency === 'USD'
+                      ? <>{money(Number(q.grand_total), 'USD')} <span style={{ fontSize: 11, fontWeight: 400, color: FAINT }}>export</span></>
+                      : <>{rupees(q.grand_total)} <span style={{ fontSize: 11, fontWeight: 400, color: FAINT }}>incl. GST</span></>}
                   </div>
                   <button style={smallBtn} onClick={() => openPdf(q.erp_name)}><FileText size={13} /> Preview</button>
                   <button style={smallBtn} onClick={() => openSend(q.erp_name)}><Send size={13} /> Send</button>

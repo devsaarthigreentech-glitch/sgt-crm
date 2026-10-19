@@ -226,6 +226,8 @@ export interface QuoteApi {
   createGreenDrive(body: {
     lines: { model: string; qty: number; amcYears?: number | null }[]
     customerErpName: string
+    /** 'USD' = export: USD list prices, no GST. */
+    currency?: 'INR' | 'USD'
     /** Staff only: raise it under this GreenDrive partner. Ignored on the portal. */
     orgId?: number | null
     taxMode?: 'auto' | 'in_state' | 'out_state'

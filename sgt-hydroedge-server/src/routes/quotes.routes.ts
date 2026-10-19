@@ -114,6 +114,8 @@ export interface QuoteBody extends QuoteLineBody {
   taxMode?: 'auto' | 'in_state' | 'out_state'
   /** Absent means GreenX, which is every client that predates GreenDrive. */
   productLine?: 'GreenX' | 'GreenDrive'
+  /** GreenDrive only: 'USD' for an export quotation (USD list prices, no GST). */
+  currency?: 'INR' | 'USD'
   /** 'daas' rents instead of selling. Absent means a sale. */
   saleMode?: 'sale' | 'daas'
   /** DaaS: 1, 2 or 3 years. */
@@ -704,6 +706,12 @@ async function performGreenDriveQuotation(
     })
   }
 
+  // Export: priced from the USD list prices and quoted in USD with no GST.
+  // The rupee rate only keeps ERPNext's INR books — it does not price.
+  const usd = body.currency === 'USD'
+  const usdInr = Number(process.env.ERP_USD_INR ?? '95')
+  if (usd && !(usdInr > 0)) return fail(500, 'bad_config', 'ERP_USD_INR must be a positive number.')
+
   const resolved = await Promise.all(rows.map(r => resolveGreenDrive(r!, itemPrice)))
 
   const lines: CreateQuotationLine[] = []
@@ -716,12 +724,21 @@ async function performGreenDriveQuotation(
     const amcYears = l.amcYears && AMC_TERMS.includes(Number(l.amcYears))
       ? Number(l.amcYears) : null
     lines.push({
-      itemCode: r.row.itemCode, qty, rate: r.rate,
-      amc: amcYears ? { itemCode: amcItemCode(r.row.itemCode, amcYears), qty } : null,
+      itemCode: r.row.itemCode, qty,
+      ...(usd ? { rate: r.row.usd, exactRate: true } : { rate: r.rate }),
+      amc: amcYears
+        ? {
+            itemCode: amcItemCode(r.row.itemCode, amcYears), qty,
+            // Export: 15% of the USD price a year, as the screen shows it.
+            // The AMC Item Price is in rupees, so it cannot price this line.
+            ...(usd ? { rate: Math.round(r.row.usd * AMC_PCT / 100) * amcYears } : {}),
+          }
+        : null,
     })
     lineSnapshots.push({
       model: r.row.model, modelCode: r.row.itemCode, label: r.row.label,
-      qty, unitRate: r.rate, rateSource: r.rateSource, amcYears,
+      qty, unitRate: usd ? String(r.row.usd) : r.rate, rateSource: usd ? 'catalogue_usd' : r.rateSource,
+      amcYears, currency: usd ? 'USD' : 'INR',
     })
   })
 
@@ -738,6 +755,7 @@ async function performGreenDriveQuotation(
     raisedByOrg: partner?.code ?? null,
     raisedVia: opts.via === 'portal' ? 'Partner portal' : 'SGT CRM',
     partner: partner?.snapshot ?? null,
+    exportCurrency: usd ? { code: 'USD', rate: usdInr } : null,
   }
 
   let created: Awaited<ReturnType<typeof createQuotation>>
