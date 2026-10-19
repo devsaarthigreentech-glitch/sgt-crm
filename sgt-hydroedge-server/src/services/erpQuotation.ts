@@ -1201,7 +1201,9 @@ async function buildQuotationDoc(input: CreateQuotationInput): Promise<BuiltQuot
         `Could not expand tax template "${taxTemplate}": ${String(e?.message ?? e).slice(0, 200)}. ` +
         `The quotation will carry no GST.`;
     }
-  } else {
+  } else if (!exporting) {
+    // Not for an export: it carries no GST by design, so there is no
+    // state to determine and nothing to warn about.
     taxWarning =
       `Could not determine ${customer.erpName}'s state — no GSTIN on the customer `
       + `and none on their addresses. Add a GSTIN or a billing address in ERPNext, `
