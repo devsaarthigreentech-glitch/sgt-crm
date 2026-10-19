@@ -33,7 +33,7 @@ import {
 } from '../services/quoteMail.js'
 import { cleanSpec, SPEC_FIELDS } from '../domain/quoteSpec.js'
 import { termsToText, textToTerms } from '../domain/quoteTerms.js'
-import { clausesToHtml } from '../domain/dealerTerms.js'
+import { clausesToHtml, withExportClauses, GREENDRIVE_QUOTATION_TERMS } from '../domain/dealerTerms.js'
 import {
   daasFigures, daasTerms, DAAS_TENURES, DAAS_LOCK_IN_MONTHS, DAAS_DOWN_PCT, DAAS_RATE_PCT,
   DAAS_MAX_DISCOUNT_PCT,
@@ -750,7 +750,14 @@ async function performGreenDriveQuotation(
     validDays: body.validDays,
     taxMode: body.taxMode ?? 'auto',
     termsTemplate: body.termsTemplate ?? GREENDRIVE_TERMS,
-    termsHtml: body.termsText?.trim() ? textToTerms(body.termsText) : (body.termsHtml ?? null),
+    // Export: the GreenDrive terms with export Delivery (FOB), Taxes (LUT)
+    // and Payment (USD wire) clauses — built here, because the ERPNext
+    // template holds the domestic wording. Text typed on the screen wins.
+    termsHtml: body.termsText?.trim()
+      ? textToTerms(body.termsText)
+      : usd
+        ? clausesToHtml(withExportClauses(GREENDRIVE_QUOTATION_TERMS))
+        : (body.termsHtml ?? null),
     raisedBy: who.name ? `${who.name}${who.id ? ` (user ${who.id})` : ''}` : null,
     raisedByOrg: partner?.code ?? null,
     raisedVia: opts.via === 'portal' ? 'Partner portal' : 'SGT CRM',

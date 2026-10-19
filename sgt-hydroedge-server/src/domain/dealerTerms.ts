@@ -130,6 +130,56 @@ export const DEALER_PO_TERMS: Clause[] = DEALER_QUOTATION_TERMS;
  */
 export const GREENDRIVE_QUOTATION_TERMS: Clause[] = DEALER_QUOTATION_TERMS;
 
+/**
+ * Export (USD) quotations — owner, 2026-10-19. The domestic clauses on
+ * delivery, tax and payment contradict an export supply ("GST shall be
+ * charged additionally" on a quote that carries none), so these three
+ * are replaced and every other clause is kept as it is.
+ *
+ *   Delivery          FOB, Incoterms 2020, at the port of shipment
+ *   Taxes and Duties  zero-rated under SGT's LUT (Rule 96A, CGST Rules)
+ *   Payment Terms     the same 50/50 schedule, in USD by wire transfer
+ *
+ * The port and the LUT are settings, because both change: the LUT is
+ * renewed every financial year (EXPORT_LUT_NO / EXPORT_LUT_VALID_TILL)
+ * and the port is per deployment (EXPORT_FOB_PORT).
+ */
+export const EXPORT_FOB_PORT = process.env.EXPORT_FOB_PORT ?? 'Nhava Sheva (JNPT), Mumbai';
+export const EXPORT_LUT_NO = process.env.EXPORT_LUT_NO ?? 'AD2703261207908';
+export const EXPORT_LUT_VALID_TILL = process.env.EXPORT_LUT_VALID_TILL ?? '31-Mar-2027';
+
+const EXPORT_CLAUSES: Record<string, string> = {
+  'Delivery':
+    `Prices are FOB ${EXPORT_FOB_PORT}, India (Incoterms 2020). SGT delivers the goods on board the vessel ` +
+    `nominated by the Buyer at the port of shipment. Ocean freight, insurance, destination port charges and ` +
+    `import clearance are borne by the Buyer.`,
+  'Taxes and Duties':
+    `This is an export supply. Prices are in US Dollars and are zero-rated under Indian GST: the supply is made ` +
+    `under Letter of Undertaking (LUT) No. ${EXPORT_LUT_NO} (valid till ${EXPORT_LUT_VALID_TILL}) without ` +
+    `payment of IGST, as per Rule 96A of the CGST Rules, 2017. Import duties, taxes and charges in the ` +
+    `destination country are borne by the Buyer.`,
+  'Payment Terms':
+    `50% of the order value is payable in advance against the purchase order. The balance 50% is payable ` +
+    `against proforma invoice, prior to despatch. All payments are to be made in US Dollars by wire transfer ` +
+    `(SWIFT) to the bank account of SGT HydroEdge Private Limited stated on the proforma invoice, and to no ` +
+    `other account. Bank charges outside India are borne by the Buyer.`,
+};
+
+/**
+ * The given clauses with the three export replacements. A clause the base
+ * set does not have is appended rather than silently dropped, so an
+ * export quote can never go out without its tax and payment wording.
+ */
+export function withExportClauses(base: Clause[]): Clause[] {
+  const seen = new Set<string>();
+  const out: Clause[] = base.map(([h, b]) => {
+    if (EXPORT_CLAUSES[h] !== undefined) { seen.add(h); return [h, EXPORT_CLAUSES[h]]; }
+    return [h, b];
+  });
+  for (const [h, b] of Object.entries(EXPORT_CLAUSES)) if (!seen.has(h)) out.push([h, b]);
+  return out;
+}
+
 /** Clauses that still say "quotation". Reported by the PO terms script. */
 export function clausesNamingQuotation(clauses: Clause[]): string[] {
   return clauses.filter(([, body]) => /\bquotation\b/i.test(body)).map(([h]) => h);
