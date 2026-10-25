@@ -148,7 +148,7 @@ export const EXPORT_FOB_PORT = process.env.EXPORT_FOB_PORT ?? 'Nhava Sheva (JNPT
 export const EXPORT_LUT_NO = process.env.EXPORT_LUT_NO ?? 'AD2703261207908';
 export const EXPORT_LUT_VALID_TILL = process.env.EXPORT_LUT_VALID_TILL ?? '31-Mar-2027';
 
-const EXPORT_CLAUSES: Record<string, string> = {
+export const EXPORT_CLAUSES: Record<string, string> = {
   'Delivery':
     `Prices are FOB ${EXPORT_FOB_PORT}, India (Incoterms 2020). SGT delivers the goods on board the vessel ` +
     `nominated by the Buyer at the port of shipment. Ocean freight, insurance, destination port charges and ` +
@@ -202,4 +202,39 @@ export function clausesToHtml(clauses: Clause[]): string {
       .join('') +
     '</ol></div>'
   );
+}
+
+
+const plain = (html: string) =>
+  html.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
+
+/**
+ * The export clauses written into a template's EXISTING markup — used to
+ * seed "GreenDrive Export Quotation Terms" from the domestic template the
+ * owner edits in ERPNext, so every clause they changed carries across.
+ *
+ * Each <li> whose text starts with a clause heading (Delivery, Taxes and
+ * Duties, Payment Terms) has its content replaced; a heading not found is
+ * appended as a new item, so the export wording can never be lost.
+ */
+export function exportClausesIntoHtml(html: string): { html: string; replaced: string[]; appended: string[] } {
+  const replaced: string[] = [];
+  let out = html.replace(/<li\b([^>]*)>([\s\S]*?)<\/li>/g, (whole, attrs: string, inner: string) => {
+    const text = plain(inner).toLowerCase();
+    const h = Object.keys(EXPORT_CLAUSES).find(k => text.startsWith(k.toLowerCase()) && !replaced.includes(k));
+    if (!h) return whole;
+    replaced.push(h);
+    const ui = /<span class="ql-ui"[^>]*><\/span>/.exec(inner)?.[0] ?? '';
+    return `<li${attrs}>${ui}<strong>${h}</strong> — ${EXPORT_CLAUSES[h]}</li>`;
+  });
+  const appended = Object.keys(EXPORT_CLAUSES).filter(h => !replaced.includes(h));
+  if (appended.length) {
+    const items = appended
+      .map(h => `<li data-list="ordered"><span class="ql-ui" contenteditable="false"></span><strong>${h}</strong> — ${EXPORT_CLAUSES[h]}</li>`)
+      .join('');
+    out = /<\/ol>/.test(out)
+      ? out.replace(/<\/ol>(?![\s\S]*<\/ol>)/, `${items}</ol>`)
+      : out + `<div class="ql-editor read-mode"><ol>${items}</ol></div>`;
+  }
+  return { html: out, replaced, appended };
 }

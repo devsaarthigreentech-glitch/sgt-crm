@@ -47,6 +47,14 @@ export const GD_HSN = process.env.ERP_GREENDRIVE_HSN ?? '85433000'
 export const GREENDRIVE_TERMS =
   process.env.ERP_GREENDRIVE_TERMS ?? 'GreenDrive Dealer Quotation Terms'
 
+/**
+ * Export (USD) quotations use their OWN template, edited in ERPNext like
+ * the domestic one (owner, 2026-10-25). Seeded once from the domestic
+ * template by erp_create_export_terms.ts.
+ */
+export const GREENDRIVE_EXPORT_TERMS =
+  process.env.ERP_GREENDRIVE_EXPORT_TERMS ?? 'GreenDrive Export Quotation Terms'
+
 /** Dealer markup included in the price, on top of SGT's price. Owner, 2026-10-10. */
 export const GD_DEALER_MARKUP_PCT = 40
 

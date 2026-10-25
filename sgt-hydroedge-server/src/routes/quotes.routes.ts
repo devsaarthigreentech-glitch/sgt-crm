@@ -20,7 +20,8 @@ import { query, pool } from '../db/pool.js'
 import { requireRole } from '../auth/guard.js'
 import { resolveForKva } from '../domain/quotePricing.js'
 import {
-  gdRow, resolveGreenDrive, GREENDRIVE_TERMS, GD_CATALOGUE, GD_DEALER_SHARE_OF_PRICE_PCT,
+  gdRow, resolveGreenDrive, GREENDRIVE_TERMS, GREENDRIVE_EXPORT_TERMS, GD_CATALOGUE,
+  GD_DEALER_SHARE_OF_PRICE_PCT,
 } from '../domain/greenDrive.js'
 import { inspectGstin } from '../domain/gstin.js'
 import {
@@ -714,6 +715,11 @@ async function performGreenDriveQuotation(
 
   const resolved = await Promise.all(rows.map(r => resolveGreenDrive(r!, itemPrice)))
 
+  // Export quotes take their own ERPNext template. Until it exists the
+  // domestic wording is adapted in code instead, so nothing breaks before
+  // erp_create_export_terms.ts has been run.
+  const exportTemplate = usd ? await fetchTerms(GREENDRIVE_EXPORT_TERMS).catch(() => null) : null
+
   const lines: CreateQuotationLine[] = []
   const lineSnapshots: Record<string, unknown>[] = []
   picked.forEach((l, i) => {
@@ -749,13 +755,15 @@ async function performGreenDriveQuotation(
     commissionRate: partner ? GD_DEALER_SHARE_OF_PRICE_PCT : null,
     validDays: body.validDays,
     taxMode: body.taxMode ?? 'auto',
-    termsTemplate: body.termsTemplate ?? GREENDRIVE_TERMS,
-    // Export: the GreenDrive terms with export Delivery (FOB), Taxes (LUT)
-    // and Payment (USD wire) clauses — built here, because the ERPNext
-    // template holds the domestic wording. Text typed on the screen wins.
+    // Domestic and export each use their own ERPNext template; the
+    // template's text is read when the quotation is built. Text typed on
+    // the screen wins. Fallback for an export with no export template yet:
+    // the domestic clauses with Delivery (FOB), Taxes (LUT) and Payment
+    // (USD wire) replaced.
+    termsTemplate: body.termsTemplate ?? (usd ? GREENDRIVE_EXPORT_TERMS : GREENDRIVE_TERMS),
     termsHtml: body.termsText?.trim()
       ? textToTerms(body.termsText)
-      : usd
+      : usd && !exportTemplate
         ? clausesToHtml(withExportClauses(GREENDRIVE_QUOTATION_TERMS))
         : (body.termsHtml ?? null),
     raisedBy: who.name ? `${who.name}${who.id ? ` (user ${who.id})` : ''}` : null,
