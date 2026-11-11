@@ -7,6 +7,8 @@
 //
 //   npx tsx src/db/erp_sync_sales_partners.ts                  # report
 //   CONFIRM_CREATE=1 npx tsx src/db/erp_sync_sales_partners.ts # create
+//   ONLY=EDINGD002 CONFIRM_CREATE=1 npx tsx src/db/erp_sync_sales_partners.ts
+//                                       # create just these codes (comma list)
 //
 // Why this exists
 // ---------------
@@ -45,6 +47,10 @@ const commissionFor = (line: string) =>
   line === 'GreenDrive' ? GD_DEALER_SHARE_OF_PRICE_PCT : DEFAULT_COMMISSION;
 const FALLBACK_TERRITORY = process.env.ERP_TERRITORY ?? 'India';
 const CONFIRMED = process.env.CONFIRM_CREATE === '1';
+// Limit creation to these partner codes. Everything else is still reported
+// but left alone — for adding one new partner without creating every other
+// missing one at the same time.
+const ONLY = new Set(String(process.env.ONLY ?? '').split(',').map(s => s.trim()).filter(Boolean));
 
 if (!BASE || !KEY || !SECRET) {
   console.error('✗ ERPNEXT_URL / ERPNEXT_API_KEY / ERPNEXT_API_SECRET must be set');
@@ -137,7 +143,16 @@ async function main() {
   const have = new Map(existing.map(p => [String(p.name), p]));
   console.log(`  ${orgs.length} partner org(s) in the CRM · ${existing.length} Sales Partner(s) in ERPNext\n`);
 
-  const toCreate = orgs.filter(o => o.status === 'active' && !have.has(o.code));
+  const missing = orgs.filter(o => o.status === 'active' && !have.has(o.code));
+  const toCreate = ONLY.size ? missing.filter(o => ONLY.has(o.code)) : missing;
+  const unknown = [...ONLY].filter(c => !orgs.some(o => o.code === c));
+  if (unknown.length) console.log(`  ⚠ ONLY names code(s) with no partner org: ${unknown.join(', ')}
+`);
+  if (ONLY.size && missing.length > toCreate.length) {
+    console.log(`  ${missing.length - toCreate.length} other missing partner(s) not in ONLY — left for later:`);
+    for (const o of missing.filter(o => !ONLY.has(o.code))) console.log(`    · ${o.code}`);
+    console.log('');
+  }
   const already = orgs.filter(o => have.has(o.code));
   const skipped = orgs.filter(o => o.status !== 'active' && !have.has(o.code));
 

@@ -46,6 +46,8 @@ export const GD_GST_PCT = 18
 
 /** Optional Packing & Forwarding on a GreenDrive quote: % of the machine value (not the AMC). Server: GD_PF_PCT. */
 export const GD_PF_PCT = 5
+/** Optional fixed installation charge per quotation, India only. Server: GD_INSTALL_INR. */
+export const GD_INSTALL_INR = 7000
 export const pfCharge = (machineValue: number, cur: GdCurrency) => {
   const raw = machineValue * GD_PF_PCT / 100
   return cur === 'USD' ? Math.round(raw * 100) / 100 : Math.round(raw)

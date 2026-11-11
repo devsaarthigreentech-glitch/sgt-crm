@@ -26,7 +26,7 @@ import {
   rupees, inputStyle, labelStyle,
 } from '../quotes/theme'
 import {
-  GD_MODELS, DEALER_MARKUP_PCT, GD_GST_PCT, USD_INR, GD_PF_PCT, pfCharge,
+  GD_MODELS, DEALER_MARKUP_PCT, GD_GST_PCT, USD_INR, GD_PF_PCT, pfCharge, GD_INSTALL_INR,
   money, listPrice, dealerShare, amcPrice, GD_AMC_PCT, GD_AMC_TERMS,
   type GdModel, type GdCurrency,
 } from './pricing'
@@ -76,6 +76,7 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
   const [picked, setPicked] = useState<ErpCustomer | null>(null)
   const [taxMode, setTaxMode] = useState<'auto' | 'in_state' | 'out_state'>('auto')
   const [withPf, setWithPf] = useState(false)
+  const [withInstall, setWithInstall] = useState(false)
   const [banner, setBanner] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [made, setMade] = useState<any>(null)
@@ -103,7 +104,9 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
   const machines = rows.reduce((s, r) => s + r.m.machineTotal, 0)
   const amcTotal = rows.reduce((s, r) => s + r.m.amcTotal, 0)
   const pf = withPf ? pfCharge(machines, currency) : 0
-  const net = machines + pf + amcTotal
+  // India only: an export ships FOB and nobody installs it.
+  const install = withInstall && currency === 'INR' ? GD_INSTALL_INR : 0
+  const net = machines + pf + install + amcTotal
   const dealerTotal = rows.reduce((s, r) => s + r.m.dealerTotal, 0)
   // Export is shown without GST — ASSUMED zero-rated under LUT, to confirm.
   const gst = currency === 'INR' ? net * GD_GST_PCT / 100 : 0
@@ -122,10 +125,11 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
         taxMode,
         currency,
         packingForwarding: withPf,
+        installation: install > 0,
         ...(showPartnerPicker ? { orgId } : {}),
       })
       setMade(r.data ?? r)
-      setLines([blank()]); setPicked(null); setTaxMode('auto'); setWithPf(false)
+      setLines([blank()]); setPicked(null); setTaxMode('auto'); setWithPf(false); setWithInstall(false)
       refresh()
     } catch (e: any) { setBanner(e.message) } finally { setBusy(false) }
   }
@@ -304,6 +308,19 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
             </span>
           </span>
         </label>
+        {currency === 'INR' && (
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 9, cursor: 'pointer', marginTop: 14 }}>
+            <input type="checkbox" checked={withInstall} onChange={e => setWithInstall(e.target.checked)} style={{ marginTop: 3 }} />
+            <span>
+              <span style={{ fontSize: 14, fontWeight: 700, color: INK }}>
+                Installation charges — {money(GD_INSTALL_INR, 'INR')}
+              </span>
+              <span style={{ display: 'block', fontSize: 11.5, color: FAINT, marginTop: 2 }}>
+                A fixed amount for the whole quotation, added as its own line with GST. No dealer markup on it.
+              </span>
+            </span>
+          </label>
+        )}
       </div>
 
       {showPartnerPicker && (
@@ -343,8 +360,9 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
       {/* Summary */}
       <div style={card}>
         <h2 style={{ margin: '0 0 12px', fontSize: 15.5, fontWeight: 700, color: INK }}>Summary</h2>
-        {(amcTotal > 0 || pf > 0) && <Row k="Machines" v={money(machines, currency)} />}
+        {(amcTotal > 0 || pf > 0 || install > 0) && <Row k="Machines" v={money(machines, currency)} />}
         {pf > 0 && <Row k={`Packing & Forwarding (${GD_PF_PCT}%)`} v={money(pf, currency)} />}
+        {install > 0 && <Row k="Installation" v={money(install, currency)} />}
         {amcTotal > 0 && <Row k="AMC" v={money(amcTotal, currency)} />}
         <Row k="Net, before GST" v={money(net, currency)} strong />
         <Row k={currency === 'INR' ? `GST ${GD_GST_PCT}%` : 'GST (export, zero-rated)'} v={money(gst, currency)} />

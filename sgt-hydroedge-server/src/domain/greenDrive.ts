@@ -107,9 +107,8 @@ export function productCodeFor(line: ProductLine): 'GX' | 'GD' {
  * Packing & Forwarding — optional on a GreenDrive sale quotation (owner,
  * 2026-11-11): 5% of the machine value, as one line of its own. Not on the
  * AMC (a service, nothing to pack). Its ERPNext item has grant_commission
- * = 0, so the dealer's earning stays the machine markup only. Billed with
- * the goods it is a composite supply of the machine, so it carries the
- * machine's HSN and GST. Created by src/db/erp_create_pf_item.ts.
+ * = 0, so the dealer's earning stays the machine markup only. SAC 998540
+ * (packaging services), 18%. Created by src/db/erp_create_pf_item.ts.
  */
 export const GD_PF_ITEM = process.env.ERP_PF_ITEM ?? 'Packing-Forwarding'
 export const GD_PF_PCT = 5
@@ -119,3 +118,13 @@ export function gdPackingForwarding(machineValue: number, usd: boolean): number 
   const raw = machineValue * GD_PF_PCT / 100
   return usd ? Math.round(raw * 100) / 100 : Math.round(raw)
 }
+
+/**
+ * Installation — optional on a GreenDrive sale quotation (owner,
+ * 2026-11-11): a FIXED ₹7,000 per quotation, one line, only when ticked.
+ * India quotes only (an export ships FOB; nobody from SGT installs it).
+ * Its ERPNext item has grant_commission = 0, so no dealer markup on it.
+ * Created by src/db/erp_create_pf_item.ts alongside the P&F item.
+ */
+export const GD_INSTALL_ITEM = process.env.ERP_INSTALL_ITEM ?? 'Installation-Charges'
+export const GD_INSTALL_INR = Number(process.env.GD_INSTALL_INR ?? '7000')

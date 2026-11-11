@@ -22,6 +22,7 @@ import { resolveForKva } from '../domain/quotePricing.js'
 import {
   gdRow, resolveGreenDrive, GREENDRIVE_TERMS, GREENDRIVE_EXPORT_TERMS, GD_CATALOGUE,
   GD_DEALER_SHARE_OF_PRICE_PCT, GD_PF_ITEM, GD_PF_PCT, gdPackingForwarding,
+  GD_INSTALL_ITEM, GD_INSTALL_INR,
 } from '../domain/greenDrive.js'
 import { inspectGstin } from '../domain/gstin.js'
 import {
@@ -119,6 +120,8 @@ export interface QuoteBody extends QuoteLineBody {
   currency?: 'INR' | 'USD'
   /** GreenDrive sale only: add Packing & Forwarding at GD_PF_PCT of the machine value. */
   packingForwarding?: boolean
+  /** GreenDrive sale, India only: add the fixed installation charge (GD_INSTALL_INR) as one line. */
+  installation?: boolean
   /** 'daas' rents instead of selling. Absent means a sale. */
   saleMode?: 'sale' | 'daas'
   /** DaaS: 1, 2 or 3 years. */
@@ -719,6 +722,10 @@ async function performGreenDriveQuotation(
   // Export: priced from the USD list prices and quoted in USD with no GST.
   // The rupee rate only keeps ERPNext's INR books — it does not price.
   const usd = body.currency === 'USD'
+  if (usd && body.installation === true) {
+    return fail(400, 'installation_india_only',
+      'Installation is charged on India quotations only — an export ships FOB. Untick it for an export quote.')
+  }
   const usdInr = Number(process.env.ERP_USD_INR ?? '95')
   if (usd && !(usdInr > 0)) return fail(500, 'bad_config', 'ERP_USD_INR must be a positive number.')
 
@@ -773,6 +780,13 @@ async function performGreenDriveQuotation(
     }
   }
 
+  // Installation, when asked for: a fixed amount per quotation, not per
+  // machine. Also kept out of lineSnapshots, for the same reason as P&F.
+  const installation = body.installation === true ? GD_INSTALL_INR : null
+  if (installation) {
+    lines.push({ itemCode: GD_INSTALL_ITEM, qty: 1, rate: installation, exactRate: true })
+  }
+
   const input: CreateQuotationInput = {
     customerErpName,
     lines,
@@ -804,6 +818,11 @@ async function performGreenDriveQuotation(
   } catch (e: any) {
     const message = String(e?.message ?? e)
     if (opts.updating && /submitted/i.test(message)) return fail(409, 'not_editable', message)
+    if (installation && message.includes(GD_INSTALL_ITEM)) {
+      return fail(500, 'install_item_missing',
+        `ERPNext has no "${GD_INSTALL_ITEM}" item yet — run src/db/erp_create_pf_item.ts, ` +
+        `or untick Installation. (${message})`)
+    }
     if (packingForwarding && message.includes(GD_PF_ITEM)) {
       return fail(500, 'pf_item_missing',
         `ERPNext has no "${GD_PF_ITEM}" item yet — run src/db/erp_create_pf_item.ts, ` +
@@ -855,6 +874,7 @@ async function performGreenDriveQuotation(
         erpName: created.erpName,
         productLine: 'GreenDrive',
         packingForwarding,
+        installation,
         model: first.modelCode,
         qty: first.qty,
         rate: first.unitRate,
