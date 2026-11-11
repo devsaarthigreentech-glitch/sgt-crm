@@ -105,13 +105,14 @@ export function productCodeFor(line: ProductLine): 'GX' | 'GD' {
 
 /**
  * Packing & Forwarding — optional on a GreenDrive sale quotation (owner,
- * 2026-11-11): 5% of the machine value, as one line of its own. Not on the
+ * 2026-11-11): 7.5% of the machine value AFTER any discount (5% until the
+ * same day), as one line of its own. Not on the
  * AMC (a service, nothing to pack). Its ERPNext item has grant_commission
  * = 0, so the dealer's earning stays the machine markup only. SAC 998540
  * (packaging services), 18%. Created by src/db/erp_create_pf_item.ts.
  */
 export const GD_PF_ITEM = process.env.ERP_PF_ITEM ?? 'Packing-Forwarding'
-export const GD_PF_PCT = 5
+export const GD_PF_PCT = 7.5
 
 /** P&F on a machine value: whole rupees, or cents for a USD quote. */
 export function gdPackingForwarding(machineValue: number, usd: boolean): number {
@@ -128,3 +129,48 @@ export function gdPackingForwarding(machineValue: number, usd: boolean): number 
  */
 export const GD_INSTALL_ITEM = process.env.ERP_INSTALL_ITEM ?? 'Installation-Charges'
 export const GD_INSTALL_INR = Number(process.env.GD_INSTALL_INR ?? '7000')
+
+/**
+ * Discount on a GreenDrive machine line (owner, 2026-11-11): up to 40% for
+ * a distributor, 35% for a dealer, as a percentage of the LIST price.
+ * SGT staff quoting directly get the distributor's 40 — ASSUMED, the owner
+ * named only the two partner caps. Override with GD_MAX_DISCOUNT_*.
+ *
+ * Who pays: ERPNext computes the partner's commission (28.57%) on the
+ * discounted net, so a discount is shared between SGT and the partner in
+ * proportion — exactly as for GreenX (domain/quoteDiscount.ts). Note this
+ * goes far deeper than the partner's own share: at 40% off, a ₹1,04,000
+ * One sells for ₹62,400, the partner earns ₹17,829 and SGT keeps ₹44,571
+ * against its normal ₹74,286. Not on the AMC, P&F base aside.
+ */
+const capNum = (v: string | undefined, fallback: number) => {
+  const n = Number(v)
+  return Number.isFinite(n) && n >= 0 && n <= 100 ? n : fallback
+}
+export const GD_DISCOUNT_CAPS = {
+  distributor: capNum(process.env.GD_MAX_DISCOUNT_DISTRIBUTOR, 40),
+  dealer: capNum(process.env.GD_MAX_DISCOUNT_DEALER, 35),
+  staff: capNum(process.env.GD_MAX_DISCOUNT_STAFF, 40),
+} as const
+
+export type GdActor = keyof typeof GD_DISCOUNT_CAPS
+
+export function gdActorFor(orgType?: string | null): GdActor {
+  if (orgType === 'dealer' || orgType === 'sub_dealer') return 'dealer'
+  if (orgType === 'distributor') return 'distributor'
+  return 'staff'
+}
+
+/** Validate one line's discount percentage against the caller's cap. */
+export function checkGdDiscount(raw: unknown, actor: GdActor):
+  { ok: true; pct: number } | { ok: false; message: string } {
+  if (raw === null || raw === undefined || raw === '') return { ok: true, pct: 0 }
+  const pct = Number(raw)
+  if (!Number.isFinite(pct) || pct < 0) return { ok: false, message: 'Discount must be a number of 0 or more' }
+  const max = GD_DISCOUNT_CAPS[actor]
+  if (pct > max) {
+    return { ok: false, message:
+      `Maximum GreenDrive discount for ${actor === 'staff' ? 'SGT' : `a ${actor}`} is ${max}%.` }
+  }
+  return { ok: true, pct: Math.round(pct * 100) / 100 }
+}

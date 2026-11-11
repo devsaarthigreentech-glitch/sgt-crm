@@ -974,7 +974,12 @@ function discountFields(line: CreateQuotationLine): Record<string, number> {
     };
   }
   if (line.discountPct && line.discountPct > 0) {
-    return { discount_percentage: line.discountPct };
+    // An exact-rate line (an export quote) sends `rate` itself, which
+    // ERPNext would keep over the percentage — so send the discounted one.
+    return line.exactRate && list > 0
+      ? { discount_percentage: line.discountPct,
+          rate: Math.round(list * (1 - line.discountPct / 100) * 100) / 100 }
+      : { discount_percentage: line.discountPct };
   }
   return {};
 }
@@ -1019,6 +1024,7 @@ function itemRows(line: CreateQuotationLine): Record<string, unknown>[] {
       // the discounted `rate` itself, and this must not overwrite it with
       // the list rate.
       ...(line.exactRate && !(Number(line.discountAmountPerUnit ?? 0) > 0) &&
+          !(Number(line.discountPct ?? 0) > 0) &&
           line.rate != null && line.rate !== '' ? { rate: Number(line.rate) } : {}),
       // india_compliance derives gst_treatment from the tax rows it finds.
       // With none present it settles on "Nil-Rated" and zeroes the GST —

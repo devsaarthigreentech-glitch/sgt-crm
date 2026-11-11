@@ -26,15 +26,15 @@ import {
   rupees, inputStyle, labelStyle,
 } from '../quotes/theme'
 import {
-  GD_MODELS, DEALER_MARKUP_PCT, GD_GST_PCT, USD_INR, GD_PF_PCT, pfCharge, GD_INSTALL_INR,
+  GD_MODELS, DEALER_MARKUP_PCT, GD_GST_PCT, USD_INR, GD_PF_PCT, pfCharge, GD_INSTALL_INR, gdCapFor,
   money, listPrice, dealerShare, amcPrice, GD_AMC_PCT, GD_AMC_TERMS,
   type GdModel, type GdCurrency,
 } from './pricing'
 
-interface Line { id: number; model: GdModel; qty: string; amcYears: number }
+interface Line { id: number; model: GdModel; qty: string; amcYears: number; discount: string }
 
 let nextId = 1
-const blank = (): Line => ({ id: nextId++, model: 'One', qty: '1', amcYears: 0 })
+const blank = (): Line => ({ id: nextId++, model: 'One', qty: '1', amcYears: 0, discount: '' })
 
 const card: React.CSSProperties = {
   backgroundColor: '#fff', border: `1px solid ${LINE}`, borderRadius: 12,
@@ -50,25 +50,33 @@ const smallBtn: React.CSSProperties = {
 function maths(l: Line, cur: GdCurrency) {
   const qty = Math.max(0, Math.floor(Number(l.qty) || 0))
   const unit = listPrice(l.model, cur)
+  // AMC is priced from the LIST price and never discounted.
   const amcUnit = l.amcYears ? amcPrice(unit, l.amcYears) : 0
+  const disc = Math.max(0, Number(l.discount) || 0)
+  const net = unit * (1 - disc / 100)
+  // Commission is the partner's 28.57% share of what the customer pays,
+  // so a discount comes out of both SGT's and the partner's share.
+  const share = unit > 0 ? dealerShare(unit) / unit : 0
   return {
-    qty, unit, amcUnit,
-    machineTotal: unit * qty,
+    qty, unit, amcUnit, disc, net,
+    listTotal: unit * qty,
+    machineTotal: net * qty,
     amcTotal: amcUnit * qty,
-    lineTotal: (unit + amcUnit) * qty,
-    // The partner's markup is on the machine only; AMC carries none.
-    dealerTotal: dealerShare(unit) * qty,
+    lineTotal: (net + amcUnit) * qty,
+    dealerTotal: net * share * qty,
   }
 }
 
-export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }: {
+export default function GreenDriveQuoteScreen({ api, surface, canRaise = true, orgType }: {
   api: QuoteApi
   surface: 'staff' | 'portal'
+  /** Portal: the caller's org type, which sets the discount cap. */
+  orgType?: string | null
   /** False makes this a price calculator: no Create, no list. */
   canRaise?: boolean
 }) {
   const showPartnerPicker = surface === 'staff' && !!api.partners
-  const [partners, setPartners] = useState<{ id: number; code: string; legal_name: string }[]>([])
+  const [partners, setPartners] = useState<{ id: number; code: string; legal_name: string; org_type?: string }[]>([])
   const [orgId, setOrgId] = useState<number | null>(null)
 
   const [currency, setCurrency] = useState<GdCurrency>('INR')
@@ -100,7 +108,14 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
   const patch = (id: number, p: Partial<Line>) =>
     setLines(ls => ls.map(l => (l.id === id ? { ...l, ...p } : l)))
 
+  // The cap follows the org on the quote: the portal caller's own, or the
+  // partner staff picked, or SGT direct. The server enforces the same.
+  const maxDiscount = gdCapFor(surface === 'portal'
+    ? orgType
+    : partners.find(p => p.id === orgId)?.org_type ?? null)
   const rows = lines.map(l => ({ l, m: maths(l, currency) }))
+  const overCap = rows.some(r => r.m.disc > maxDiscount)
+  const listMachines = rows.reduce((s, r) => s + r.m.listTotal, 0)
   const machines = rows.reduce((s, r) => s + r.m.machineTotal, 0)
   const amcTotal = rows.reduce((s, r) => s + r.m.amcTotal, 0)
   const pf = withPf ? pfCharge(machines, currency) : 0
@@ -113,14 +128,14 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
   const grand = net + gst
 
   const filled = rows.filter(r => r.m.qty > 0)
-  const canCreate = canRaise && !!picked && filled.length > 0 && !busy
+  const canCreate = canRaise && !!picked && filled.length > 0 && !busy && !overCap
 
   const create = async () => {
     if (!canCreate) return
     setBusy(true); setBanner(null); setMade(null); setSent(null)
     try {
       const r = await api.createGreenDrive({
-        lines: filled.map(({ l, m }) => ({ model: l.model, qty: m.qty, amcYears: l.amcYears || null })),
+        lines: filled.map(({ l, m }) => ({ model: l.model, qty: m.qty, amcYears: l.amcYears || null, discountPct: m.disc || null })),
         customerErpName: picked!.name,
         taxMode,
         currency,
@@ -269,6 +284,15 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
                 <input type="number" min={1} value={l.qty} onChange={e => patch(l.id, { qty: e.target.value })} style={inputStyle()} />
               </div>
               <div>
+                <label style={labelStyle}>Discount %</label>
+                <input type="number" min={0} max={maxDiscount} step="0.5" value={l.discount} placeholder="0"
+                  onChange={e => patch(l.id, { discount: e.target.value })}
+                  style={inputStyle(m.disc > maxDiscount)} />
+                <div style={{ fontSize: 11, color: m.disc > maxDiscount ? DANGER : FAINT, marginTop: 3 }}>
+                  Up to {maxDiscount}% off the list price.
+                </div>
+              </div>
+              <div>
                 <label style={labelStyle}>AMC</label>
                 <select value={l.amcYears} onChange={e => patch(l.id, { amcYears: Number(e.target.value) })}
                   style={{ ...inputStyle(), appearance: 'auto' }}>
@@ -286,7 +310,9 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
             </div>
 
             <div style={{ fontSize: 12, color: MUTED, marginTop: 10 }}>
-              {money(m.unit, currency)} per unit, ex-GST
+              {m.disc > 0
+                ? <>{money(m.net, currency)} per unit after {m.disc}% off {money(m.unit, currency)}, ex-GST</>
+                : <>{money(m.unit, currency)} per unit, ex-GST</>}
               {m.amcUnit > 0 && <> · AMC {money(m.amcUnit, currency)} per unit</>}
               {(m.qty > 1 || m.amcUnit > 0) && <> · line {money(m.lineTotal, currency)}</>}
             </div>
@@ -360,7 +386,9 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
       {/* Summary */}
       <div style={card}>
         <h2 style={{ margin: '0 0 12px', fontSize: 15.5, fontWeight: 700, color: INK }}>Summary</h2>
-        {(amcTotal > 0 || pf > 0 || install > 0) && <Row k="Machines" v={money(machines, currency)} />}
+        {listMachines > machines && <Row k="Machines at list price" v={money(listMachines, currency)} />}
+        {listMachines > machines && <Row k="Discount" v={`− ${money(listMachines - machines, currency)}`} />}
+        {(amcTotal > 0 || pf > 0 || install > 0 || listMachines > machines) && <Row k="Machines" v={money(machines, currency)} />}
         {pf > 0 && <Row k={`Packing & Forwarding (${GD_PF_PCT}%)`} v={money(pf, currency)} />}
         {install > 0 && <Row k="Installation" v={money(install, currency)} />}
         {amcTotal > 0 && <Row k="AMC" v={money(amcTotal, currency)} />}
@@ -377,7 +405,9 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
             {surface === 'portal' ? 'Your earning' : 'Partner earning'} — not shown to the customer
           </div>
           <Row k="SGT's machine price" v={money(machines - dealerTotal, currency)} />
-          <Row k={`Dealer markup (${DEALER_MARKUP_PCT}%, included in the price)`} v={money(dealerTotal, currency)} strong />
+          <Row k={listMachines > machines
+            ? 'Partner commission (28.57% of the discounted price)'
+            : `Dealer markup (${DEALER_MARKUP_PCT}%, included in the price)`} v={money(dealerTotal, currency)} strong />
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16, flexWrap: 'wrap' }}>

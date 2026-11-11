@@ -224,7 +224,7 @@ export interface QuoteApi {
   createDaas(body: DaasBody): Promise<any>
   /** A GreenDrive quotation: model + quantity, fixed price. Staff only. */
   createGreenDrive(body: {
-    lines: { model: string; qty: number; amcYears?: number | null }[]
+    lines: { model: string; qty: number; amcYears?: number | null; discountPct?: number | null }[]
     customerErpName: string
     /** 'USD' = export: USD list prices, no GST. */
     currency?: 'INR' | 'USD'
@@ -263,7 +263,7 @@ export interface QuoteApi {
   /** By mirror id, not by ERPNext name — POs are scoped on our side. */
   poPdfUrl(id: number): Promise<string>
   /** Partner pickers only make sense for SGT staff. */
-  partners?: (product?: 'GreenX' | 'GreenDrive') => Promise<{ id: number; code: string; legal_name: string }[]>
+  partners?: (product?: 'GreenX' | 'GreenDrive') => Promise<{ id: number; code: string; legal_name: string; org_type?: string }[]>
 }
 
 

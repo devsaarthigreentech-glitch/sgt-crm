@@ -185,7 +185,7 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
         // same. Keyed on it so a firm switching networks gets a fresh screen.
         <div key={productLine} style={{ display: 'flex', flexDirection: 'column', minHeight: '70vh' }}>
           {productLine === 'GreenDrive'
-            ? <GreenDriveQuoteScreen api={portalQuoteApi} surface="portal" />
+            ? <GreenDriveQuoteScreen api={portalQuoteApi} surface="portal" orgType={org.org_type} />
             : <QuoteScreen api={portalQuoteApi} />}
         </div>
       )

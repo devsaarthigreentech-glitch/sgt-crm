@@ -4,7 +4,7 @@
 // Creates the ERPNext items a GreenDrive quotation's optional charge lines
 // are raised on:
 //
-//   Packing-Forwarding     "Packing & Forwarding Charges"  5% of machine value   SAC 998540
+//   Packing-Forwarding     "Packing & Forwarding Charges"  7.5% of machine value SAC 998540
 //   Installation-Charges   "Installation Charges"          fixed ₹7,000, India   SAC 998736
 //
 // Non-stock, NO Item Price (each quotation sends the amount as an exact

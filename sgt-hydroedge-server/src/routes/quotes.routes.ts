@@ -22,7 +22,7 @@ import { resolveForKva } from '../domain/quotePricing.js'
 import {
   gdRow, resolveGreenDrive, GREENDRIVE_TERMS, GREENDRIVE_EXPORT_TERMS, GD_CATALOGUE,
   GD_DEALER_SHARE_OF_PRICE_PCT, GD_PF_ITEM, GD_PF_PCT, gdPackingForwarding,
-  GD_INSTALL_ITEM, GD_INSTALL_INR,
+  GD_INSTALL_ITEM, GD_INSTALL_INR, gdActorFor, checkGdDiscount, GD_DISCOUNT_CAPS,
 } from '../domain/greenDrive.js'
 import { inspectGstin } from '../domain/gstin.js'
 import {
@@ -706,6 +706,19 @@ async function performGreenDriveQuotation(
     }
   }
 
+  // Discounts: checked before anything is written. The cap follows the org
+  // on the quote — a distributor 40, a dealer 35, SGT direct 40.
+  const gdActor = gdActorFor(partner?.orgType)
+  const discounts: number[] = []
+  for (let i = 0; i < picked.length; i++) {
+    const d = checkGdDiscount(picked[i].discountPct, gdActor)
+    if (!d.ok) {
+      return fail(422, 'discount_over_cap', `Line ${i + 1}: ${d.message}`,
+        { lineIndex: i, fields: { discountPct: d.message }, maxDiscount: GD_DISCOUNT_CAPS[gdActor] })
+    }
+    discounts.push(d.pct)
+  }
+
   // Customer ownership — the same rule, in the same place, as GreenX:
   // portal only, the write a hand-made request cannot go around.
   if (opts.via === 'portal' && orgId) {
@@ -745,9 +758,13 @@ async function performGreenDriveQuotation(
     // term (GreenDrive-One-AMC-2Y), priced by ERPNext's Item Price.
     const amcYears = l.amcYears && AMC_TERMS.includes(Number(l.amcYears))
       ? Number(l.amcYears) : null
+    const discountPct = discounts[i] || null
     lines.push({
       itemCode: r.row.itemCode, qty,
       ...(usd ? { rate: r.row.usd, exactRate: true } : { rate: r.rate }),
+      // Off the list price. The AMC below stays at full price — it is
+      // priced from the list, as for GreenX.
+      discountPct,
       amc: amcYears
         ? {
             itemCode: amcItemCode(r.row.itemCode, amcYears), qty,
@@ -760,7 +777,7 @@ async function performGreenDriveQuotation(
     lineSnapshots.push({
       model: r.row.model, modelCode: r.row.itemCode, label: r.row.label,
       qty, unitRate: usd ? String(r.row.usd) : r.rate, rateSource: usd ? 'catalogue_usd' : r.rateSource,
-      amcYears, currency: usd ? 'USD' : 'INR',
+      amcYears, currency: usd ? 'USD' : 'INR', discountPct,
     })
   })
 
@@ -770,7 +787,9 @@ async function performGreenDriveQuotation(
   // and PO paths count them as such.
   let packingForwarding: number | null = null
   if (body.packingForwarding === true) {
-    const machineValue = lines.reduce((s, l) => s + Number(l.rate ?? 0) * l.qty, 0)
+    // On what the customer actually pays for the machines: after discount.
+    const machineValue = lines.reduce(
+      (s, l) => s + Number(l.rate ?? 0) * (1 - Number(l.discountPct ?? 0) / 100) * l.qty, 0)
     packingForwarding = gdPackingForwarding(machineValue, usd)
     if (packingForwarding > 0) {
       lines.push({

@@ -45,7 +45,17 @@ export const amcPrice = (price: number, years: number) => Math.round(price * GD_
 export const GD_GST_PCT = 18
 
 /** Optional Packing & Forwarding on a GreenDrive quote: % of the machine value (not the AMC). Server: GD_PF_PCT. */
-export const GD_PF_PCT = 5
+export const GD_PF_PCT = 7.5
+/**
+ * Maximum discount on a machine line, % of list (owner, 2026-11-11).
+ * Mirrors the server's GD_DISCOUNT_CAPS, which is what actually enforces it.
+ */
+export const GD_DISCOUNT_CAPS = { distributor: 40, dealer: 35, staff: 40 } as const
+export const gdCapFor = (orgType?: string | null) =>
+  orgType === 'dealer' || orgType === 'sub_dealer' ? GD_DISCOUNT_CAPS.dealer
+    : orgType === 'distributor' ? GD_DISCOUNT_CAPS.distributor
+    : GD_DISCOUNT_CAPS.staff
+
 /** Optional fixed installation charge per quotation, India only. Server: GD_INSTALL_INR. */
 export const GD_INSTALL_INR = 7000
 export const pfCharge = (machineValue: number, cur: GdCurrency) => {
