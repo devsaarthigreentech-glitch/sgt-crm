@@ -12,6 +12,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { Upload, Trash2, AlertCircle, Image as ImageIcon } from 'lucide-react'
+import { lineHeader } from '../portal/portalLine'
 
 const MUTED = '#6A675F'
 const LINE = '#DDD7C6'
@@ -160,7 +161,7 @@ export function logoApiFor(
 ): LogoApi {
   const headers = (): Record<string, string> => {
     const t = token()
-    return t ? { Authorization: `Bearer ${t}` } : {}
+    return { ...(t ? { Authorization: `Bearer ${t}` } : {}), ...lineHeader() }
   }
 
   return {

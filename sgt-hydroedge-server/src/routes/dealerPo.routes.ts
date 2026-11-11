@@ -23,6 +23,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { query } from '../db/pool.js';
 import { requireAuth, requireRole } from '../auth/guard.js';
+import { resolvePartnerLogin, requestedLine } from '../auth/partnerOrg.js';
 import {
   resolveFromQuotation, createFromQuotation, listPos, posForQuotation,
   listPosForCustomer, loadPoForEdit, updatePo,
@@ -65,13 +66,14 @@ async function resolveCaller(
     return null;
   }
 
-  const { rows } = await query(
-    `select u.id, u.name, u.org_id, u.active,
-            o.code, o.org_type, o.is_active as org_active
-       from lead_service.app_user u
-       left join quote_service.org o on o.id = u.org_id
-      where u.id = $1`, [sub]);
-  const row = rows[0];
+  // A firm in both networks acts as its GreenX or GreenDrive org per the
+  // X-Product-Line header — resolved against the DB, see auth/partnerOrg.ts.
+  const login = await resolvePartnerLogin(sub, requestedLine(req));
+  const row = login && {
+    id: login.userId, name: login.name, active: login.active,
+    org_id: login.org?.id ?? null, code: login.org?.code ?? null,
+    org_type: login.org?.orgType ?? null, org_active: !!login.org,
+  };
   if (!row || !row.active) {
     reply.code(403).send({ error: { code: 'forbidden', message: 'Account is not active' } });
     return null;

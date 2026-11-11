@@ -5,6 +5,7 @@ import type {
   QuoteApi, Resolution, SpecField, QuoteAttachment, RecipientPlan, PoRow,
   PoResolve, QuoteLinePayload,
 } from './QuoteScreen'
+import { lineHeader } from '../portal/portalLine'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3004/api/v1'
 
@@ -57,6 +58,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     headers: {
       ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...lineHeader(),
       ...(options?.headers ?? {}),
     },
   })
@@ -211,7 +213,7 @@ export function makeQuoteApi(prefix: string, withPartners: boolean, poPrefix: st
     pdfUrl: async (erpName: string) => {
       const token = getToken()
       const res = await fetch(`${BASE_URL}${prefix}/${encodeURIComponent(erpName)}/pdf`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...lineHeader() },
       })
       if (!res.ok) {
         const body = await res.json().catch(() => ({} as any))
@@ -258,7 +260,7 @@ export function makeQuoteApi(prefix: string, withPartners: boolean, poPrefix: st
     poPdfUrl: async (id: number) => {
       const token = getToken()
       const res = await fetch(`${BASE_URL}${poPrefix}/${id}/pdf`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...lineHeader() },
       })
       if (!res.ok) {
         const body = await res.json().catch(() => ({} as any))

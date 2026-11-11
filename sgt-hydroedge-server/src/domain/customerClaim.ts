@@ -37,6 +37,21 @@ export const CLAIM_BLOCKED_MESSAGE =
   'This customer already exists and is linked to another dealer. '
   + 'Please contact your distributor for resolution or further details.';
 
+/**
+ * The orgs whose claims count as the caller's own: its subtree, plus the
+ * subtree of its sister org — the same firm in the other product line
+ * (migrate_partner_08_sister_org.ts). A dealer in both GreenX and
+ * GreenDrive is one firm with one customer book; its GreenDrive org must
+ * not be turned away from a customer its GreenX org already holds.
+ */
+const SCOPE_SQL = (param: string) => /* sql */ `
+  select org_id from quote_service.visible_org_ids(${param})
+  union
+  select s.org_id
+    from quote_service.org o
+    cross join lateral quote_service.visible_org_ids(o.sister_org_id) s
+   where o.id = ${param} and o.sister_org_id is not null`;
+
 /** The error code the frontend keys on to place the message. */
 export const CLAIM_BLOCKED_CODE = 'customer_claimed';
 
@@ -74,7 +89,7 @@ export async function mayApproach(
        from quote_service.customer_claim c
       where c.erp_customer = $1
         and not exists (
-              select 1 from quote_service.visible_org_ids($2) v
+              select 1 from (${SCOPE_SQL('$2')}) v
                where v.org_id = c.org_id)`,
     [erpCustomer, callerOrgId]);
   return rows.length === 0;
@@ -119,7 +134,7 @@ export async function hiddenFrom(callerOrgId: number): Promise<Set<string>> {
     `select c.erp_customer
        from quote_service.customer_claim c
       where not exists (
-              select 1 from quote_service.visible_org_ids($1) v
+              select 1 from (${SCOPE_SQL('$1')}) v
                where v.org_id = c.org_id)`,
     [callerOrgId]);
   return new Set(rows.map((r: { erp_customer: string }) => r.erp_customer));

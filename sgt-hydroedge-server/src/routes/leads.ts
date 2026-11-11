@@ -118,8 +118,11 @@ const LogActivitySchema = z.object({
   direction: z.string().optional(),
   durationMin: z.number().optional(),
   nextStepDescription: z.string().optional(),
-  nextStepDueDate: z.string().optional(),
-  occurredAt: z.string().optional(),
+  // An empty <input type="date"> posts "" — which Postgres rejects as a
+  // DATE and turned into a 500 whenever a next step was typed without a
+  // due date. Blank means "no date".
+  nextStepDueDate: z.preprocess(v => (v === '' ? undefined : v), z.string().optional()),
+  occurredAt: z.preprocess(v => (v === '' ? undefined : v), z.string().optional()),
   actorName: z.string().optional(),
   actorId: z.string().optional(),
 })

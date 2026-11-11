@@ -33,6 +33,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { query, pool } from '../db/pool.js'
 import { requireAuth } from '../auth/guard.js'
+import { resolvePartnerLogin, requestedLine } from '../auth/partnerOrg.js'
 import { validateForSubmit, type RegistrationInput } from '../domain/partnerValidation.js'
 import { inspectGstin } from '../domain/gstin.js'
 import { resolveForKva } from '../domain/quotePricing.js'
@@ -64,8 +65,10 @@ interface Caller {
   orgCode: string
   orgType: string
   legalName: string
-  /** GreenX or GreenDrive. A partner works in exactly one network. */
+  /** GreenX or GreenDrive — the line of the org this request acts as. */
   productLine: 'GreenX' | 'GreenDrive'
+  /** Lines this login can switch between (two for a firm in both networks). */
+  lines: { productLine: 'GreenX' | 'GreenDrive'; code: string }[]
 }
 
 /**
@@ -80,32 +83,27 @@ async function resolveCaller(
     reply.code(401).send({ error: { code: 'unauthorized', message: 'Login required' } })
     return null
   }
-  const { rows } = await query(
-    `select u.id, u.org_id, u.active,
-            o.code, o.org_type, o.legal_name, o.is_active as org_active,
-            o.product_line
-       from lead_service.app_user u
-       left join quote_service.org o on o.id = u.org_id
-      where u.id = $1`, [sub])
-
-  const row = rows[0]
-  if (!row || !row.active) {
+  // A firm in both networks has a sister org; X-Product-Line picks which
+  // of the two this request acts as. See auth/partnerOrg.ts.
+  const login = await resolvePartnerLogin(sub, requestedLine(req))
+  if (!login || !login.active) {
     reply.code(403).send({ error: { code: 'forbidden', message: 'Account is not active' } })
     return null
   }
-  if (!row.org_id || !row.org_active) {
+  if (!login.org) {
     reply.code(403).send({
       error: { code: 'no_org', message: 'This account is not linked to an active partner' },
     })
     return null
   }
   return {
-    userId: String(row.id),
-    orgId: row.org_id,
-    orgCode: row.code,
-    orgType: row.org_type,
-    legalName: row.legal_name,
-    productLine: row.product_line === 'GreenDrive' ? 'GreenDrive' : 'GreenX',
+    userId: login.userId,
+    orgId: login.org.id,
+    orgCode: login.org.code,
+    orgType: login.org.orgType,
+    legalName: login.org.legalName,
+    productLine: login.org.productLine,
+    lines: login.lines,
   }
 }
 
@@ -132,6 +130,7 @@ export default async function portalRoutes(app: FastifyInstance) {
       data: {
         user: { id: me.userId, name: (req.user as any)?.name, email: (req.user as any)?.email },
         org: rows[0],
+        lines: me.lines,
         counts,
       },
     })

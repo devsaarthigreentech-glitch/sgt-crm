@@ -1,5 +1,6 @@
 // Distributor portal API client. Talks only to /portal — the single prefix
 // an external role can reach (see server src/auth/policy.ts).
+import { lineHeader } from './portalLine'
 
 export const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3004/api/v1'
 
@@ -38,6 +39,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     headers: {
       ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...lineHeader(),
       ...(options?.headers ?? {}),
     },
   })
@@ -64,6 +66,11 @@ export interface PortalMe {
     /** Which network this partner belongs to. Absent on an old server means GreenX. */
     product_line?: 'GreenX' | 'GreenDrive'
   }
+  /**
+   * The networks this login can switch between, home first. Two entries for
+   * a firm in both GreenX and GreenDrive; absent on an old server.
+   */
+  lines?: { productLine: 'GreenX' | 'GreenDrive'; code: string }[]
   counts: { dealers: string; sub_dealers: string }
 }
 

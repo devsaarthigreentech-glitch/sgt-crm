@@ -19,6 +19,7 @@ import { portalQuoteApi } from '../quotes/quotesApi'
 import AgreementScreen from '../agreements/AgreementScreen'
 import { portalAgreementApi } from '../agreements/agreementsApi'
 import GreenDriveQuoteScreen from '../greendrive/GreenDriveQuoteScreen'
+import { setPortalLine, type PortalLine } from './portalLine'
 
 type PortalPage = 'overview' | 'dealers' | 'quotes' | 'agreements'
 
@@ -69,6 +70,16 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
 
   useEffect(load, [])
 
+  // A firm in both networks switches here. The choice is stored and sent
+  // as X-Product-Line; the server picks the matching org of the two tied
+  // to this login, and /me reloads to say which one it actually used.
+  const switchLine = (line: PortalLine) => {
+    setPortalLine(line)
+    setEditDealerId(null)
+    load()
+  }
+  const logout = () => { setPortalLine(null); onLogout() }
+
   if (loading && !me) {
     return (
       <div style={{ height: '100vh', backgroundColor: PAPER, display: 'flex', alignItems: 'center', justifyContent: 'center', color: MUTED }}>
@@ -83,7 +94,7 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
         <div style={{ padding: '12px 16px', borderRadius: 8, backgroundColor: '#F3DAD5', color: DANGER, fontSize: 13, maxWidth: 420, textAlign: 'center' }}>
           {error}
         </div>
-        <button onClick={onLogout} style={{ padding: '9px 16px', fontSize: 13, fontFamily: 'inherit', border: `1px solid ${LINE}`, borderRadius: 7, background: '#fff', cursor: 'pointer', color: MUTED }}>
+        <button onClick={logout} style={{ padding: '9px 16px', fontSize: 13, fontFamily: 'inherit', border: `1px solid ${LINE}`, borderRadius: 7, background: '#fff', cursor: 'pointer', color: MUTED }}>
           Sign out
         </button>
       </div>
@@ -117,11 +128,29 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
             {productLine} {org.org_type === 'distributor' ? 'Distributor' : org.org_type} · {org.code}
           </div>
         </div>
+        {(me!.lines?.length ?? 0) > 1 && (
+          <div style={{ display: 'flex', border: `1px solid ${LINE}`, borderRadius: 7, overflow: 'hidden', flexShrink: 0 }}>
+            {me!.lines!.map(l => {
+              const on = l.productLine === productLine
+              return (
+                <button key={l.productLine} onClick={() => !on && switchLine(l.productLine)}
+                  title={`${l.productLine} · ${l.code}`} disabled={loading}
+                  style={{
+                    padding: '6px 11px', fontSize: 12, fontFamily: 'inherit', border: 'none',
+                    cursor: on ? 'default' : 'pointer', fontWeight: on ? 700 : 500,
+                    backgroundColor: on ? INK : '#fff', color: on ? '#fff' : MUTED,
+                  }}>
+                  {l.productLine}
+                </button>
+              )
+            })}
+          </div>
+        )}
         <button onClick={load} title="Refresh"
           style={{ background: 'none', border: 'none', cursor: 'pointer', color: FAINT, padding: 6, display: 'flex' }}>
           <RefreshCw size={16} />
         </button>
-        <button onClick={onLogout} title="Sign out"
+        <button onClick={logout} title="Sign out"
           style={{ background: 'none', border: 'none', cursor: 'pointer', color: FAINT, padding: 6, display: 'flex' }}>
           <LogOut size={16} />
         </button>
@@ -152,20 +181,20 @@ export default function DistributorPortal({ onLogout }: { onLogout: () => void }
       {editDealerId !== null ? (
         <DealerEdit dealerId={editDealerId} onBack={() => { setEditDealerId(null); load() }} />
       ) : page === 'quotes' ? (
-        // A partner works in ONE network, so there is no toggle here: the
-        // org's product line picks the screen. The server forces the same.
-        <div style={{ display: 'flex', flexDirection: 'column', minHeight: '70vh' }}>
+        // The org's product line picks the screen; the server forces the
+        // same. Keyed on it so a firm switching networks gets a fresh screen.
+        <div key={productLine} style={{ display: 'flex', flexDirection: 'column', minHeight: '70vh' }}>
           {productLine === 'GreenDrive'
             ? <GreenDriveQuoteScreen api={portalQuoteApi} surface="portal" />
             : <QuoteScreen api={portalQuoteApi} />}
         </div>
       )
       : page === 'agreements' ? (
-        <div style={{ display: 'flex', flexDirection: 'column', minHeight: '70vh' }}>
+        <div key={productLine} style={{ display: 'flex', flexDirection: 'column', minHeight: '70vh' }}>
           <AgreementScreen api={portalAgreementApi} productLine={productLine} />
         </div>
       )
-      : page === 'dealers' ? <DealerRegistration /> : (
+      : page === 'dealers' ? <DealerRegistration key={productLine} /> : (
       <div style={{ padding: '20px 20px 60px', maxWidth: 760, margin: '0 auto' }}>
         <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 700, color: INK }}>My view</h1>
         <p style={{ margin: '0 0 18px', fontSize: 12.5, color: MUTED }}>

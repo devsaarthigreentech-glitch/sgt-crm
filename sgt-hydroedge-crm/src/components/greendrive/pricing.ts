@@ -44,6 +44,13 @@ export const amcPrice = (price: number, years: number) => Math.round(price * GD_
 /** 18%, same as GreenX. HSN 85433000. */
 export const GD_GST_PCT = 18
 
+/** Optional Packing & Forwarding on a GreenDrive quote: % of the machine value (not the AMC). Server: GD_PF_PCT. */
+export const GD_PF_PCT = 5
+export const pfCharge = (machineValue: number, cur: GdCurrency) => {
+  const raw = machineValue * GD_PF_PCT / 100
+  return cur === 'USD' ? Math.round(raw * 100) / 100 : Math.round(raw)
+}
+
 export const money = (v: number, cur: GdCurrency) =>
   cur === 'USD'
     ? '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })

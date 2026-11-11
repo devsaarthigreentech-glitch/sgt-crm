@@ -1,6 +1,7 @@
 // Dealer agreement API. Two prefixes, one adapter — /agreements for SGT
 // staff, /portal/agreements for a distributor. AgreementScreen serves both,
 // because the document they produce is the same document.
+import { lineHeader } from '../portal/portalLine'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3004/api/v1'
 
@@ -25,6 +26,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     headers: {
       ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...lineHeader(),
       ...(options?.headers ?? {}),
     },
   })
@@ -174,7 +176,7 @@ export const canDelete = (a: Agreement): boolean =>
 async function blobUrl(path: string): Promise<string> {
   const token = getToken()
   const res = await fetch(`${BASE_URL}${path}`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...lineHeader() },
   })
   if (!res.ok) {
     const body = await res.json().catch(() => ({} as any))

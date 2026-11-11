@@ -21,7 +21,7 @@ import { requireRole } from '../auth/guard.js'
 import { resolveForKva } from '../domain/quotePricing.js'
 import {
   gdRow, resolveGreenDrive, GREENDRIVE_TERMS, GREENDRIVE_EXPORT_TERMS, GD_CATALOGUE,
-  GD_DEALER_SHARE_OF_PRICE_PCT,
+  GD_DEALER_SHARE_OF_PRICE_PCT, GD_PF_ITEM, GD_PF_PCT, gdPackingForwarding,
 } from '../domain/greenDrive.js'
 import { inspectGstin } from '../domain/gstin.js'
 import {
@@ -117,6 +117,8 @@ export interface QuoteBody extends QuoteLineBody {
   productLine?: 'GreenX' | 'GreenDrive'
   /** GreenDrive only: 'USD' for an export quotation (USD list prices, no GST). */
   currency?: 'INR' | 'USD'
+  /** GreenDrive sale only: add Packing & Forwarding at GD_PF_PCT of the machine value. */
+  packingForwarding?: boolean
   /** 'daas' rents instead of selling. Absent means a sale. */
   saleMode?: 'sale' | 'daas'
   /** DaaS: 1, 2 or 3 years. */
@@ -183,8 +185,15 @@ function snapshotPartner(o: Record<string, any>): CreateQuotationInput['partner'
     ? [branchAddr, branchContact || null].filter(Boolean).join('\n')
     : null
 
+  // The name the customer knows them by. For a proprietorship the LEGAL
+  // name is the proprietor — Arjun Generators is legally "INDRA LOHAR" —
+  // and printing a person's name where the customer expects a business
+  // reads as a different company. The legal name stays on the record,
+  // where the GSTIN and the dealer agreement need it.
+  const display = String(o.trade_name ?? '').trim() || o.legal_name
+
   return {
-    name: `${o.legal_name}${o.code ? ` (${o.code})` : ''}`,
+    name: `${display}${o.code ? ` (${o.code})` : ''}`,
     address: addr || null,
     branch,
     contact: contact || null,
@@ -748,6 +757,22 @@ async function performGreenDriveQuotation(
     })
   })
 
+  // Packing & Forwarding, when asked for: one line after the machines,
+  // priced here from the same machine rates the quotation carries. It is
+  // NOT added to lineSnapshots — those are machines, and the list, edit
+  // and PO paths count them as such.
+  let packingForwarding: number | null = null
+  if (body.packingForwarding === true) {
+    const machineValue = lines.reduce((s, l) => s + Number(l.rate ?? 0) * l.qty, 0)
+    packingForwarding = gdPackingForwarding(machineValue, usd)
+    if (packingForwarding > 0) {
+      lines.push({
+        itemCode: GD_PF_ITEM, qty: 1, rate: packingForwarding, exactRate: true,
+        description: `Packing & Forwarding charges @ ${GD_PF_PCT}% of the machine value.`,
+      })
+    }
+  }
+
   const input: CreateQuotationInput = {
     customerErpName,
     lines,
@@ -779,6 +804,11 @@ async function performGreenDriveQuotation(
   } catch (e: any) {
     const message = String(e?.message ?? e)
     if (opts.updating && /submitted/i.test(message)) return fail(409, 'not_editable', message)
+    if (packingForwarding && message.includes(GD_PF_ITEM)) {
+      return fail(500, 'pf_item_missing',
+        `ERPNext has no "${GD_PF_ITEM}" item yet — run src/db/erp_create_pf_item.ts, ` +
+        `or untick Packing & Forwarding. (${message})`)
+    }
     throw e
   }
 
@@ -824,6 +854,7 @@ async function performGreenDriveQuotation(
       data: {
         erpName: created.erpName,
         productLine: 'GreenDrive',
+        packingForwarding,
         model: first.modelCode,
         qty: first.qty,
         rate: first.unitRate,

@@ -26,7 +26,7 @@ import {
   rupees, inputStyle, labelStyle,
 } from '../quotes/theme'
 import {
-  GD_MODELS, DEALER_MARKUP_PCT, GD_GST_PCT, USD_INR,
+  GD_MODELS, DEALER_MARKUP_PCT, GD_GST_PCT, USD_INR, GD_PF_PCT, pfCharge,
   money, listPrice, dealerShare, amcPrice, GD_AMC_PCT, GD_AMC_TERMS,
   type GdModel, type GdCurrency,
 } from './pricing'
@@ -75,6 +75,7 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
   const [lines, setLines] = useState<Line[]>([blank()])
   const [picked, setPicked] = useState<ErpCustomer | null>(null)
   const [taxMode, setTaxMode] = useState<'auto' | 'in_state' | 'out_state'>('auto')
+  const [withPf, setWithPf] = useState(false)
   const [banner, setBanner] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [made, setMade] = useState<any>(null)
@@ -101,7 +102,8 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
   const rows = lines.map(l => ({ l, m: maths(l, currency) }))
   const machines = rows.reduce((s, r) => s + r.m.machineTotal, 0)
   const amcTotal = rows.reduce((s, r) => s + r.m.amcTotal, 0)
-  const net = machines + amcTotal
+  const pf = withPf ? pfCharge(machines, currency) : 0
+  const net = machines + pf + amcTotal
   const dealerTotal = rows.reduce((s, r) => s + r.m.dealerTotal, 0)
   // Export is shown without GST — ASSUMED zero-rated under LUT, to confirm.
   const gst = currency === 'INR' ? net * GD_GST_PCT / 100 : 0
@@ -119,10 +121,11 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
         customerErpName: picked!.name,
         taxMode,
         currency,
+        packingForwarding: withPf,
         ...(showPartnerPicker ? { orgId } : {}),
       })
       setMade(r.data ?? r)
-      setLines([blank()]); setPicked(null); setTaxMode('auto')
+      setLines([blank()]); setPicked(null); setTaxMode('auto'); setWithPf(false)
       refresh()
     } catch (e: any) { setBanner(e.message) } finally { setBusy(false) }
   }
@@ -287,6 +290,22 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
         ))}
       </div>
 
+      {/* Packing & Forwarding */}
+      <div style={card}>
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 9, cursor: 'pointer' }}>
+          <input type="checkbox" checked={withPf} onChange={e => setWithPf(e.target.checked)} style={{ marginTop: 3 }} />
+          <span>
+            <span style={{ fontSize: 14, fontWeight: 700, color: INK }}>
+              Packing &amp; Forwarding charges — {GD_PF_PCT}%
+            </span>
+            <span style={{ display: 'block', fontSize: 11.5, color: FAINT, marginTop: 2 }}>
+              {GD_PF_PCT}% of the machine value{machines > 0 ? ` (${money(pfCharge(machines, currency), currency)})` : ''},
+              added as its own line{currency === 'INR' ? ', with GST' : ''}. Not charged on AMC, and no dealer markup on it.
+            </span>
+          </span>
+        </label>
+      </div>
+
       {showPartnerPicker && (
         <div style={card}>
           <h2 style={{ margin: '0 0 12px', fontSize: 15.5, fontWeight: 700, color: INK }}>Raised through</h2>
@@ -324,7 +343,8 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true }:
       {/* Summary */}
       <div style={card}>
         <h2 style={{ margin: '0 0 12px', fontSize: 15.5, fontWeight: 700, color: INK }}>Summary</h2>
-        {amcTotal > 0 && <Row k="Machines" v={money(machines, currency)} />}
+        {(amcTotal > 0 || pf > 0) && <Row k="Machines" v={money(machines, currency)} />}
+        {pf > 0 && <Row k={`Packing & Forwarding (${GD_PF_PCT}%)`} v={money(pf, currency)} />}
         {amcTotal > 0 && <Row k="AMC" v={money(amcTotal, currency)} />}
         <Row k="Net, before GST" v={money(net, currency)} strong />
         <Row k={currency === 'INR' ? `GST ${GD_GST_PCT}%` : 'GST (export, zero-rated)'} v={money(gst, currency)} />
