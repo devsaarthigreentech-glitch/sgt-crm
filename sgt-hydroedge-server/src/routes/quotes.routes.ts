@@ -20,8 +20,8 @@ import { query, pool } from '../db/pool.js'
 import { requireRole } from '../auth/guard.js'
 import { resolveForKva } from '../domain/quotePricing.js'
 import {
-  gdRow, resolveGreenDrive, GREENDRIVE_TERMS, GREENDRIVE_EXPORT_TERMS, GD_CATALOGUE,
-  GD_DEALER_SHARE_OF_PRICE_PCT, GD_PF_ITEM, GD_PF_PCT, gdPackingForwarding,
+  gdRow, gdAmcRow, resolveGreenDrive, GREENDRIVE_TERMS, GREENDRIVE_EXPORT_TERMS, GD_CATALOGUE,
+  GD_DEALER_SHARE_OF_PRICE_PCT,
   GD_INSTALL_ITEM, GD_INSTALL_INR, gdActorFor, checkGdDiscount, GD_DISCOUNT_CAPS,
 } from '../domain/greenDrive.js'
 import { inspectGstin } from '../domain/gstin.js'
@@ -118,8 +118,6 @@ export interface QuoteBody extends QuoteLineBody {
   productLine?: 'GreenX' | 'GreenDrive'
   /** GreenDrive only: 'USD' for an export quotation (USD list prices, no GST). */
   currency?: 'INR' | 'USD'
-  /** GreenDrive sale only: add Packing & Forwarding at GD_PF_PCT of the machine value. */
-  packingForwarding?: boolean
   /** GreenDrive sale, India only: add the fixed installation charge (GD_INSTALL_INR) as one line. */
   installation?: boolean
   /** 'daas' rents instead of selling. Absent means a sale. */
@@ -759,6 +757,8 @@ async function performGreenDriveQuotation(
     const amcYears = l.amcYears && AMC_TERMS.includes(Number(l.amcYears))
       ? Number(l.amcYears) : null
     const discountPct = discounts[i] || null
+    // A packed model's AMC is its ex-factory model's (15% of ex-factory).
+    const amcRow = gdAmcRow(r.row)
     lines.push({
       itemCode: r.row.itemCode, qty,
       ...(usd ? { rate: r.row.usd, exactRate: true } : { rate: r.rate }),
@@ -767,10 +767,10 @@ async function performGreenDriveQuotation(
       discountPct,
       amc: amcYears
         ? {
-            itemCode: amcItemCode(r.row.itemCode, amcYears), qty,
+            itemCode: amcItemCode(amcRow.itemCode, amcYears), qty,
             // Export: 15% of the USD price a year, as the screen shows it.
             // The AMC Item Price is in rupees, so it cannot price this line.
-            ...(usd ? { rate: Math.round(r.row.usd * AMC_PCT / 100) * amcYears } : {}),
+            ...(usd ? { rate: Math.round(amcRow.usd * AMC_PCT / 100) * amcYears } : {}),
           }
         : null,
     })
@@ -780,24 +780,6 @@ async function performGreenDriveQuotation(
       amcYears, currency: usd ? 'USD' : 'INR', discountPct,
     })
   })
-
-  // Packing & Forwarding, when asked for: one line after the machines,
-  // priced here from the same machine rates the quotation carries. It is
-  // NOT added to lineSnapshots — those are machines, and the list, edit
-  // and PO paths count them as such.
-  let packingForwarding: number | null = null
-  if (body.packingForwarding === true) {
-    // On what the customer actually pays for the machines: after discount.
-    const machineValue = lines.reduce(
-      (s, l) => s + Number(l.rate ?? 0) * (1 - Number(l.discountPct ?? 0) / 100) * l.qty, 0)
-    packingForwarding = gdPackingForwarding(machineValue, usd)
-    if (packingForwarding > 0) {
-      lines.push({
-        itemCode: GD_PF_ITEM, qty: 1, rate: packingForwarding, exactRate: true,
-        description: `Packing & Forwarding charges @ ${GD_PF_PCT}% of the machine value.`,
-      })
-    }
-  }
 
   // Installation, when asked for: a fixed amount per quotation, not per
   // machine. Also kept out of lineSnapshots, for the same reason as P&F.
@@ -841,11 +823,6 @@ async function performGreenDriveQuotation(
       return fail(500, 'install_item_missing',
         `ERPNext has no "${GD_INSTALL_ITEM}" item yet — run src/db/erp_create_pf_item.ts, ` +
         `or untick Installation. (${message})`)
-    }
-    if (packingForwarding && message.includes(GD_PF_ITEM)) {
-      return fail(500, 'pf_item_missing',
-        `ERPNext has no "${GD_PF_ITEM}" item yet — run src/db/erp_create_pf_item.ts, ` +
-        `or untick Packing & Forwarding. (${message})`)
     }
     throw e
   }
@@ -892,7 +869,6 @@ async function performGreenDriveQuotation(
       data: {
         erpName: created.erpName,
         productLine: 'GreenDrive',
-        packingForwarding,
         installation,
         model: first.modelCode,
         qty: first.qty,

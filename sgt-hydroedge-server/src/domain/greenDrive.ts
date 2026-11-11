@@ -24,7 +24,7 @@
 
 export const GREENDRIVE = 'GreenDrive' as const
 
-export type GdModel = 'One' | 'Neo' | 'Pro'
+export type GdModel = 'One' | 'Neo' | 'Pro' | 'One-Packed' | 'Neo-Packed' | 'Pro-Packed'
 
 export interface GdCatalogueRow {
   model: GdModel
@@ -32,15 +32,40 @@ export interface GdCatalogueRow {
   label: string
   /** India price, ex-GST. Includes the dealer's markup. */
   inr: number
-  /** Export list price. Not yet quotable — no USD setup in ERPNext. */
+  /** Export list price, USD. */
   usd: number
+  /**
+   * Set on a "packed" row: the ex-factory model it is built on. Its AMC is
+   * that model's AMC — 15% of the EX-FACTORY price, not of the packed one.
+   */
+  base?: GdModel
 }
 
 export const GD_CATALOGUE: GdCatalogueRow[] = [
   { model: 'One', itemCode: 'GreenDrive-One', label: 'GreenDrive One', inr: 104000, usd: 1337 },
   { model: 'Neo', itemCode: 'GreenDrive-Neo', label: 'GreenDrive Neo', inr: 121000, usd: 1558 },
   { model: 'Pro', itemCode: 'GreenDrive-Pro', label: 'GreenDrive Pro', inr: 181000, usd: 2326 },
+  // Owner, 2026-11-11: each model also comes with Packing & Forwarding
+  // built into the price (+GD_PF_PCT, 7.5%), as an item of its own. This
+  // replaced the optional P&F tick. Machine HSN, and it carries the
+  // partner's commission like any machine price.
+  ...(['One', 'Neo', 'Pro'] as const).map(m => {
+    const b = { One: [104000, 1337], Neo: [121000, 1558], Pro: [181000, 2326] }[m]
+    return {
+      model: `${m}-Packed` as GdModel,
+      itemCode: `GreenDrive-${m}-Packed`,
+      label: `GreenDrive ${m} incl. Packing & Forwarding`,
+      inr: Math.round(b[0] * (100 + 7.5) / 100),
+      usd: Math.round(b[1] * (100 + 7.5)) / 100,
+      base: m,
+    }
+  }),
 ]
+
+/** The row whose AMC a line uses: the ex-factory model for a packed row. */
+export function gdAmcRow(row: GdCatalogueRow): GdCatalogueRow {
+  return row.base ? GD_CATALOGUE.find(r => r.model === row.base)! : row
+}
 
 export const GD_HSN = process.env.ERP_GREENDRIVE_HSN ?? '85433000'
 
@@ -104,12 +129,11 @@ export function productCodeFor(line: ProductLine): 'GX' | 'GD' {
 }
 
 /**
- * Packing & Forwarding — optional on a GreenDrive sale quotation (owner,
- * 2026-11-11): 7.5% of the machine value AFTER any discount (5% until the
- * same day), as one line of its own. Not on the
- * AMC (a service, nothing to pack). Its ERPNext item has grant_commission
- * = 0, so the dealer's earning stays the machine markup only. SAC 998540
- * (packaging services), 18%. Created by src/db/erp_create_pf_item.ts.
+ * Packing & Forwarding, 7.5% (owner, 2026-11-11). No longer a separate
+ * optional line: it is built into the three "-Packed" catalogue rows above.
+ * The separate Packing-Forwarding ERPNext item (SAC 998540, no commission)
+ * from the brief "tick to add" version still exists but is no longer quoted;
+ * GD_PF_ITEM and gdPackingForwarding() remain only for the item script.
  */
 export const GD_PF_ITEM = process.env.ERP_PF_ITEM ?? 'Packing-Forwarding'
 export const GD_PF_PCT = 7.5
@@ -122,13 +146,14 @@ export function gdPackingForwarding(machineValue: number, usd: boolean): number 
 
 /**
  * Installation — optional on a GreenDrive sale quotation (owner,
- * 2026-11-11): a FIXED ₹7,000 per quotation, one line, only when ticked.
+ * 2026-11-11): a FIXED ₹7,450 + GST per quotation (₹7,000 the same day —
+ * the owner wanted a figure that reads as calculated), one line, only when ticked.
  * India quotes only (an export ships FOB; nobody from SGT installs it).
  * Its ERPNext item has grant_commission = 0, so no dealer markup on it.
  * Created by src/db/erp_create_pf_item.ts alongside the P&F item.
  */
 export const GD_INSTALL_ITEM = process.env.ERP_INSTALL_ITEM ?? 'Installation-Charges'
-export const GD_INSTALL_INR = Number(process.env.GD_INSTALL_INR ?? '7000')
+export const GD_INSTALL_INR = Number(process.env.GD_INSTALL_INR ?? '7450')
 
 /**
  * Discount on a GreenDrive machine line (owner, 2026-11-11): up to 40% for

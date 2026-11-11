@@ -16,14 +16,26 @@
 // 30% on top until 2026-10-10, when the owner raised it to 40% with the
 // prices unchanged.
 
-export type GdModel = 'One' | 'Neo' | 'Pro'
+export type GdModel = 'One' | 'Neo' | 'Pro' | 'One-Packed' | 'Neo-Packed' | 'Pro-Packed'
 export type GdCurrency = 'INR' | 'USD'
 
-export const GD_MODELS: { code: GdModel; label: string; inr: number; usd: number }[] = [
+export const GD_MODELS: { code: GdModel; label: string; inr: number; usd: number; base?: GdModel }[] = [
   { code: 'One', label: 'GreenDrive One', inr: 104000, usd: 1337 },
   { code: 'Neo', label: 'GreenDrive Neo', inr: 121000, usd: 1558 },
   { code: 'Pro', label: 'GreenDrive Pro', inr: 181000, usd: 2326 },
+  // Owner, 2026-11-11: each model also with Packing & Forwarding (7.5%)
+  // built into the price. Their AMC is the ex-factory model's.
+  { code: 'One-Packed', label: 'GreenDrive One incl. Packing & Forwarding', inr: 111800, usd: 1437.28, base: 'One' },
+  { code: 'Neo-Packed', label: 'GreenDrive Neo incl. Packing & Forwarding', inr: 130075, usd: 1674.85, base: 'Neo' },
+  { code: 'Pro-Packed', label: 'GreenDrive Pro incl. Packing & Forwarding', inr: 194575, usd: 2500.45, base: 'Pro' },
 ]
+
+/** The ex-factory price a model's AMC is worked out from. */
+export const amcBasePrice = (m: GdModel, cur: GdCurrency) => {
+  const row = GD_MODELS.find(x => x.code === m)!
+  const base = row.base ? GD_MODELS.find(x => x.code === row.base)! : row
+  return cur === 'USD' ? base.usd : base.inr
+}
 
 /** The owner's reference rate. The USD list prices are set in their own right, not converted. */
 export const USD_INR = 95
@@ -44,8 +56,6 @@ export const amcPrice = (price: number, years: number) => Math.round(price * GD_
 /** 18%, same as GreenX. HSN 85433000. */
 export const GD_GST_PCT = 18
 
-/** Optional Packing & Forwarding on a GreenDrive quote: % of the machine value (not the AMC). Server: GD_PF_PCT. */
-export const GD_PF_PCT = 7.5
 /**
  * Maximum discount on a machine line, % of list (owner, 2026-11-11).
  * Mirrors the server's GD_DISCOUNT_CAPS, which is what actually enforces it.
@@ -57,11 +67,7 @@ export const gdCapFor = (orgType?: string | null) =>
     : GD_DISCOUNT_CAPS.staff
 
 /** Optional fixed installation charge per quotation, India only. Server: GD_INSTALL_INR. */
-export const GD_INSTALL_INR = 7000
-export const pfCharge = (machineValue: number, cur: GdCurrency) => {
-  const raw = machineValue * GD_PF_PCT / 100
-  return cur === 'USD' ? Math.round(raw * 100) / 100 : Math.round(raw)
-}
+export const GD_INSTALL_INR = 7450
 
 export const money = (v: number, cur: GdCurrency) =>
   cur === 'USD'

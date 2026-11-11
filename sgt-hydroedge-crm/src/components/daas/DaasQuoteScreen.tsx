@@ -263,7 +263,7 @@ export default function DaasQuoteScreen({ api, productLine }: {
                   <label style={labelStyle}>Model</label>
                   <select value={l.model} onChange={e => patch(l.id, { model: e.target.value as GdModel })}
                     style={{ ...inputStyle(), appearance: 'auto' }}>
-                    {GD_MODELS.map(g => <option key={g.code} value={g.code}>{g.label} — {rupees(g.inr)}</option>)}
+                    {GD_MODELS.filter(g => !g.base).map(g => <option key={g.code} value={g.code}>{g.label} — {rupees(g.inr)}</option>)}
                   </select>
                 </div>
               ) : (

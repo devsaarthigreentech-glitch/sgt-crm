@@ -1,7 +1,8 @@
 /// <reference types="node" />
 // =====================================================================
 // erp_create_greendrive_items.ts
-// Creates the three GreenDrive items in ERPNext, plus their India price.
+// Creates the GreenDrive items in ERPNext, plus their India price: the three
+// ex-factory models and (2026-11-11) the three incl. Packing & Forwarding.
 //
 // DRY RUN BY DEFAULT. Creates nothing until you pass CONFIRM_CREATE=1.
 //
@@ -97,6 +98,8 @@ async function main() {
   const rows: Row[] = [];
   for (const m of GD_CATALOGUE) {
     rows.push({ itemCode: m.itemCode, label: m.label, inr: m.inr });
+    // A packed row uses its ex-factory model's AMC items — none of its own.
+    if (m.base) continue;
     for (const y of AMC_TERMS) {
       rows.push({
         itemCode: amcItemCode(m.itemCode, y),

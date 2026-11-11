@@ -231,8 +231,6 @@ export interface QuoteApi {
     /** Staff only: raise it under this GreenDrive partner. Ignored on the portal. */
     orgId?: number | null
     taxMode?: 'auto' | 'in_state' | 'out_state'
-    /** Add Packing & Forwarding (5% of the machine value) as its own line. */
-    packingForwarding?: boolean
     /** India only: add the fixed installation charge as its own line. */
     installation?: boolean
   }): Promise<any>
