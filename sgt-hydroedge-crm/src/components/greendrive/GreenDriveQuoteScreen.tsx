@@ -117,7 +117,7 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true, o
   const listMachines = rows.reduce((s, r) => s + r.m.listTotal, 0)
   const machines = rows.reduce((s, r) => s + r.m.machineTotal, 0)
   const amcTotal = rows.reduce((s, r) => s + r.m.amcTotal, 0)
-  // India only: an export ships FOB and nobody installs it.
+  // India only: an export is sold ex-factory and nobody installs it.
   const install = withInstall && currency === 'INR' ? GD_INSTALL_INR : 0
   const net = machines + install + amcTotal
   const dealerTotal = rows.reduce((s, r) => s + r.m.dealerTotal, 0)
@@ -276,7 +276,7 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true, o
               <div>
                 <label style={labelStyle}>Model</label>
                 <select value={l.model} onChange={e => patch(l.id, { model: e.target.value as GdModel })} style={inputStyle()}>
-                  {GD_MODELS.filter(g => currency === 'USD' || !g.exportOnly).map(g => (
+                  {GD_MODELS.filter(g => (currency === 'USD' || !g.exportOnly) && (surface === 'staff' || !g.staffOnly)).map(g => (
                     <option key={g.code} value={g.code}>{g.label} — {money(currency === 'USD' ? g.usd : g.inr, currency)}</option>
                   ))}
                 </select>
@@ -322,7 +322,7 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true, o
         ))}
       </div>
 
-      {/* Installation — India only; an export ships FOB. */}
+      {/* Installation — India only; an export is sold ex-factory. */}
       {currency === 'INR' && (
         <div style={card}>
           <label style={{ display: 'flex', alignItems: 'flex-start', gap: 9, cursor: 'pointer' }}>

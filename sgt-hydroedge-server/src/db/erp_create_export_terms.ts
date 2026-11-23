@@ -6,7 +6,7 @@
 // template as it stands in ERPNext today and swapping in the three export
 // clauses:
 //
-//   Delivery          FOB, Incoterms 2020          (EXPORT_FOB_PORT)
+//   Delivery          ex-factory (FCA SGT's works)
 //   Taxes and Duties  zero-rated under the LUT     (EXPORT_LUT_NO / _VALID_TILL)
 //   Payment Terms     50/50 in USD by SWIFT wire
 //

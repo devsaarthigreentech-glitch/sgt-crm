@@ -136,23 +136,24 @@ export const GREENDRIVE_QUOTATION_TERMS: Clause[] = DEALER_QUOTATION_TERMS;
  * charged additionally" on a quote that carries none), so these three
  * are replaced and every other clause is kept as it is.
  *
- *   Delivery          FOB, Incoterms 2020, at the port of shipment
+ *   Delivery          ex-factory: FCA SGT's works, Incoterms 2020 (was FOB
+ *                     Nhava Sheva until 2026-11-23). FCA rather than EXW
+ *                     keeps SGT the exporter, as the LUT needs.
  *   Taxes and Duties  zero-rated under SGT's LUT (Rule 96A, CGST Rules)
  *   Payment Terms     the same 50/50 schedule, in USD by wire transfer
  *
- * The port and the LUT are settings, because both change: the LUT is
- * renewed every financial year (EXPORT_LUT_NO / EXPORT_LUT_VALID_TILL)
- * and the port is per deployment (EXPORT_FOB_PORT).
+ * The LUT is a setting, because it is renewed every financial year
+ * (EXPORT_LUT_NO / EXPORT_LUT_VALID_TILL).
  */
-export const EXPORT_FOB_PORT = process.env.EXPORT_FOB_PORT ?? 'Nhava Sheva (JNPT), Mumbai';
 export const EXPORT_LUT_NO = process.env.EXPORT_LUT_NO ?? 'AD2703261207908';
 export const EXPORT_LUT_VALID_TILL = process.env.EXPORT_LUT_VALID_TILL ?? '31-Mar-2027';
 
 export const EXPORT_CLAUSES: Record<string, string> = {
   'Delivery':
-    `Prices are FOB ${EXPORT_FOB_PORT}, India (Incoterms 2020). SGT delivers the goods on board the vessel ` +
-    `nominated by the Buyer at the port of shipment. Ocean freight, insurance, destination port charges and ` +
-    `import clearance are borne by the Buyer.`,
+    `Prices are ex-factory, FCA SGT’s works, India (Incoterms 2020). Inland transport to the port, port and ` +
+    `terminal charges, ocean or air freight, insurance, destination charges and import clearance are not included ` +
+    `and are borne by the Buyer. Where SGT arranges transport at the Buyer’s request, it is charged additionally ` +
+    `at actuals.`,
   'Taxes and Duties':
     `This is an export supply. Prices are in US Dollars and are zero-rated under Indian GST: the supply is made ` +
     `under Letter of Undertaking (LUT) No. ${EXPORT_LUT_NO} (valid till ${EXPORT_LUT_VALID_TILL}) without ` +
@@ -178,6 +179,23 @@ export function withExportClauses(base: Clause[]): Clause[] {
   });
   for (const [h, b] of Object.entries(EXPORT_CLAUSES)) if (!seen.has(h)) out.push([h, b]);
   return out;
+}
+
+/** Added to any quotation carrying an evaluation or complimentary unit (owner, 2026-11-23). */
+export const NOT_FOR_RESALE_CLAUSE: Clause = [
+  'Evaluation and Complimentary Units',
+  'Any unit described in this quotation as an Evaluation Unit or a Complimentary Unit is supplied solely for the ' +
+  'Buyer’s own testing, demonstration and evaluation. It is not for commercial sale, and shall not be sold, leased, ' +
+  'hired out or otherwise transferred for consideration without the prior written consent of SGT HydroEdge Private Limited.',
+];
+
+/** Add the clause as the last item of the terms list. Safe to apply twice. */
+export function withNotForResale(html: string): string {
+  const [h, b] = NOT_FOR_RESALE_CLAUSE;
+  if (html.includes(h)) return html;
+  const li = `<li data-list="ordered"><span class="ql-ui" contenteditable="false"></span><strong>${h}</strong> — ${b}</li>`;
+  const at = html.lastIndexOf('</ol>');
+  return at >= 0 ? html.slice(0, at) + li + html.slice(at) : `${html}<ol>${li}</ol>`;
 }
 
 /** Clauses that still say "quotation". Reported by the PO terms script. */

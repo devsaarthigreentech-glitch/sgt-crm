@@ -24,7 +24,7 @@
 
 export const GREENDRIVE = 'GreenDrive' as const
 
-export type GdModel = 'One' | 'Neo' | 'Pro' | 'One-Packed' | 'Neo-Packed' | 'Pro-Packed' | 'Pro-Evaluation'
+export type GdModel = 'One' | 'Neo' | 'Pro' | 'One-Packed' | 'Neo-Packed' | 'Pro-Packed' | 'Pro-Evaluation' | 'Pro-Complimentary'
 
 export interface GdCatalogueRow {
   model: GdModel
@@ -41,6 +41,10 @@ export interface GdCatalogueRow {
   base?: GdModel
   /** Quoted in USD only: it has no India price (inr is 0) and is refused on a rupee quote. */
   exportOnly?: boolean
+  /** Only SGT staff may quote it — a partner cannot give SGT's machines away. */
+  staffOnly?: boolean
+  /** Not for resale: puts NOT_FOR_RESALE_CLAUSE on the quotation's terms. */
+  notForResale?: boolean
 }
 
 export const GD_CATALOGUE: GdCatalogueRow[] = [
@@ -62,10 +66,15 @@ export const GD_CATALOGUE: GdCatalogueRow[] = [
       base: m,
     }
   }),
-  // Owner, 2026-11-23: a sample Pro for export customers, $1,430. AMC is
+  // Owner, 2026-11-23: a sample Pro for export customers, $1,395.60 ($1,430 at
+  // first). AMC is
   // the ordinary Pro's.
   { model: 'Pro-Evaluation', itemCode: 'GreenDrive-Pro-Evaluation',
-    label: 'GreenDrive Pro – Evaluation Unit', inr: 0, usd: 1430, base: 'Pro', exportOnly: true },
+    label: 'GreenDrive Pro – Evaluation Unit', inr: 0, usd: 1395.6, base: 'Pro', exportOnly: true, notForResale: true },
+  // Owner, 2026-11-23: a unit given free, as a gesture.
+  { model: 'Pro-Complimentary', itemCode: 'GreenDrive-Pro-Complimentary',
+    label: 'GreenDrive Pro – Complimentary Unit (Free of Cost)', inr: 0, usd: 0, base: 'Pro',
+    exportOnly: true, staffOnly: true, notForResale: true },
 ]
 
 /** The row whose AMC a line uses: the ex-factory model for a packed row. */
@@ -154,7 +163,7 @@ export function gdPackingForwarding(machineValue: number, usd: boolean): number 
  * Installation — optional on a GreenDrive sale quotation (owner,
  * 2026-11-11): a FIXED ₹7,450 + GST per quotation (₹7,000 the same day —
  * the owner wanted a figure that reads as calculated), one line, only when ticked.
- * India quotes only (an export ships FOB; nobody from SGT installs it).
+ * India quotes only (an export is sold ex-factory; nobody from SGT installs it).
  * Its ERPNext item has grant_commission = 0, so no dealer markup on it.
  * Created by src/db/erp_create_pf_item.ts alongside the P&F item.
  */

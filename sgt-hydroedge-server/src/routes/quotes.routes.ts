@@ -35,7 +35,7 @@ import {
 } from '../services/quoteMail.js'
 import { cleanSpec, SPEC_FIELDS } from '../domain/quoteSpec.js'
 import { termsToText, textToTerms } from '../domain/quoteTerms.js'
-import { clausesToHtml, withExportClauses, GREENDRIVE_QUOTATION_TERMS } from '../domain/dealerTerms.js'
+import { clausesToHtml, withExportClauses, withNotForResale, GREENDRIVE_QUOTATION_TERMS } from '../domain/dealerTerms.js'
 import {
   daasFigures, daasTerms, DAAS_TENURES, DAAS_LOCK_IN_MONTHS, DAAS_DOWN_PCT, DAAS_RATE_PCT,
   DAAS_MAX_DISCOUNT_PCT,
@@ -733,6 +733,11 @@ async function performGreenDriveQuotation(
   // Export: priced from the USD list prices and quoted in USD with no GST.
   // The rupee rate only keeps ERPNext's INR books — it does not price.
   const usd = body.currency === 'USD'
+  const staffOnly = rows.findIndex(r => r!.staffOnly)
+  if (opts.via === 'portal' && staffOnly >= 0) {
+    return fail(403, 'staff_only_model',
+      `Line ${staffOnly + 1}: ${rows[staffOnly]!.label} can only be quoted by SGT.`, { lineIndex: staffOnly })
+  }
   const exportOnly = rows.findIndex(r => r!.exportOnly)
   if (!usd && exportOnly >= 0) {
     return fail(422, 'export_only_model',
@@ -741,7 +746,7 @@ async function performGreenDriveQuotation(
   }
   if (usd && body.installation === true) {
     return fail(400, 'installation_india_only',
-      'Installation is charged on India quotations only — an export ships FOB. Untick it for an export quote.')
+      'Installation is charged on India quotations only — an export is sold ex-factory. Untick it for an export quote.')
   }
   const usdInr = Number(process.env.ERP_USD_INR ?? '95')
   if (usd && !(usdInr > 0)) return fail(500, 'bad_config', 'ERP_USD_INR must be a positive number.')
@@ -762,7 +767,8 @@ async function performGreenDriveQuotation(
     // term (GreenDrive-One-AMC-2Y), priced by ERPNext's Item Price.
     const amcYears = l.amcYears && AMC_TERMS.includes(Number(l.amcYears))
       ? Number(l.amcYears) : null
-    const discountPct = discounts[i] || null
+    // Nothing to discount on a free unit.
+    const discountPct = usd && r.row.usd === 0 ? null : discounts[i] || null
     // A packed model's AMC is its ex-factory model's (15% of ex-factory).
     const amcRow = gdAmcRow(r.row)
     lines.push({
@@ -794,6 +800,24 @@ async function performGreenDriveQuotation(
     lines.push({ itemCode: GD_INSTALL_ITEM, qty: 1, rate: installation, exactRate: true })
   }
 
+  const termsTemplate = body.termsTemplate ?? (usd ? GREENDRIVE_EXPORT_TERMS : GREENDRIVE_TERMS)
+  let termsHtml = body.termsText?.trim()
+    ? textToTerms(body.termsText)
+    : usd && !exportTemplate
+      ? clausesToHtml(withExportClauses(GREENDRIVE_QUOTATION_TERMS))
+      : (body.termsHtml ?? null)
+  // An evaluation or complimentary unit must carry the not-for-resale
+  // clause, so the template is read here to add it. Without the template
+  // there is nothing safe to add it to: stop, rather than send a quotation
+  // with only that clause or without it.
+  if (rows.some(r => r!.notForResale)) {
+    const base = termsHtml?.trim() ? termsHtml : await fetchTerms(termsTemplate).catch(() => null)
+    if (!base?.trim()) {
+      return fail(502, 'terms_unavailable', `Could not read the terms "${termsTemplate}" from ERPNext. Try again.`)
+    }
+    termsHtml = withNotForResale(base)
+  }
+
   const input: CreateQuotationInput = {
     customerErpName,
     lines,
@@ -804,14 +828,10 @@ async function performGreenDriveQuotation(
     // Domestic and export each use their own ERPNext template; the
     // template's text is read when the quotation is built. Text typed on
     // the screen wins. Fallback for an export with no export template yet:
-    // the domestic clauses with Delivery (FOB), Taxes (LUT) and Payment
+    // the domestic clauses with Delivery (ex-factory), Taxes (LUT) and Payment
     // (USD wire) replaced.
-    termsTemplate: body.termsTemplate ?? (usd ? GREENDRIVE_EXPORT_TERMS : GREENDRIVE_TERMS),
-    termsHtml: body.termsText?.trim()
-      ? textToTerms(body.termsText)
-      : usd && !exportTemplate
-        ? clausesToHtml(withExportClauses(GREENDRIVE_QUOTATION_TERMS))
-        : (body.termsHtml ?? null),
+    termsTemplate,
+    termsHtml,
     raisedBy: who.name ? `${who.name}${who.id ? ` (user ${who.id})` : ''}` : null,
     raisedByOrg: partner?.code ?? null,
     raisedVia: opts.via === 'portal' ? 'Partner portal' : 'SGT CRM',
