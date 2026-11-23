@@ -166,7 +166,7 @@ export default function CardScanner({ onExtracted, onClose }: Props) {
                 fontSize: 11.5, color: '#6A675F', lineHeight: 1.6,
               }}>
                 💡 Works best with business cards, meeting notes, or any photo
-                containing contact information. Powered by Gemini AI.
+                containing contact information. Powered by Claude AI.
               </div>
             </div>
           )}
@@ -200,7 +200,7 @@ export default function CardScanner({ onExtracted, onClose }: Props) {
                       Reading card details…
                     </div>
                     <div style={{ fontSize: 11.5, color: '#6A675F', marginTop: 1 }}>
-                      Gemini AI is extracting the information
+                      Claude AI is extracting the information
                     </div>
                   </div>
                 </div>
