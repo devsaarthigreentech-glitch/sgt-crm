@@ -224,7 +224,12 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true, o
           <h2 style={{ margin: 0, fontSize: 15.5, fontWeight: 700, color: INK, flex: 1 }}>Market</h2>
           {(['INR', 'USD'] as const).map(c => (
             <label key={c} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: INK, cursor: 'pointer' }}>
-              <input type="radio" checked={currency === c} onChange={() => setCurrency(c)} />
+              <input type="radio" checked={currency === c} onChange={() => {
+                setCurrency(c)
+                // An export-only model cannot stay on a rupee quote.
+                if (c === 'INR') setLines(ls => ls.map(l =>
+                  GD_MODELS.find(g => g.code === l.model)?.exportOnly ? { ...l, model: 'Pro' } : l))
+              }} />
               {c === 'INR' ? 'India (₹)' : 'Export (USD)'}
             </label>
           ))}
@@ -271,7 +276,7 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true, o
               <div>
                 <label style={labelStyle}>Model</label>
                 <select value={l.model} onChange={e => patch(l.id, { model: e.target.value as GdModel })} style={inputStyle()}>
-                  {GD_MODELS.map(g => (
+                  {GD_MODELS.filter(g => currency === 'USD' || !g.exportOnly).map(g => (
                     <option key={g.code} value={g.code}>{g.label} — {money(currency === 'USD' ? g.usd : g.inr, currency)}</option>
                   ))}
                 </select>

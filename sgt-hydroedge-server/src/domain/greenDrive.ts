@@ -24,7 +24,7 @@
 
 export const GREENDRIVE = 'GreenDrive' as const
 
-export type GdModel = 'One' | 'Neo' | 'Pro' | 'One-Packed' | 'Neo-Packed' | 'Pro-Packed'
+export type GdModel = 'One' | 'Neo' | 'Pro' | 'One-Packed' | 'Neo-Packed' | 'Pro-Packed' | 'Pro-Evaluation'
 
 export interface GdCatalogueRow {
   model: GdModel
@@ -39,6 +39,8 @@ export interface GdCatalogueRow {
    * that model's AMC — 15% of the EX-FACTORY price, not of the packed one.
    */
   base?: GdModel
+  /** Quoted in USD only: it has no India price (inr is 0) and is refused on a rupee quote. */
+  exportOnly?: boolean
 }
 
 export const GD_CATALOGUE: GdCatalogueRow[] = [
@@ -60,6 +62,10 @@ export const GD_CATALOGUE: GdCatalogueRow[] = [
       base: m,
     }
   }),
+  // Owner, 2026-11-23: a sample Pro for export customers, $1,430. AMC is
+  // the ordinary Pro's.
+  { model: 'Pro-Evaluation', itemCode: 'GreenDrive-Pro-Evaluation',
+    label: 'GreenDrive Pro – Evaluation Unit', inr: 0, usd: 1430, base: 'Pro', exportOnly: true },
 ]
 
 /** The row whose AMC a line uses: the ex-factory model for a packed row. */

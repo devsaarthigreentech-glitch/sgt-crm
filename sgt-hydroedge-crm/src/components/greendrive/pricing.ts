@@ -16,10 +16,10 @@
 // 30% on top until 2026-10-10, when the owner raised it to 40% with the
 // prices unchanged.
 
-export type GdModel = 'One' | 'Neo' | 'Pro' | 'One-Packed' | 'Neo-Packed' | 'Pro-Packed'
+export type GdModel = 'One' | 'Neo' | 'Pro' | 'One-Packed' | 'Neo-Packed' | 'Pro-Packed' | 'Pro-Evaluation'
 export type GdCurrency = 'INR' | 'USD'
 
-export const GD_MODELS: { code: GdModel; label: string; inr: number; usd: number; base?: GdModel }[] = [
+export const GD_MODELS: { code: GdModel; label: string; inr: number; usd: number; base?: GdModel; exportOnly?: boolean }[] = [
   { code: 'One', label: 'GreenDrive One', inr: 104000, usd: 1337 },
   { code: 'Neo', label: 'GreenDrive Neo', inr: 121000, usd: 1558 },
   { code: 'Pro', label: 'GreenDrive Pro', inr: 181000, usd: 2326 },
@@ -28,6 +28,8 @@ export const GD_MODELS: { code: GdModel; label: string; inr: number; usd: number
   { code: 'One-Packed', label: 'GreenDrive One incl. Packing & Forwarding', inr: 111800, usd: 1437.28, base: 'One' },
   { code: 'Neo-Packed', label: 'GreenDrive Neo incl. Packing & Forwarding', inr: 130075, usd: 1674.85, base: 'Neo' },
   { code: 'Pro-Packed', label: 'GreenDrive Pro incl. Packing & Forwarding', inr: 194575, usd: 2500.45, base: 'Pro' },
+  // Owner, 2026-11-23: sample unit, USD quotes only — no India price.
+  { code: 'Pro-Evaluation', label: 'GreenDrive Pro – Evaluation Unit', inr: 0, usd: 1430, base: 'Pro', exportOnly: true },
 ]
 
 /** The ex-factory price a model's AMC is worked out from. */

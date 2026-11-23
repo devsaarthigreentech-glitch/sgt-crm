@@ -94,10 +94,10 @@ async function main() {
   console.log(`  masters ok: ${COMPANY} · ${ITEM_GROUP} · ${SELLING_PRICE_LIST} · HSN ${GD_HSN}\n`);
 
   // Machines first, then each machine's AMC terms, all through one plan.
-  type Row = { itemCode: string; label: string; inr: number; amc?: { model: string; years: number } };
+  type Row = { itemCode: string; label: string; inr: number; exportOnly?: boolean; amc?: { model: string; years: number } };
   const rows: Row[] = [];
   for (const m of GD_CATALOGUE) {
-    rows.push({ itemCode: m.itemCode, label: m.label, inr: m.inr });
+    rows.push({ itemCode: m.itemCode, label: m.label, inr: m.inr, exportOnly: m.exportOnly });
     // A packed row uses its ex-factory model's AMC items — none of its own.
     if (m.base) continue;
     for (const y of AMC_TERMS) {
@@ -123,11 +123,12 @@ async function main() {
       console.log(`  ⚠ ${row.itemCode} is priced ₹${Number(price[0].price_list_rate).toLocaleString('en-IN')} in ERPNext, ` +
                   `catalogue says ₹${row.inr.toLocaleString('en-IN')}. ERPNext wins; not changed here.`);
     }
-    plan.push({ row, item: !item, price: !price.length });
+    plan.push({ row, item: !item, // An export-only model has no India price to set.
+      price: !price.length && !row.exportOnly });
   }
 
   for (const p of plan) {
-    const what = [p.item ? 'create item' : 'item exists', p.price ? `set price ₹${p.row.inr.toLocaleString('en-IN')}` : 'price exists']
+    const what = [p.item ? 'create item' : 'item exists', p.price ? `set price ₹${p.row.inr.toLocaleString('en-IN')}` : p.row.exportOnly ? 'export only, no India price' : 'price exists']
     console.log(`  · ${p.row.itemCode.padEnd(22)} ${what.join(' · ')}`);
   }
 

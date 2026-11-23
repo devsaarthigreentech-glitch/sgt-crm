@@ -733,6 +733,12 @@ async function performGreenDriveQuotation(
   // Export: priced from the USD list prices and quoted in USD with no GST.
   // The rupee rate only keeps ERPNext's INR books — it does not price.
   const usd = body.currency === 'USD'
+  const exportOnly = rows.findIndex(r => r!.exportOnly)
+  if (!usd && exportOnly >= 0) {
+    return fail(422, 'export_only_model',
+      `Line ${exportOnly + 1}: ${rows[exportOnly]!.label} is for export (USD) quotations only.`,
+      { lineIndex: exportOnly })
+  }
   if (usd && body.installation === true) {
     return fail(400, 'installation_india_only',
       'Installation is charged on India quotations only — an export ships FOB. Untick it for an export quote.')
@@ -964,6 +970,7 @@ async function performDaasQuotation(
     if (productLine === 'GreenDrive') {
       const row = gdRow(l.model)
       if (!row) return fail(422, 'unknown_model', `Line ${i + 1}: "${l.model}" is not a GreenDrive model.`, { lineIndex: i })
+      if (row.exportOnly) return fail(422, 'export_only_model', `Line ${i + 1}: ${row.label} is for export (USD) sale quotations only.`, { lineIndex: i })
       const r = await resolveGreenDrive(row, itemPrice)
       label = row.label; mrp = Number(r.rate)
     } else {
