@@ -5,6 +5,7 @@ import dotenv from 'dotenv'
 import { leadsRoutes } from './routes/leads'
 import partnerRegistrationRoutes from './routes/partnerRegistration.routes.js'
 import partnerInboundRoutes from './routes/partnerInbound.routes.js'
+import leadInboundRoutes from './routes/leadInbound.routes.js'
 import portalRoutes from './routes/portal.routes.js'
 import quotesRoutes from './routes/quotes.routes.js'
 import agreementRoutes from './routes/agreements.routes.js'
@@ -61,6 +62,8 @@ async function start() {
   // Applications from the WhatsApp bot (n8n). Secret-header guarded, no
   // JWT — see routes/partnerInbound.routes.ts.
   await app.register(partnerInboundRoutes, { prefix: '/api/v1/inbound' })
+  // Visiting cards from the WhatsApp staff bot, same secret header.
+  await app.register(leadInboundRoutes, { prefix: '/api/v1/inbound' })
   await app.register(portalRoutes, { prefix: '/api/v1/portal' })
   await app.register(quotesRoutes, { prefix: '/api/v1/quotes' })
   // One plugin, two surfaces. The portal mount sits UNDER /api/v1/portal
