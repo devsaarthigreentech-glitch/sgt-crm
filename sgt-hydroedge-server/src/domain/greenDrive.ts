@@ -95,6 +95,14 @@ export const GREENDRIVE_TERMS =
 export const GREENDRIVE_EXPORT_TERMS =
   process.env.ERP_GREENDRIVE_EXPORT_TERMS ?? 'GreenDrive Export Quotation Terms'
 
+/**
+ * Quotations made up ONLY of evaluation / complimentary units take this
+ * template (owner, 2026-11-24). One that also sells an ordinary machine
+ * keeps the export terms plus the not-for-resale clause.
+ */
+export const GREENDRIVE_EVALUATION_TERMS =
+  process.env.ERP_GREENDRIVE_EVALUATION_TERMS ?? 'GreenDrive Evaluation Unit Terms'
+
 /** Dealer markup included in the price, on top of SGT's price. Owner, 2026-10-10. */
 export const GD_DEALER_MARKUP_PCT = 40
 

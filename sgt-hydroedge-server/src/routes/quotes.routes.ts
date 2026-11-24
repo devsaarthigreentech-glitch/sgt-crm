@@ -20,7 +20,8 @@ import { query, pool } from '../db/pool.js'
 import { requireRole } from '../auth/guard.js'
 import { resolveForKva } from '../domain/quotePricing.js'
 import {
-  gdRow, gdAmcRow, resolveGreenDrive, GREENDRIVE_TERMS, GREENDRIVE_EXPORT_TERMS, GD_CATALOGUE,
+  gdRow, gdAmcRow, resolveGreenDrive, GREENDRIVE_TERMS, GREENDRIVE_EXPORT_TERMS,
+  GREENDRIVE_EVALUATION_TERMS, GD_CATALOGUE,
   GD_DEALER_SHARE_OF_PRICE_PCT,
   GD_INSTALL_ITEM, GD_INSTALL_INR, gdActorFor, checkGdDiscount, GD_DISCOUNT_CAPS,
 } from '../domain/greenDrive.js'
@@ -35,7 +36,7 @@ import {
 } from '../services/quoteMail.js'
 import { cleanSpec, SPEC_FIELDS } from '../domain/quoteSpec.js'
 import { termsToText, textToTerms } from '../domain/quoteTerms.js'
-import { clausesToHtml, withExportClauses, withNotForResale, GREENDRIVE_QUOTATION_TERMS } from '../domain/dealerTerms.js'
+import { clausesToHtml, withExportClauses, withNotForResale, EVALUATION_TERMS, GREENDRIVE_QUOTATION_TERMS } from '../domain/dealerTerms.js'
 import {
   daasFigures, daasTerms, DAAS_TENURES, DAAS_LOCK_IN_MONTHS, DAAS_DOWN_PCT, DAAS_RATE_PCT,
   DAAS_MAX_DISCOUNT_PCT,
@@ -800,9 +801,13 @@ async function performGreenDriveQuotation(
     lines.push({ itemCode: GD_INSTALL_ITEM, qty: 1, rate: installation, exactRate: true })
   }
 
-  const termsTemplate = body.termsTemplate ?? (usd ? GREENDRIVE_EXPORT_TERMS : GREENDRIVE_TERMS)
+  // Nothing but evaluation / complimentary units: their own short terms.
+  const evaluationOnly = rows.every(r => r!.notForResale)
+  const termsTemplate = body.termsTemplate ?? (evaluationOnly ? GREENDRIVE_EVALUATION_TERMS : usd ? GREENDRIVE_EXPORT_TERMS : GREENDRIVE_TERMS)
   let termsHtml = body.termsText?.trim()
     ? textToTerms(body.termsText)
+    : evaluationOnly && !body.termsTemplate && !body.termsHtml
+      ? (await fetchTerms(GREENDRIVE_EVALUATION_TERMS).catch(() => null)) || clausesToHtml(EVALUATION_TERMS)
     : usd && !exportTemplate
       ? clausesToHtml(withExportClauses(GREENDRIVE_QUOTATION_TERMS))
       : (body.termsHtml ?? null)

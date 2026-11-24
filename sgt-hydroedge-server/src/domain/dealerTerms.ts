@@ -189,6 +189,39 @@ export const NOT_FOR_RESALE_CLAUSE: Clause = [
   'hired out or otherwise transferred for consideration without the prior written consent of SGT HydroEdge Private Limited.',
 ];
 
+/**
+ * The complete terms for an evaluation-only quotation — owner's text,
+ * 2026-11-24. Deliberately without validity, scope, exclusions, warranty
+ * and annual maintenance. Seeds the ERPNext template
+ * (erp_create_evaluation_terms.ts), which is then the source of truth;
+ * also the fallback while that template does not exist.
+ */
+export const EVALUATION_TERMS: Clause[] = [
+  ['Delivery', EXPORT_CLAUSES['Delivery']],
+  ['Taxes and Duties', EXPORT_CLAUSES['Taxes and Duties']],
+  ['Payment Terms',
+    '100% advance payment. All payments are to be made in US Dollars by wire transfer (SWIFT) to the bank account of ' +
+    'SGT HydroEdge Private Limited stated on the proforma invoice, and to no other account. Bank charges outside ' +
+    'India are borne by the Buyer.'],
+  ['Installation and Commissioning',
+    'Installation and commissioning are not included in the quoted price. Remote technical support is provided free ' +
+    'of charge. Where an engineer is needed or requested at site — for installation, commissioning or service — the ' +
+    'visit is charged additionally at SGT’s prevailing rates, and travel and accommodation for our engineer are to ' +
+    'be arranged by the Buyer (end-to-end).'],
+  ['Data Capture and Reporting',
+    'Data capture and reporting shall be provided in accordance with the scope agreed with the Buyer.'],
+  ['Returns and Refunds',
+    'Goods once sold are neither returnable nor refundable. Taxes, duties, installation services, transportation ' +
+    'and logistics charges are likewise non-refundable.'],
+  ['Arbitration',
+    'In the event of any dispute or difference arising between the parties out of or relating to the validity, ' +
+    'construction, meaning, operation or effect of this offer, or of any amendment or other document relating to ' +
+    'it, or the breach of the terms of any document agreed between the parties, the same shall be referred to ' +
+    'arbitration in accordance with the provisions of the Arbitration and Conciliation Act, 1996. The arbitration ' +
+    'proceedings shall be held at Jaipur.'],
+  NOT_FOR_RESALE_CLAUSE,
+];
+
 /** Add the clause as the last item of the terms list. Safe to apply twice. */
 export function withNotForResale(html: string): string {
   const [h, b] = NOT_FOR_RESALE_CLAUSE;
