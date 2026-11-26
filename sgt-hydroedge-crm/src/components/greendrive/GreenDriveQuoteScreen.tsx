@@ -52,13 +52,15 @@ function maths(l: Line, cur: GdCurrency) {
   const unit = listPrice(l.model, cur)
   // AMC is priced from the LIST price and never discounted.
   const amcUnit = l.amcYears ? amcPrice(amcBasePrice(l.model, cur), l.amcYears) : 0
-  const disc = Math.max(0, Number(l.discount) || 0)
+  // Evaluation / complimentary units: list price with their own discount.
+  const fixed = GD_MODELS.find(g => g.code === l.model)?.fixedDiscountPct
+  const disc = fixed ?? Math.max(0, Number(l.discount) || 0)
   const net = unit * (1 - disc / 100)
   // Commission is the partner's 28.57% share of what the customer pays,
   // so a discount comes out of both SGT's and the partner's share.
   const share = unit > 0 ? dealerShare(unit) / unit : 0
   return {
-    qty, unit, amcUnit, disc, net,
+    qty, unit, amcUnit, disc, net, fixed: fixed !== undefined,
     listTotal: unit * qty,
     machineTotal: net * qty,
     amcTotal: amcUnit * qty,
@@ -113,7 +115,7 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true, o
     ? orgType
     : partners.find(p => p.id === orgId)?.org_type ?? null)
   const rows = lines.map(l => ({ l, m: maths(l, currency) }))
-  const overCap = rows.some(r => r.m.disc > maxDiscount)
+  const overCap = rows.some(r => !r.m.fixed && r.m.disc > maxDiscount)
   const listMachines = rows.reduce((s, r) => s + r.m.listTotal, 0)
   const machines = rows.reduce((s, r) => s + r.m.machineTotal, 0)
   const amcTotal = rows.reduce((s, r) => s + r.m.amcTotal, 0)
@@ -287,12 +289,17 @@ export default function GreenDriveQuoteScreen({ api, surface, canRaise = true, o
               </div>
               <div>
                 <label style={labelStyle}>Discount %</label>
+                {m.fixed ? <>
+                  <input type="number" value={m.disc} readOnly disabled style={inputStyle()} />
+                  <div style={{ fontSize: 11, color: FAINT, marginTop: 3 }}>Fixed for this unit.</div>
+                </> : <>
                 <input type="number" min={0} max={maxDiscount} step="0.5" value={l.discount} placeholder="0"
                   onChange={e => patch(l.id, { discount: e.target.value })}
                   style={inputStyle(m.disc > maxDiscount)} />
                 <div style={{ fontSize: 11, color: m.disc > maxDiscount ? DANGER : FAINT, marginTop: 3 }}>
                   Up to {maxDiscount}% off the list price.
                 </div>
+                </>}
               </div>
               <div>
                 <label style={labelStyle}>AMC</label>

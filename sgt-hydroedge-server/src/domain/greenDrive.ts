@@ -45,6 +45,12 @@ export interface GdCatalogueRow {
   staffOnly?: boolean
   /** Not for resale: puts NOT_FOR_RESALE_CLAUSE on the quotation's terms. */
   notForResale?: boolean
+  /**
+   * A discount built into the model, applied instead of anything typed and
+   * outside the partner caps: the quote shows the full list price and this
+   * discount (owner, 2026-11-26).
+   */
+  fixedDiscountPct?: number
 }
 
 export const GD_CATALOGUE: GdCatalogueRow[] = [
@@ -70,10 +76,10 @@ export const GD_CATALOGUE: GdCatalogueRow[] = [
   // first). AMC is
   // the ordinary Pro's.
   { model: 'Pro-Evaluation', itemCode: 'GreenDrive-Pro-Evaluation',
-    label: 'GreenDrive Pro – Evaluation Unit', inr: 0, usd: 1395.6, base: 'Pro', exportOnly: true, notForResale: true },
+    label: 'GreenDrive Pro – Evaluation Unit', inr: 0, usd: 2326, fixedDiscountPct: 40, base: 'Pro', exportOnly: true, notForResale: true },
   // Owner, 2026-11-23: a unit given free, as a gesture.
   { model: 'Pro-Complimentary', itemCode: 'GreenDrive-Pro-Complimentary',
-    label: 'GreenDrive Pro – Complimentary Unit (Free of Cost)', inr: 0, usd: 0, base: 'Pro',
+    label: 'GreenDrive Pro – Complimentary Unit (Free of Cost)', inr: 0, usd: 2326, fixedDiscountPct: 100, base: 'Pro',
     exportOnly: true, staffOnly: true, notForResale: true },
 ]
 

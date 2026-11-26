@@ -710,6 +710,9 @@ async function performGreenDriveQuotation(
   const gdActor = gdActorFor(partner?.orgType)
   const discounts: number[] = []
   for (let i = 0; i < picked.length; i++) {
+    // Evaluation (40%) and complimentary (100%) units carry their own.
+    const fixed = rows[i]!.fixedDiscountPct
+    if (fixed !== undefined) { discounts.push(fixed); continue }
     const d = checkGdDiscount(picked[i].discountPct, gdActor)
     if (!d.ok) {
       return fail(422, 'discount_over_cap', `Line ${i + 1}: ${d.message}`,
@@ -768,8 +771,7 @@ async function performGreenDriveQuotation(
     // term (GreenDrive-One-AMC-2Y), priced by ERPNext's Item Price.
     const amcYears = l.amcYears && AMC_TERMS.includes(Number(l.amcYears))
       ? Number(l.amcYears) : null
-    // Nothing to discount on a free unit.
-    const discountPct = usd && r.row.usd === 0 ? null : discounts[i] || null
+    const discountPct = discounts[i] || null
     // A packed model's AMC is its ex-factory model's (15% of ex-factory).
     const amcRow = gdAmcRow(r.row)
     lines.push({

@@ -19,7 +19,7 @@
 export type GdModel = 'One' | 'Neo' | 'Pro' | 'One-Packed' | 'Neo-Packed' | 'Pro-Packed' | 'Pro-Evaluation' | 'Pro-Complimentary'
 export type GdCurrency = 'INR' | 'USD'
 
-export const GD_MODELS: { code: GdModel; label: string; inr: number; usd: number; base?: GdModel; exportOnly?: boolean; staffOnly?: boolean }[] = [
+export const GD_MODELS: { code: GdModel; label: string; inr: number; usd: number; base?: GdModel; exportOnly?: boolean; staffOnly?: boolean; fixedDiscountPct?: number }[] = [
   { code: 'One', label: 'GreenDrive One', inr: 104000, usd: 1337 },
   { code: 'Neo', label: 'GreenDrive Neo', inr: 121000, usd: 1558 },
   { code: 'Pro', label: 'GreenDrive Pro', inr: 181000, usd: 2326 },
@@ -29,9 +29,9 @@ export const GD_MODELS: { code: GdModel; label: string; inr: number; usd: number
   { code: 'Neo-Packed', label: 'GreenDrive Neo incl. Packing & Forwarding', inr: 130075, usd: 1674.85, base: 'Neo' },
   { code: 'Pro-Packed', label: 'GreenDrive Pro incl. Packing & Forwarding', inr: 194575, usd: 2500.45, base: 'Pro' },
   // Owner, 2026-11-23: sample unit, USD quotes only — no India price.
-  { code: 'Pro-Evaluation', label: 'GreenDrive Pro – Evaluation Unit', inr: 0, usd: 1395.6, base: 'Pro', exportOnly: true },
+  { code: 'Pro-Evaluation', label: 'GreenDrive Pro – Evaluation Unit', inr: 0, usd: 2326, fixedDiscountPct: 40, base: 'Pro', exportOnly: true },
   // Given free; SGT staff only. Both add a not-for-resale clause to the terms.
-  { code: 'Pro-Complimentary', label: 'GreenDrive Pro – Complimentary Unit (Free of Cost)', inr: 0, usd: 0, base: 'Pro', exportOnly: true, staffOnly: true },
+  { code: 'Pro-Complimentary', label: 'GreenDrive Pro – Complimentary Unit (Free of Cost)', inr: 0, usd: 2326, fixedDiscountPct: 100, base: 'Pro', exportOnly: true, staffOnly: true },
 ]
 
 /** The ex-factory price a model's AMC is worked out from. */
